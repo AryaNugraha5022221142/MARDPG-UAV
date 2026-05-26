@@ -1,0 +1,57 @@
+environment:
+  n_agents: 5
+  uav_speed: 3.0              # m/s (inferred from typical quadrotor sim)
+  dt: 0.1                     # s (10Hz control frequency)
+  max_altitude: 60.0          # meters
+  min_altitude: 0.0
+  sensor_range: 10.0          # meters
+  collision_radius: 0.5       # R (inferred)
+  inter_uav_min_dist: 1.0     # 2R
+  action_bounds: [-0.5235987755982988, 0.5235987755982988]  # ±π/6 rad/s
+  
+  # Obstacle generation
+  obstacle_density: 0.1       # 10% space occupancy
+  scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
+  env_size: [50.0, 50.0, 60.0]  # x, y, z bounds
+  
+  # Episode settings
+  max_steps_per_episode: 500
+  goal_threshold: 2.0         # meters to count as "reached"
+  
+  # Reward parameters (Eq 4)
+  reward:
+    alpha: 3.0                # transfer reward scaling
+    lambda: 5.0               # collision penalty scaling
+    sigma: 15.0               # collision penalty decay
+    r_free: 0.1               # free space reward
+    r_step: -0.6              # step penalty
+    delta: [0.45, 0.30, 0.15, 0.10]  # weights [trans, col, free, step]
+
+algorithm:
+  gamma: 0.99
+  tau: 0.01                   # soft update coefficient
+  lr_actor: 0.001             # using 0.001 for stability (paper says 0.01)
+  lr_critic: 0.001
+  batch_size: 128             # episodes sampled per update
+  seq_len: 80                 # BPTT truncation length (LSTM time steps)
+  replay_capacity: 1000       # max episodes in buffer
+  update_freq: 100            # env steps between updates
+  gradient_clip: 1.0
+  n_episodes: 20000
+  
+  exploration:
+    noise_std_start: 0.2
+    noise_std_end: 0.05
+    noise_decay_episodes: 10000
+
+network:
+  shared:
+    conv_filters: 32
+    conv_kernel: 2
+    fc_angle_units: 8
+    fc_goal_units: 8
+  actor:
+    lstm_hidden: 128
+  critic:
+    fc1_units: 256
+    lstm_hidden: 64
