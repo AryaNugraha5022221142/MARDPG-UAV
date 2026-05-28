@@ -209,6 +209,16 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                         'critic': agent.critic.state_dict(),
                     }, f"{save_dir}/agent_{i}.pt")
                     
+            # Continuous JSON logging every 100 episodes
+            if episode % 100 == 0 and episode > 0:
+                os.makedirs("checkpoints", exist_ok=True)
+                log_file = "checkpoints/training_log.csv"
+                is_new = not os.path.exists(log_file)
+                with open(log_file, 'a') as f:
+                    if is_new:
+                        f.write("episode,avg_reward,success_rate,collision_rate,trapped_rate,avg_episode_length\n")
+                    f.write(f"{episode},{stats['avg_reward']},{stats['success_rate']},{stats['collision_rate']},{stats.get('trapped_rate', 0)},{stats['avg_episode_length']}\n")
+                    
     except KeyboardInterrupt:
         print("\n[KEYBOARD INTERRUPT] Training forcefully stopped by user.")
         save_dir = f"checkpoints/interrupted_episode_{episode}"
@@ -221,11 +231,22 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             }, f"{save_dir}/agent_{i}.pt")
         
         print("\nInterrupted Training Stats:")
-        print(metrics.get_stats())
+        stats = metrics.get_stats()
+        print(stats)
+        import json
+        with open(f"{save_dir}/interrupted_stats.json", 'w') as f:
+            json.dump(stats, f, indent=4)
+        print(f"Saved stats to {save_dir}/interrupted_stats.json")
         return agents
     
     print("\nTraining complete. Final stats:")
-    print(metrics.get_stats())
+    stats = metrics.get_stats()
+    print(stats)
+    import json
+    os.makedirs("checkpoints", exist_ok=True)
+    with open("checkpoints/final_stats.json", 'w') as f:
+        json.dump(stats, f, indent=4)
+    print("Saved stats to checkpoints/final_stats.json")
     return agents
 
 
