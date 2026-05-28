@@ -44,41 +44,45 @@ class EpisodeReplayBuffer:
         episodes = random.sample(self.buffer, min(batch_size, len(self.buffer)))
         
         batch_obs = []
+        batch_obs_next = []
         batch_actions = []
         batch_rewards = []
         batch_dones = []
         
         for ep in episodes:
             T = ep.length()
-            if T < self.seq_len:
+            if T < self.seq_len + 1:
                 continue
             
-            # Random starting point (Section 7.2)
-            start = random.randint(0, T - self.seq_len)
+            # Random starting point
+            start = random.randint(0, T - self.seq_len - 1)
             end = start + self.seq_len
             
             # Stack episode data
             obs_seg = np.stack(ep.observations[start:end])      # (seq, n, obs)
+            obs_next_seg = np.stack(ep.observations[start+1:end+1]) # true next obs
             act_seg = np.stack(ep.actions[start:end])           # (seq, n, act)
             rew_seg = np.stack(ep.rewards[start:end])           # (seq, n)
             done_seg = np.array(ep.agent_dones[start:end], dtype=bool) # (seq, n_agents)
             
             batch_obs.append(obs_seg)
+            batch_obs_next.append(obs_next_seg)
             batch_actions.append(act_seg)
             batch_rewards.append(rew_seg)
             batch_dones.append(done_seg)
         
-        if len(batch_obs) == 0:
+        if len(batch_obs) < batch_size // 4:
             return None
         
         # Convert to tensors
         obs_tensor = torch.tensor(np.stack(batch_obs), dtype=torch.float32)
+        obs_next_tensor = torch.tensor(np.stack(batch_obs_next), dtype=torch.float32)
         act_tensor = torch.tensor(np.stack(batch_actions), dtype=torch.float32)
         rew_tensor = torch.tensor(np.stack(batch_rewards), dtype=torch.float32)
         done_tensor = torch.tensor(np.stack(batch_dones),
                                    dtype=torch.bool)  # shape (B, seq, n_agents)
         
-        return obs_tensor, act_tensor, rew_tensor, done_tensor
+        return obs_tensor, obs_next_tensor, act_tensor, rew_tensor, done_tensor
     
     def __len__(self):
         return len(self.buffer)

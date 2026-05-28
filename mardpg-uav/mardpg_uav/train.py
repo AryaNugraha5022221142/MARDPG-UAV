@@ -76,6 +76,9 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
     print("=" * 60)
     
     for episode in tqdm(range(algo_cfg['n_episodes']), desc="Training progress"):
+        # Sequence length curriculum (ramp from 20 to 50 over 3000 episodes)
+        buffer.seq_len = int(20 + min(30, (episode / 3000.0) * 30))
+        
         obs = env.reset()
         
         # Reset hidden states at episode boundaries (Section 7.2)
@@ -107,7 +110,7 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
             global_step += 1
             
             # Store transition
-            episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'])
+            episode_data.append(obs.copy(), info['applied_actions'].copy(), rewards.copy(), info['agent_done'])
             episode_reward += sum(rewards)
             path_history.append(env.agents_state[:, :3].copy())
             
@@ -136,11 +139,11 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
             
             batch = buffer.sample(algo_cfg['batch_size'])
             if batch is not None:
-                batch_obs, batch_actions, batch_rewards, batch_dones = batch
+                batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = batch
                 
                 for i, agent in enumerate(agents):
                     c_loss, a_loss = agent.update(
-                        batch_obs, batch_actions, batch_rewards, batch_dones, agents
+                        batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones, agents
                     )
         
         # Logging

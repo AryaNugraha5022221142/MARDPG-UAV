@@ -80,13 +80,14 @@ class MARDPGAgent:
         return (torch.zeros(1, batch_size, self.actor.lstm.hidden_size).to(self.device),
                 torch.zeros(1, batch_size, self.actor.lstm.hidden_size).to(self.device))
     
-    def update(self, batch_obs: torch.Tensor, batch_actions: torch.Tensor,
-               batch_rewards: torch.Tensor, batch_dones: torch.Tensor,
-               all_agents: list) -> Tuple[float, float]:
+    def update(self, batch_obs: torch.Tensor, batch_obs_next: torch.Tensor,
+               batch_actions: torch.Tensor, batch_rewards: torch.Tensor,
+               batch_dones: torch.Tensor, all_agents: list) -> Tuple[float, float]:
         """
         Update actor and critic using BPTT.
         Args:
             batch_obs: (batch, seq_len, n_agents, obs_dim)
+            batch_obs_next: (batch, seq_len, n_agents, obs_dim)
             batch_actions: (batch, seq_len, n_agents, action_dim)
             batch_rewards: (batch, seq_len, n_agents)
             batch_dones: (batch, seq_len, n_agents)
@@ -97,6 +98,7 @@ class MARDPGAgent:
         
         # Move to device
         obs = batch_obs.to(self.device)
+        obs_next = batch_obs_next.to(self.device)
         actions = batch_actions.to(self.device)
         rewards = batch_rewards.to(self.device)
         dones = batch_dones.to(self.device)
@@ -128,9 +130,7 @@ class MARDPGAgent:
         with torch.no_grad():
             target_actions = []
             for i, agent in enumerate(all_agents):
-                # Shift for next state: duplicate last element or handle terminal
-                next_obs_i = torch.cat([obs[:, 1:, i, :], 
-                                      obs[:, -1:, i, :]], dim=1) 
+                next_obs_i = obs_next[:, :, i, :]
                 next_flat = next_obs_i.reshape(batch_size * seq_len, obs_dim)
                 next_features = agent.actor_target.shared(next_flat).view(batch_size, seq_len, -1)
                 next_lstm_out, _ = agent.actor_target.lstm(next_features, None)
@@ -138,8 +138,7 @@ class MARDPGAgent:
                 target_actions.append(next_act.view(batch_size * seq_len, -1))
             
             next_act_all = torch.stack(target_actions, dim=1)  # (B*L, N, 2)
-            next_obs_all = torch.cat([obs[:, 1:, :, :], obs[:, -1:, :, :]], dim=1)
-            next_obs_all = next_obs_all.reshape(batch_size * seq_len, n_agents, obs_dim)
+            next_obs_all = obs_next.reshape(batch_size * seq_len, n_agents, obs_dim)
             
             target_q_flat = self.critic_target(next_obs_all, next_act_all, self.agent_id)
             Q_target_next = target_q_flat.view(batch_size, seq_len)
@@ -191,7 +190,7 @@ class MARDPGAgent:
         q_value = q_value_flat.view(batch_size, seq_len)
         
         # Policy gradient: maximize Masked Q
-        actor_loss = -(q_value * mask).sum() / (mask.sum() + eps)
+        actor_loss = -(q_value * mask).sum() / (mask.sum() + eps) / self.n_agents
         
         self.actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -218,9 +217,10 @@ class MARDPGAgent:
     
     def share_parameters(self, other_agent: 'MARDPGAgent'):
         """Share feature extractor — §14.2. Rebuilds optimiser to track correct params."""
+        import copy
         self.shared_extractor = other_agent.shared_extractor
         self.actor.shared = self.shared_extractor
-        self.actor_target.shared = self.shared_extractor
+        self.actor_target.shared = copy.deepcopy(self.shared_extractor)
         # Rebuild optimiser so it tracks the now-shared extractor parameters
         self.actor_optimizer = optim.Adam(self.actor.parameters(),
                                           lr=self.actor_optimizer.defaults['lr'])
