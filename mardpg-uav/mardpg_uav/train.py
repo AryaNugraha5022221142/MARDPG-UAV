@@ -42,6 +42,7 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
             lr_critic=algo_cfg['lr_critic'],
             tau=algo_cfg['tau'],
             gamma=algo_cfg['gamma'],
+            burn_in=algo_cfg['burn_in'],
             gradient_clip=algo_cfg['gradient_clip'],
             device=device
         )

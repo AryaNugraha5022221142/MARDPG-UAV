@@ -51,7 +51,7 @@ class RewardFunction:
         r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
-        r_free = self.r_free if np.all(rangefinder >= 9.9) else 0.0
+        r_free = self.r_free if np.all(rangefinder >= 9.5) else 0.0
 
         # Step penalty
         r_step = self.r_step

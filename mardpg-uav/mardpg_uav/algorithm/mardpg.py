@@ -6,6 +6,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import numpy as np
+from typing import List, Tuple
 from ..networks.shared import SharedFeatureExtractor
 from ..networks.actor import Actor
 from ..networks.critic import AttentionCritic
@@ -182,7 +183,11 @@ class MARDPGAgent:
                 actor_actions.append(actions[:, :, i, :].detach().reshape(batch_size * seq_len, -1))
                 
         actor_act_all = torch.stack(actor_actions, dim=1)
+        
+        self.critic.eval()
         q_value_flat = self.critic(obs_all, actor_act_all, self.agent_id)
+        self.critic.train()
+        
         q_value = q_value_flat.view(batch_size, seq_len)
         
         # Policy gradient: maximize Masked Q
