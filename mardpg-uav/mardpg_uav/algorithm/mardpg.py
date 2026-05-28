@@ -85,7 +85,7 @@ class MARDPGAgent:
     
     def update(self, batch_obs: torch.Tensor, batch_obs_next: torch.Tensor,
                batch_actions: torch.Tensor, batch_rewards: torch.Tensor,
-               batch_dones: torch.Tensor, all_agents: list) -> Tuple[float, float]:
+               batch_dones: torch.Tensor, all_agents: list, precomputed_hiddens=None) -> Tuple[float, float]:
         """
         Update actor and critic using BPTT.
         Args:
@@ -95,6 +95,7 @@ class MARDPGAgent:
             batch_rewards: (batch, seq_len, n_agents)
             batch_dones: (batch, seq_len, n_agents)
             all_agents: list of MARDPGAgent instances
+            precomputed_hiddens: list of (B, L, hidden_dim) tensors
         """
         batch_size, seq_len, n_agents, obs_dim = batch_obs.shape
         T_burn = self.burn_in
@@ -109,16 +110,19 @@ class MARDPGAgent:
         # ==========================================
         # 1. Extract hidden states from all actors
         # ==========================================
-        agent_hiddens = []  # List of (batch, seq_len, hidden_dim)
-        
-        for i, agent in enumerate(all_agents):
-            agent_obs = obs[:, :, i, :]
-            flat_obs = agent_obs.reshape(batch_size * seq_len, obs_dim)
-            features = agent.actor.shared(flat_obs)
-            features = features.view(batch_size, seq_len, -1)
+        if precomputed_hiddens is None:
+            agent_hiddens = []  # List of (batch, seq_len, hidden_dim)
             
-            lstm_out, _ = agent.actor.lstm(features, None)
-            agent_hiddens.append(lstm_out)
+            for i, agent in enumerate(all_agents):
+                agent_obs = obs[:, :, i, :]
+                flat_obs = agent_obs.reshape(batch_size * seq_len, obs_dim)
+                features = agent.actor.shared(flat_obs)
+                features = features.view(batch_size, seq_len, -1)
+                
+                lstm_out, _ = agent.actor.lstm(features, None)
+                agent_hiddens.append(lstm_out)
+        else:
+            agent_hiddens = precomputed_hiddens
             
         # ==========================================
         # 2. Critic Update (Eq 12-13 with masking)

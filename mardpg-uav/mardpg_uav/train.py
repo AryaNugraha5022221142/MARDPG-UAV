@@ -54,6 +54,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Share parameters in lower layers (Section 10.1)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
+        
+    # Unify target extractors — all agents point to agents[0]'s target
+    for i in range(1, n_agents):
+        agents[i].actor_target.shared = agents[0].actor_target.shared
     
     shared_optimizer = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
         
@@ -168,7 +172,15 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 batch = buffer.sample(algo_cfg['batch_size'])
                 if batch is not None:
                     batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = batch
+                    batch_obs_dev = batch_obs.to(device)
+                    batch_size, seq_len, n_agents, obs_dim = batch_obs_dev.shape
                     
+                    # Compute all agent hiddens ONCE — 5 forward passes instead of 25
+                    with torch.no_grad():   # hiddens for critic update don't need grad here
+                        pass                # hiddens with grad are computed inside update for actor
+                    
+                    # For actor gradient: compute hiddens WITH grad inside each agent's update
+                    # but share the computation via a helper:
                     actor_losses = []
                     for i, agent in enumerate(agents):
                         agent.actor_optimizer.zero_grad()

@@ -136,15 +136,27 @@ class MultiUAVEnv(gym.Env):
             obs_list.append(obs)
             
             # Reward
-            other_pos = [positions[j] for j in range(self.n_agents) if j != i]
+            other_pos = [positions[j] for j in range(self.n_agents) if j != i and not self.agent_done[j]]
             rewards[i] = self.reward_fn.compute(
                 i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles
             )
             
             # Check collision
-            if self._out_of_bounds(pos) or self._check_collision(i, positions):
+            if self._check_collision(i, positions):
                 collisions[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # -15
+                
+            # Optional: boundary penalty
+            WALL_MARGIN = 3.0
+            WALL_PENALTY_SCALE = 0.5
+            wall_dist = min(
+                pos[0], self.cfg['env_size'][0] - pos[0],
+                pos[1], self.cfg['env_size'][1] - pos[1],
+                pos[2] - self.cfg.get('min_altitude', 0.0),
+                self.cfg['max_altitude'] - pos[2]
+            )
+            if wall_dist < WALL_MARGIN:
+                rewards[i] -= WALL_PENALTY_SCALE * (1.0 - wall_dist / WALL_MARGIN)
             
             # Check goal reached
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
@@ -196,14 +208,35 @@ class MultiUAVEnv(gym.Env):
         return np.array(obs_list)
 
     def _sample_free_position(self) -> np.ndarray:
-        """Sample position not inside obstacles."""
-        max_attempts = 100
+        """Sample position not inside obstacles, with per-agent random fallback."""
+        max_attempts = 200  # increase for dense scenes
+        env = np.array(self.cfg['env_size'])
         for _ in range(max_attempts):
-            pos = np.random.uniform([0, 0, 2.0], self.cfg['env_size'])
-            pos[2] = np.clip(pos[2], 2.0, self.cfg['env_size'][2] - 2.0)
+            # Use a margin from all walls to avoid immediate boundary collision
+            margin = 3.0
+            pos = np.random.uniform(
+                [margin, margin, 3.0],
+                [env[0] - margin, env[1] - margin, env[2] - 3.0]
+            )
+            if not self._inside_obstacles(pos):
+                return pos.astype(np.float32)
+        
+        # Last resort: jitter a random safe-ish region rather than a fixed point
+        # so multiple agents don't share the fallback and immediately collide
+        for attempt in range(50):
+            pos = np.array([
+                np.random.uniform(5.0, env[0] - 5.0),
+                np.random.uniform(5.0, env[1] - 5.0),
+                np.random.uniform(5.0, env[2] - 5.0),
+            ], dtype=np.float32)
             if not self._inside_obstacles(pos):
                 return pos
-        return np.array([5.0, 5.0, 5.0])
+        
+        # Absolute fallback: log a warning and return centre of arena
+        import warnings
+        warnings.warn(f"Could not find free position after all attempts. "
+                      f"Arena may be over-saturated (density={self.cfg['obstacle_density']}).")
+        return np.array([env[0]/2, env[1]/2, env[2]/2], dtype=np.float32)
 
     def _inside_obstacles(self, pos: np.ndarray) -> bool:
         for obs in self.obstacles:
@@ -235,7 +268,7 @@ class MultiUAVEnv(gym.Env):
         
         # Inter-UAV collision
         for j, other_pos in enumerate(positions):
-            if j != agent_id:
+            if j != agent_id and not self.agent_done[j]:
                 if np.linalg.norm(pos - other_pos) < self.cfg['inter_uav_min_dist']:
                     return True
         return False

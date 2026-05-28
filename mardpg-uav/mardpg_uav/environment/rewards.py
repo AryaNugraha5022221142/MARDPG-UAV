@@ -46,14 +46,19 @@ class RewardFunction:
             default=float('inf')
         )
 
-        d_all_min = min(d_obs_surface, d_agent_center) - self.collision_radius
+        # Clamp to [0, ∞): penalty is maximised at contact, not inside
+        # PDF §9.4 range analysis assumes d_all_min >= 0
+        d_all_min = max(0.0, min(d_obs_surface, d_agent_center) - self.collision_radius)
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
 
-        d_sep = d_agent_center - self.inter_uav_min
+        # Clamp d_sep similarly — PDF Eq.44
+        d_sep = max(0.0, d_agent_center - self.inter_uav_min)
         r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
-        r_free = self.r_free if np.min(rangefinder_norm) >= 0.95 else 0.0
+        # r_free fires when ALL 25 beams clear 95% of max range (≥ 9.5 m)
+        # With σ_ℓ=0.02 noise, ~86% of truly-max-range scans satisfy this
+        r_free = self.r_free if float(np.min(rangefinder_norm)) >= 0.95 else 0.0
 
         # Step penalty
         r_step = self.r_step
