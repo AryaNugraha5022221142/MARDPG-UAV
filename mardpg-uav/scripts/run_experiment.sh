@@ -1,3 +1,4 @@
 #!/bin/bash
 # Run experiment
-python ../mardpg_uav/train.py
+cd "$(dirname "$0")/.."
+PYTHONPATH=. python -m mardpg_uav.train
