@@ -31,11 +31,24 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         )
         try:
             ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
-            agent.actor.load_state_dict(ckpt['actor'])
+            
+            # FIX: Handle split shared/private dictionaries
+            if 'actor_private' in ckpt:
+                if i == 0:
+                    shared_ckpt = torch.load(f"{checkpoint_dir}/shared_actor.pt", map_location=device)
+                    agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
+                agent.actor.load_state_dict(ckpt['actor_private'], strict=False)
+            else:
+                agent.actor.load_state_dict(ckpt['actor'])
+                
             print(f"Loaded agent {i} weights")
-        except FileNotFoundError:
-            print(f"Warning: Checkpoint for agent {i} not found. Using untrained weights.")
+        except Exception as e:
+            print(f"Warning: Failed to load agent {i}: {e}. Using untrained weights.")
         agents.append(agent)
+    
+    # FIX: Enforce parameter sharing for inference
+    for i in range(1, n_agents):
+        agents[i].share_parameters(agents[0])
     
        
     obs = env.reset()

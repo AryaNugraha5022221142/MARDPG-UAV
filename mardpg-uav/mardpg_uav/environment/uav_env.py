@@ -63,7 +63,32 @@ class MultiUAVEnv(gym.Env):
         # Generate obstacles
         self.obstacles = self.scene_gen.generate(scene, density, self.n_agents)
         self.obs_centers = np.array([obs.position for obs in self.obstacles]) if self.obstacles else np.empty((0, 3))
-        self.obs_max_sizes = np.array([np.max(obs.size) for obs in self.obstacles]) if self.obstacles else np.empty(0)
+        
+        # FIX: Compute true circumscribed bounding radii to prevent corner-clipping
+        sizes = []
+        for obs in self.obstacles:
+            if obs.type == 'box':
+                sizes.append(np.linalg.norm(obs.size))
+            elif obs.type == 'cylinder':
+                sizes.append(np.sqrt(obs.size[0]**2 + (obs.size[1]/2)**2))
+            else:
+                sizes.append(obs.size[0])
+        self.obs_max_sizes = np.array(sizes) if sizes else np.empty(0)
+        
+        # FIX: Inject physical arena boundaries so Lidar can see the walls
+        t = 5.0 # Wall thickness
+        ex, ey, ez = self.cfg['env_size']
+        min_z = self.cfg.get('min_altitude', 0.0)
+        
+        walls = [
+            Obstacle('box', np.array([-t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
+            Obstacle('box', np.array([ex+t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
+            Obstacle('box', np.array([ex/2, -t, ez/2]), np.array([ex/2, t, ez/2])), # Y min
+            Obstacle('box', np.array([ex/2, ey+t, ez/2]), np.array([ex/2, t, ez/2])), # Y max
+            Obstacle('box', np.array([ex/2, ey/2, min_z-t]), np.array([ex/2, ey/2, t])), # Z min (floor)
+            Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
+        ]
+        self.obstacles.extend(walls)
         
         # Sample start/goal positions (ensuring clearance)
         self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
