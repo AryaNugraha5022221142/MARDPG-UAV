@@ -234,7 +234,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         stats = metrics.get_stats()
         print(stats)
         import json
-        import numpy as np
         
         # Convert numpy types to native Python types for JSON serialization
         serializable_stats = {}
@@ -255,7 +254,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     stats = metrics.get_stats()
     print(stats)
     import json
-    import numpy as np
     
     # Convert numpy types to native Python types for JSON serialization
     serializable_stats = {}
