@@ -18,7 +18,8 @@ class Rangefinder:
         self.v_angles = np.linspace(-v_fov/2, v_fov/2, self.n_v) * np.pi / 180
 
     def scan(self, position: np.ndarray, theta: float, phi: float,
-             obstacles: List[Obstacle], sigma_l: float = 0.02) -> Tuple[np.ndarray, np.ndarray]:
+             obstacles: List[Obstacle], sigma_l: float = 0.02,
+             obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
         yaw = theta + self.h_angles
         pitch = phi + self.v_angles[:, None]
         
@@ -33,7 +34,15 @@ class Rangefinder:
 
         min_dists = np.full(dir_vecs.shape[0], self.range_max, dtype=np.float32)
 
-        for obs in obstacles:
+        if obs_centers is not None and obs_max_sizes is not None:
+            dists_to_centers = np.linalg.norm(obs_centers - position, axis=1)
+            # Only consider obstacles whose bounding sphere intersects the sensor range
+            mask = dists_to_centers < (self.range_max + obs_max_sizes)
+            close_obstacles = [obstacles[i] for i, m in enumerate(mask) if m]
+        else:
+            close_obstacles = obstacles
+
+        for obs in close_obstacles:
             if obs.type == 'sphere':
                 dist = self._ray_sphere_vec(position, dir_vecs, obs.position, obs.size[0])
             elif obs.type == 'cylinder':

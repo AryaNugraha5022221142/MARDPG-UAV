@@ -62,6 +62,8 @@ class MultiUAVEnv(gym.Env):
         
         # Generate obstacles
         self.obstacles = self.scene_gen.generate(scene, density, self.n_agents)
+        self.obs_centers = np.array([obs.position for obs in self.obstacles]) if self.obstacles else np.empty((0, 3))
+        self.obs_max_sizes = np.array([np.max(obs.size) for obs in self.obstacles]) if self.obstacles else np.empty(0)
         
         # Sample start/goal positions (ensuring clearance)
         self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
@@ -125,7 +127,10 @@ class MultiUAVEnv(gym.Env):
             theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
             
             # Sensing
-            rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
+            rangefinder_raw, rangefinder_norm = self.rangefinder.scan(
+                pos, theta, phi, self.obstacles,
+                obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
+            )
             goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
             
             # Observation vector
@@ -138,7 +143,8 @@ class MultiUAVEnv(gym.Env):
             # Reward
             other_pos = [positions[j] for j in range(self.n_agents) if j != i and not self.agent_done[j]]
             rewards[i] = self.reward_fn.compute(
-                i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles
+                i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles,
+                obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
             )
             
             # Check collision
@@ -193,7 +199,10 @@ class MultiUAVEnv(gym.Env):
     def _get_single_observation(self, i: int) -> np.ndarray:
         pos = self.agents_state[i, :3]
         theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
-        rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
+        rangefinder_raw, rangefinder_norm = self.rangefinder.scan(
+            pos, theta, phi, self.obstacles,
+            obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
+        )
         goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
         sin_cos_att = np.array([np.sin(theta), np.cos(theta),
                                 np.sin(phi),   np.cos(phi)], dtype=np.float32)
@@ -263,8 +272,18 @@ class MultiUAVEnv(gym.Env):
 
     def _check_collision(self, agent_id: int, positions: List[np.ndarray]) -> bool:
         pos = positions[agent_id]
+        
+        # Fast culling for obstacles
+        if len(self.obstacles) > 0:
+            dists = np.linalg.norm(self.obs_centers - pos, axis=1)
+            # RC (collision threshold) is small, typically 0.5. Add it to max_size.
+            mask = dists < (self.cfg['collision_radius'] + self.obs_max_sizes + 0.1)
+            close_obstacles = [self.obstacles[idx] for idx, m in enumerate(mask) if m]
+        else:
+            close_obstacles = []
+
         # Obstacle collision
-        for obs in self.obstacles:
+        for obs in close_obstacles:
             if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
                 return True
         

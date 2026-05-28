@@ -29,7 +29,8 @@ class RewardFunction:
 
     def compute(self, agent_id: int, position: np.ndarray, goal: np.ndarray,
                 rangefinder_raw: np.ndarray, rangefinder_norm: np.ndarray,
-                other_positions: List[np.ndarray], obstacles: List) -> float:
+                other_positions: List[np.ndarray], obstacles: List,
+                obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> float:
         """
         Eq (4): r = δ1*r_trans + δ2*r_col + δ3*r_sep + δ4*r_free + δ5*r_step
         """
@@ -40,7 +41,7 @@ class RewardFunction:
         self.prev_distances[agent_id] = current_dist
 
         # Unified d_all_min — Eq.40: min(obstacle_surface_dist, inter_agent_dist) - Rc
-        d_obs_surface = self._min_obstacle_surface_distance(position, obstacles)
+        d_obs_surface = self._min_obstacle_surface_distance(position, obstacles, obs_centers, obs_max_sizes)
         d_agent_center = min(
             (np.linalg.norm(position - other) for other in other_positions),
             default=float('inf')
@@ -90,10 +91,21 @@ class RewardFunction:
 
         return float('inf')
 
-    def _min_obstacle_surface_distance(self, position, obstacles):
+    def _min_obstacle_surface_distance(self, position, obstacles, obs_centers=None, obs_max_sizes=None):
         if not obstacles:
             return float('inf')
-        return min(self._surface_distance(position, obs) for obs in obstacles)
+        
+        if obs_centers is not None and obs_max_sizes is not None:
+            dists = np.linalg.norm(obs_centers - position, axis=1)
+            # Safe culling: only calculate exact surface distance for obstacles that could be within 12m
+            mask = dists < (12.0 + obs_max_sizes)
+            close_obstacles = [obstacles[i] for i, m in enumerate(mask) if m]
+        else:
+            close_obstacles = obstacles
+            
+        if not close_obstacles:
+            return float('inf')
+        return min(self._surface_distance(position, obs) for obs in close_obstacles)
 
     def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
         min_dist = float('inf')
