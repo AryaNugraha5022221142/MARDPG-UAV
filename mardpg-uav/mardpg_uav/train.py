@@ -175,17 +175,23 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     batch_obs_dev = batch_obs.to(device)
                     batch_size, seq_len, n_agents, obs_dim = batch_obs_dev.shape
                     
-                    # Compute all agent hiddens ONCE — 5 forward passes instead of 25
-                    with torch.no_grad():   # hiddens for critic update don't need grad here
-                        pass                # hiddens with grad are computed inside update for actor
+                    # Compute all agent hiddens ONCE — 5 forward passes, single computation graph
+                    precomputed_hiddens = []
+                    for ag in agents:
+                        agent_obs = batch_obs_dev[:, :, ag.agent_id, :]
+                        flat_obs = agent_obs.reshape(batch_size * seq_len, obs_dim)
+                        features = agents[0].shared_extractor(flat_obs).view(batch_size, seq_len, -1)
+                        lstm_out, _ = ag.actor.lstm(features, None)
+                        precomputed_hiddens.append(lstm_out)
                     
-                    # For actor gradient: compute hiddens WITH grad inside each agent's update
-                    # but share the computation via a helper:
+                    for agent in agents:
+                        agent.actor_optimizer.zero_grad()
+                    
                     actor_losses = []
                     for i, agent in enumerate(agents):
-                        agent.actor_optimizer.zero_grad()
                         c_loss_item, a_loss = agent.update(
-                            batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones, agents
+                            batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones,
+                            agents, precomputed_hiddens=precomputed_hiddens
                         )
                         actor_losses.append(a_loss)
                     
