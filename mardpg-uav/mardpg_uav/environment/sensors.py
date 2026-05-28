@@ -111,21 +111,25 @@ class Rangefinder:
 
 
 class GoalSensor:
-    def compute(self, position: np.ndarray, goal: np.ndarray) -> np.ndarray:
-        """
-        Returns [d_g, pi_h, pi_v] as specified in Section 2.3.
-        d_g: Euclidean distance
-        pi_h: horizontal angle in x-y plane
-        pi_v: vertical angle
-        """
+    def __init__(self, arena_diag=89.4, sigma_psi=0.0349):
+        self.arena_diag = arena_diag
+        self.sigma_psi = sigma_psi
+
+    def compute(self, position, heading_yaw, heading_pitch, goal):
+        """Returns [d_norm, Δθ_norm, Δφ_norm] ∈ (-1,1]³  — Eqs.24-27."""
         diff = goal - position
-        d_g = np.linalg.norm(diff)
-        
-        # Horizontal angle (yaw relative)
-        pi_h = np.arctan2(diff[1], diff[0])
-        
-        # Vertical angle (pitch relative)
-        horizontal_dist = np.linalg.norm(diff[:2])
-        pi_v = np.arctan2(diff[2], horizontal_dist)
-        
-        return np.array([d_g, pi_h, pi_v], dtype=np.float32)
+        d_norm = np.linalg.norm(diff) / self.arena_diag              # Eq.25
+
+        noisy_yaw = heading_yaw + np.random.normal(0, self.sigma_psi)
+        raw_yaw = np.arctan2(diff[1], diff[0])
+        delta_theta = self._wrap(raw_yaw - noisy_yaw) / np.pi       # Eq.26
+
+        d_xy = np.linalg.norm(diff[:2])
+        raw_pitch = np.arctan2(diff[2], d_xy)
+        delta_phi = self._wrap(raw_pitch - heading_pitch) / np.pi   # Eq.27
+
+        return np.array([d_norm, delta_theta, delta_phi], dtype=np.float32)
+
+    @staticmethod
+    def _wrap(a):
+        return (a + np.pi) % (2 * np.pi) - np.pi

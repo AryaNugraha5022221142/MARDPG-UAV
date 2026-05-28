@@ -4,21 +4,28 @@ Reference: Section 11.1 of blueprint.
 """
 import numpy as np
 
+class OUNoise:
+    """Ornstein-Uhlenbeck process with exponential annealing — §4.3 Eqs.17-19."""
+    def __init__(self, n_agents, action_dim=2, kappa=0.15,
+                 sigma0=0.25, sigma_inf=0.05, anneal_steps=3_000_000):
+        self.n = n_agents
+        self.dim = action_dim
+        self.kappa = kappa
+        self.sigma0 = sigma0
+        self.sigma_inf = sigma_inf
+        self.anneal_steps = anneal_steps
+        self.epsilon = np.zeros((n_agents, action_dim), dtype=np.float32)
+        self.total_steps = 0
 
-class GaussianNoise:
-    def __init__(self, dim: int, std_start: float = 0.2,
-                 std_end: float = 0.05, decay_episodes: int = 10000):
-        self.dim = dim
-        self.std_start = std_start
-        self.std_end = std_end
-        self.decay_episodes = decay_episodes
-        self.episode = 0
-        
-    def sample(self) -> np.ndarray:
-        std = max(self.std_end,
-                  self.std_start - (self.std_start - self.std_end) *
-                  (self.episode / self.decay_episodes))
-        return np.random.normal(0, std, size=self.dim)
-    
-    def step(self):
-        self.episode += 1
+    def reset(self):
+        self.epsilon[:] = 0.0   # reset OU state per episode
+
+    def sample(self, dt=0.1):
+        """Update and return noise for all agents — OU discrete update."""
+        sigma_t = self.sigma_inf + (self.sigma0 - self.sigma_inf) * \
+                  np.exp(-self.total_steps / self.anneal_steps)          # Eq.19
+        xi = np.random.randn(self.n, self.dim).astype(np.float32)
+        self.epsilon = (self.epsilon * (1 - self.kappa * dt)
+                        + sigma_t * np.sqrt(dt) * xi)                   # OU
+        self.total_steps += 1
+        return self.epsilon.copy()

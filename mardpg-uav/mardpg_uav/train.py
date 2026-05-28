@@ -10,7 +10,7 @@ from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
 from .algorithm.replay_buffer import EpisodeReplayBuffer, Episode
-from .algorithm.noise import GaussianNoise
+from .algorithm.noise import OUNoise
 from .utils.metrics import MetricsTracker
 
 
@@ -56,11 +56,13 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len']
     )
-    noise = GaussianNoise(
-        dim=env.action_dim,
-        std_start=algo_cfg['exploration']['noise_std_start'],
-        std_end=algo_cfg['exploration']['noise_std_end'],
-        decay_episodes=algo_cfg['exploration']['noise_decay_episodes']
+    noise = OUNoise(
+        n_agents=n_agents,
+        action_dim=env.action_dim,
+        kappa=algo_cfg['exploration']['ou_kappa'],
+        sigma0=algo_cfg['exploration']['noise_std_start'],
+        sigma_inf=algo_cfg['exploration']['noise_std_end'],
+        anneal_steps=algo_cfg['exploration']['noise_anneal_steps']
     )
     
     metrics = MetricsTracker()
@@ -78,18 +80,21 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
         for agent in agents:
             agent.reset_hidden(batch_size=1, eval_mode=False)
         
+        noise.reset()
+        
         episode_data = Episode()
         episode_reward = 0
         path_history = [env.agents_state[:, :3].copy()]
         
         for step in range(env_cfg['max_steps_per_episode']):
             # Decentralized execution with exploration (Algorithm 1, line 8-9)
+            noise_val = noise.sample()
+            
             actions = []
             for i, agent in enumerate(agents):
                 action = agent.select_action(obs[i], evaluate=False)
-                # Add noise during training
-                if not noise.episode >= algo_cfg['exploration']['noise_decay_episodes']:
-                    action += noise.sample()
+                # Add noise during training (always added, OU anneals naturally)
+                action += noise_val[i]
                 action = np.clip(action, -np.pi/6, np.pi/6)
                 actions.append(action)
             
@@ -111,7 +116,6 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
         
         # Store episode
         buffer.add_episode(episode_data)
-        noise.step()
         
         # Record metrics
         metrics.record_episode(
@@ -125,8 +129,8 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
         )
         
         # Update agents (Algorithm 1, line 28-35)
-        if episode % (algo_cfg['update_freq'] // env_cfg['max_steps_per_episode'] + 1) == 0 \
-           and len(buffer) >= algo_cfg['batch_size']:
+        if episode % algo_cfg['update_freq'] == 0 \
+           and len(buffer) >= algo_cfg['warmup_episodes']:
             
             batch = buffer.sample(algo_cfg['batch_size'])
             if batch is not None:

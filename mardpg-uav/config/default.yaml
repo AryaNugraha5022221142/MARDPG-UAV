@@ -20,29 +20,36 @@ environment:
   
   # Reward parameters (Eq 4)
   reward:
-    alpha: 3.0                # transfer reward scaling
-    lambda: 5.0               # collision penalty scaling
-    sigma: 15.0               # collision penalty decay
-    r_free: 0.1               # free space reward
-    r_step: -0.6              # step penalty
-    delta: [0.45, 0.30, 0.15, 0.10]  # weights [trans, col, free, step]
+    alpha: 3.0
+    lambda_col: 5.0
+    sigma_col: 10.0
+    lambda_sep: 2.0
+    sigma_sep: 5.0
+    r_free: 0.1
+    r_step: -0.4
+    delta: [0.40, 0.30, 0.10, 0.10, 0.10]
+    r_goal: 15.0
+    r_col: 15.0
 
 algorithm:
   gamma: 0.99
-  tau: 0.01                   # soft update coefficient
-  lr_actor: 0.001             # using 0.001 for stability (paper says 0.01)
-  lr_critic: 0.001
-  batch_size: 128             # episodes sampled per update
-  seq_len: 80                 # BPTT truncation length (LSTM time steps)
-  replay_capacity: 1000       # max episodes in buffer
-  update_freq: 100            # env steps between updates
+  tau: 0.01
+  lr_actor: 0.0001
+  lr_critic: 0.0003
+  batch_size: 128
+  seq_len: 50
+  burn_in: 12
+  replay_capacity: 2000
+  update_freq: 10
+  warmup_episodes: 300
   gradient_clip: 1.0
-  n_episodes: 20000
-  
+  n_episodes: 15000
+
   exploration:
-    noise_std_start: 0.2
+    ou_kappa: 0.15
+    noise_std_start: 0.25
     noise_std_end: 0.05
-    noise_decay_episodes: 10000
+    noise_anneal_steps: 3000000
 
 network:
   shared:

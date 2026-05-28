@@ -11,19 +11,19 @@ from typing import Dict, List, Tuple
 
 class Episode:
     def __init__(self):
-        self.observations = []  # List of [n_agents, obs_dim]
-        self.actions = []       # List of [n_agents, action_dim]
-        self.rewards = []       # List of [n_agents]
-        self.dones = []         # List of bool
-    
-    def append(self, obs, actions, rewards, done):
+        self.observations = []
+        self.actions = []
+        self.rewards = []
+        self.agent_dones = []   # List of np.ndarray shape [n_agents] — was bool
+
+    def append(self, obs, actions, rewards, agent_dones):
         self.observations.append(obs)
         self.actions.append(actions)
         self.rewards.append(rewards)
-        self.dones.append(done)
-    
+        self.agent_dones.append(agent_dones.copy())  # [n_agents] bool array
+
     def length(self):
-        return len(self.dones)
+        return len(self.agent_dones)
 
 
 class EpisodeReplayBuffer:
@@ -61,7 +61,7 @@ class EpisodeReplayBuffer:
             obs_seg = np.stack(ep.observations[start:end])      # (seq, n, obs)
             act_seg = np.stack(ep.actions[start:end])           # (seq, n, act)
             rew_seg = np.stack(ep.rewards[start:end])           # (seq, n)
-            done_seg = np.array(ep.dones[start:end], dtype=bool) # (seq,)
+            done_seg = np.array(ep.agent_dones[start:end], dtype=bool) # (seq, n_agents)
             
             batch_obs.append(obs_seg)
             batch_actions.append(act_seg)
@@ -75,7 +75,8 @@ class EpisodeReplayBuffer:
         obs_tensor = torch.tensor(np.stack(batch_obs), dtype=torch.float32)
         act_tensor = torch.tensor(np.stack(batch_actions), dtype=torch.float32)
         rew_tensor = torch.tensor(np.stack(batch_rewards), dtype=torch.float32)
-        done_tensor = torch.tensor(np.stack(batch_dones), dtype=torch.bool)
+        done_tensor = torch.tensor(np.stack(batch_dones),
+                                   dtype=torch.bool)  # shape (B, seq, n_agents)
         
         return obs_tensor, act_tensor, rew_tensor, done_tensor
     

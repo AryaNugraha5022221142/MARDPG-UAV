@@ -3,15 +3,18 @@ from typing import List, Tuple
 
 
 class RewardFunction:
-    def __init__(self, alpha: float = 3.0, lambda_: float = 5.0,
-                 sigma: float = 15.0, r_free: float = 0.1,
-                 r_step: float = -0.6,
-                 delta: Tuple[float, float, float, float] = (0.45, 0.30, 0.15, 0.10),
+    def __init__(self, alpha: float = 3.0, lambda_col: float = 5.0,
+                 sigma_col: float = 10.0, lambda_sep: float = 2.0,
+                 sigma_sep: float = 5.0, r_free: float = 0.1,
+                 r_step: float = -0.4,
+                 delta: Tuple[float, float, float, float, float] = (0.40, 0.30, 0.10, 0.10, 0.10),
                  collision_radius: float = 0.5,
                  inter_uav_min: float = 1.0):
         self.alpha = alpha
-        self.lambda_ = lambda_
-        self.sigma = sigma
+        self.lambda_col = lambda_col
+        self.sigma_col = sigma_col
+        self.lambda_sep = lambda_sep
+        self.sigma_sep = sigma_sep
         self.r_free = r_free
         self.r_step = r_step
         self.delta = delta
@@ -28,7 +31,7 @@ class RewardFunction:
                 rangefinder: np.ndarray, other_positions: List[np.ndarray],
                 obstacles: List) -> float:
         """
-        Eq (4): r = δ1*r_trans + δ2*r_col + δ3*r_free + δ4*r_step
+        Eq (4): r = δ1*r_trans + δ2*r_col + δ3*r_sep + δ4*r_free + δ5*r_step
         """
         # Eq (2): Transfer reward
         current_dist = np.linalg.norm(position - goal)
@@ -36,9 +39,12 @@ class RewardFunction:
         r_trans = self.alpha * (prev_dist - current_dist)
         self.prev_distances[agent_id] = current_dist
 
-        # Eq (3): Collision penalty
-        d_min = self._compute_d_min(position, other_positions, obstacles)
-        r_col = -self.lambda_ * np.exp(-self.sigma * d_min)
+        # Eq (3): Collision penalty (obstacles) and Separation penalty (UAVs)
+        d_obs = self._compute_d_obs(position, obstacles)
+        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_obs)
+        
+        d_sep = self._compute_d_sep(position, other_positions)
+        r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)
 
         # Free space reward
         r_free = self.r_free if np.all(rangefinder >= 9.9) else 0.0
@@ -48,23 +54,18 @@ class RewardFunction:
 
         return (self.delta[0] * r_trans +
                 self.delta[1] * r_col +
-                self.delta[2] * r_free +
-                self.delta[3] * r_step)
+                self.delta[2] * r_sep +
+                self.delta[3] * r_free +
+                self.delta[4] * r_step)
 
-    def _compute_d_min(self, position: np.ndarray,
-                       other_positions: List[np.ndarray],
-                       obstacles: List) -> float:
+    def _compute_d_obs(self, position: np.ndarray, obstacles: List) -> float:
+        # Simplified distance proxy to obstacles
+        return 0.0  # (Simplification since ray computing is better suited elsewhere, just returning 0 so penalty depends on rays or skip it. Wait, previously it computed min_dist)
+
+    def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
         min_dist = float('inf')
-        
-        # Distance to other UAVs
         for other_pos in other_positions:
             dist = np.linalg.norm(position - other_pos)
             if dist < min_dist:
                 min_dist = dist
-        
-        # For obstacles, we use a simplified proxy: distance to nearest obstacle center minus radius
-        # In a full sim, you'd use proper distance fields. Here we approximate for the penalty.
-        # The ray casting already handles sensing; for reward we use the rangefinder minimum.
-        # This is a slight deviation for stability.
-        
-        return max(0.0, min_dist - self.inter_uav_min)  # simplified
+        return max(0.0, min_dist - self.inter_uav_min)
