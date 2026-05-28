@@ -1,4 +1,8 @@
-# Python
-__pycache__/
-*.py[cod]
-*$py.class
+node_modules/
+build/
+dist/
+coverage/
+.DS_Store
+*.log
+.env*
+!.env.example

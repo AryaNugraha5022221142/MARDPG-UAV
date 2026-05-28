@@ -6,7 +6,6 @@ import numpy as np
 from typing import List, Tuple
 from .obstacles import Obstacle
 
-
 class Rangefinder:
     def __init__(self, range_max: float = 10.0,
                  h_fov: float = 120.0,  # degrees
@@ -15,102 +14,103 @@ class Rangefinder:
         self.n_h = 5
         self.n_v = 5
         
-        # 5 beams in horizontal: -60°, -30°, 0°, 30°, 60°
         self.h_angles = np.linspace(-h_fov/2, h_fov/2, self.n_h) * np.pi / 180
-        # 5 vertical layers: -30°, -15°, 0°, 15°, 30°
         self.v_angles = np.linspace(-v_fov/2, v_fov/2, self.n_v) * np.pi / 180
 
     def scan(self, position: np.ndarray, theta: float, phi: float,
              obstacles: List[Obstacle], sigma_l: float = 0.02) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Returns (raw_distances, noisy_normalized_distances)
-        """
-        distances = np.full((self.n_v, self.n_h), self.range_max, dtype=np.float32)
+        yaw = theta + self.h_angles
+        pitch = phi + self.v_angles[:, None]
         
-        for vi, va in enumerate(self.v_angles):
-            for hi, ha in enumerate(self.h_angles):
-                # Compute ray direction in world frame
-                # yaw rotation (theta) then pitch rotation (phi + va) then horizontal offset (ha)
-                yaw = theta + ha
-                pitch = phi + va
-                
-                dir_vec = np.array([
-                    np.cos(pitch) * np.cos(yaw),
-                    np.cos(pitch) * np.sin(yaw),
-                    np.sin(pitch)
-                ])
-                
-                dist = self._ray_cast(position, dir_vec, obstacles)
-                distances[vi, hi] = min(dist, self.range_max)
-                
+        yaw = np.broadcast_to(yaw, (self.n_v, self.n_h)).flatten()
+        pitch = np.broadcast_to(pitch, (self.n_v, self.n_h)).flatten()
+
+        dir_vecs = np.stack([
+            np.cos(pitch) * np.cos(yaw),
+            np.cos(pitch) * np.sin(yaw),
+            np.sin(pitch)
+        ], axis=-1)
+
+        min_dists = np.full(dir_vecs.shape[0], self.range_max, dtype=np.float32)
+
+        for obs in obstacles:
+            if obs.type == 'sphere':
+                dist = self._ray_sphere_vec(position, dir_vecs, obs.position, obs.size[0])
+            elif obs.type == 'cylinder':
+                dist = self._ray_cylinder_vec(position, dir_vecs, obs.position, obs.size[0], obs.size[1])
+            elif obs.type == 'box':
+                dist = self._ray_box_vec(position, dir_vecs, obs.position, obs.size)
+            else:
+                continue
+            
+            mask = dist < min_dists
+            min_dists[mask] = dist[mask]
+
+        distances = min_dists.reshape(self.n_v, self.n_h)
         noisy_norm = np.clip(distances / self.range_max
                              + np.random.normal(0.0, sigma_l, distances.shape).astype(np.float32),
                              0.0, 1.0)
         return distances, noisy_norm
 
-    def _ray_cast(self, origin: np.ndarray, direction: np.ndarray,
-                  obstacles: List[Obstacle]) -> float:
-        min_dist = self.range_max
-        
-        for obs in obstacles:
-            if obs.type == 'sphere':
-                dist = self._ray_sphere(origin, direction, obs.position, obs.size[0])
-            elif obs.type == 'cylinder':
-                dist = self._ray_cylinder(origin, direction, obs.position, obs.size[0], obs.size[1])
-            elif obs.type == 'box':
-                dist = self._ray_box(origin, direction, obs.position, obs.size)
-            else:
-                continue
-            if dist is not None and dist < min_dist:
-                min_dist = dist
-        
-        return min_dist
-
-    def _ray_sphere(self, o, d, c, r):
+    def _ray_sphere_vec(self, o: np.ndarray, d: np.ndarray, c: np.ndarray, r: float) -> np.ndarray:
         oc = o - c
-        a = np.dot(d, d)
-        b = 2.0 * np.dot(oc, d)
+        a = 1.0  # d is normalized
+        b = 2.0 * np.dot(d, oc)
         c_val = np.dot(oc, oc) - r * r
-        discriminant = b * b - 4 * a * c_val
-        if discriminant < 0:
-            return None
-        dist = (-b - np.sqrt(discriminant)) / (2.0 * a)
-        return dist if dist > 0 else None
+        disc = b * b - 4 * c_val
+        
+        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
+        mask = disc >= 0
+        if np.any(mask):
+            d_mask = (-b[mask] - np.sqrt(disc[mask])) / 2.0
+            p_mask = d_mask > 0
+            # assign to dist where mask is True and d_mask > 0
+            final_mask = mask.copy()
+            final_mask[mask] = p_mask
+            dist[final_mask] = d_mask[p_mask]
+        return dist
 
-    def _ray_cylinder(self, o, d, c, r, h):
-        # Infinite cylinder intersection in XY, then check Z height
+    def _ray_cylinder_vec(self, o: np.ndarray, d: np.ndarray, c: np.ndarray, r: float, h: float) -> np.ndarray:
         oc = o[:2] - c[:2]
-        d_xy = d[:2]
-        a = np.dot(d_xy, d_xy)
-        b = 2.0 * np.dot(oc, d_xy)
+        d_xy = d[:, :2]
+        a = np.sum(d_xy * d_xy, axis=-1)
+        b = 2.0 * np.dot(d_xy, oc)
         c_val = np.dot(oc, oc) - r * r
-        discriminant = b * b - 4 * a * c_val
-        if discriminant < 0:
-            return None
-        dist = (-b - np.sqrt(discriminant)) / (2.0 * a)
-        if dist <= 0:
-            return None
-        z_hit = o[2] + dist * d[2]
-        if c[2] - h/2 <= z_hit <= c[2] + h/2:
-            return dist
-        return None
+        disc = b * b - 4 * a * c_val
+        
+        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
+        mask = (disc >= 0) & (a > 1e-6)
+        if np.any(mask):
+            d_mask = (-b[mask] - np.sqrt(disc[mask])) / (2.0 * a[mask])
+            z_hit = o[2] + d_mask * d[mask, 2]
+            
+            valid = (d_mask > 0) & (z_hit >= c[2] - h/2) & (z_hit <= c[2] + h/2)
+            
+            final_mask = mask.copy()
+            final_mask[mask] = valid
+            dist[final_mask] = d_mask[valid]
+        return dist
 
-    def _ray_box(self, o, d, c, s):
-        # AABB intersection
-        min_t = -np.inf
-        max_t = np.inf
-        for i in range(3):
-            if abs(d[i]) < 1e-6:
-                if o[i] < c[i] - s[i] or o[i] > c[i] + s[i]:
-                    return None
-            else:
-                t1 = (c[i] - s[i] - o[i]) / d[i]
-                t2 = (c[i] + s[i] - o[i]) / d[i]
-                min_t = max(min_t, min(t1, t2))
-                max_t = min(max_t, max(t1, t2))
-        if max_t < 0 or min_t > max_t:
-            return None
-        return min_t if min_t > 0 else max_t
+    def _ray_box_vec(self, o: np.ndarray, d: np.ndarray, c: np.ndarray, s: np.ndarray) -> np.ndarray:
+        with np.errstate(divide='ignore', invalid='ignore'):
+            t1 = (c - s - o) / d
+            t2 = (c + s - o) / d
+            
+        t_min = np.minimum(t1, t2)
+        t_max = np.maximum(t1, t2)
+        
+        t_enter = np.max(t_min, axis=-1)
+        t_exit = np.min(t_max, axis=-1)
+        
+        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
+        mask = (t_exit >= t_enter) & (t_enter > 0)
+        dist[mask] = t_enter[mask]
+        
+        # inside case
+        mask_in = (t_exit >= t_enter) & (t_enter <= 0) & (t_exit > 0)
+        dist[mask_in] = t_exit[mask_in]
+        
+        return dist
 
 
 class GoalSensor:
