@@ -2,7 +2,7 @@
 Main Gym-style environment for Multi-UAV Navigation.
 Implements Dec-POMDP from Section 1.2.
 """
-import gym
+import gymnasium as gym
 import numpy as np
 from typing import Tuple, Dict, List, Optional
 from .dynamics import UAVDynamics
@@ -44,7 +44,7 @@ class MultiUAVEnv(gym.Env):
         )
         
         # Spaces
-        self.obs_dim = 36  # was 30
+        self.obs_dim = 34  # 4 (att) + 2 (prev_act) + 25 (lidar) + 3 (goal)
         self.action_dim = 2  # rho, tau
         
         # State
@@ -114,21 +114,20 @@ class MultiUAVEnv(gym.Env):
             theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
             
             # Sensing
-            rangefinder = self.rangefinder.scan(pos, theta, phi, self.obstacles)
+            rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
             goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
             
             # Observation vector
             sin_cos_att = np.array([np.sin(theta), np.cos(theta),
                                     np.sin(phi),   np.cos(phi)], dtype=np.float32)
             prev_act_norm = self.prev_applied_actions[i] / (np.pi / 6)
-            rangefinder_norm = rangefinder.flatten() / self.rangefinder.range_max
-            obs = np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm, goal_sensing])
+            obs = np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm.flatten(), goal_sensing])
             obs_list.append(obs)
             
             # Reward
             other_pos = [positions[j] for j in range(self.n_agents) if j != i]
             rewards[i] = self.reward_fn.compute(
-                i, pos, self.goals[i], rangefinder, other_pos, self.obstacles
+                i, pos, self.goals[i], rangefinder_raw, other_pos, self.obstacles
             )
             
             # Check collision
@@ -150,12 +149,15 @@ class MultiUAVEnv(gym.Env):
         timeout = self.steps >= self.cfg['max_steps_per_episode']
         episode_done = bool(np.all(self.agent_done)) or timeout
         
+        applied_actions = self.prev_applied_actions.copy()
+        
         info = {
             'collisions': collisions,
             'reached': reached,
             'timeout': timeout,
             'steps': self.steps,
-            'agent_done': self.agent_done.copy()
+            'agent_done': self.agent_done.copy(),
+            'applied_actions': applied_actions,
         }
         
         return np.array(obs_list), rewards, episode_done, info
@@ -166,15 +168,14 @@ class MultiUAVEnv(gym.Env):
         for i in range(self.n_agents):
             pos = self.agents_state[i, :3]
             theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
-            rangefinder = self.rangefinder.scan(pos, theta, phi, self.obstacles)
+            rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
             goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
             
             sin_cos_att = np.array([np.sin(theta), np.cos(theta),
                                     np.sin(phi),   np.cos(phi)], dtype=np.float32)
             prev_act_norm = self.prev_applied_actions[i] / (np.pi / 6)
-            rangefinder_norm = rangefinder.flatten() / self.rangefinder.range_max
             
-            obs = np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm, goal_sensing])
+            obs = np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm.flatten(), goal_sensing])
             obs_list.append(obs)
         return np.array(obs_list)
 

@@ -21,9 +21,9 @@ class Rangefinder:
         self.v_angles = np.linspace(-v_fov/2, v_fov/2, self.n_v) * np.pi / 180
 
     def scan(self, position: np.ndarray, theta: float, phi: float,
-             obstacles: List[Obstacle]) -> np.ndarray:
+             obstacles: List[Obstacle], sigma_l: float = 0.02) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Returns 5x5 distance matrix clipped to [0, range_max].
+        Returns (raw_distances, noisy_normalized_distances)
         """
         distances = np.full((self.n_v, self.n_h), self.range_max, dtype=np.float32)
         
@@ -42,8 +42,11 @@ class Rangefinder:
                 
                 dist = self._ray_cast(position, dir_vec, obstacles)
                 distances[vi, hi] = min(dist, self.range_max)
-        
-        return distances
+                
+        noisy_norm = np.clip(distances / self.range_max
+                             + np.random.normal(0.0, sigma_l, distances.shape).astype(np.float32),
+                             0.0, 1.0)
+        return distances, noisy_norm
 
     def _ray_cast(self, origin: np.ndarray, direction: np.ndarray,
                   obstacles: List[Obstacle]) -> float:
