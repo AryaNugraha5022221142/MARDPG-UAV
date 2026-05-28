@@ -161,8 +161,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             )
             
             # Update agents (Algorithm 1, line 28-35)
-            if episode % algo_cfg['update_freq'] == 0 \
-               and len(buffer) >= algo_cfg['warmup_episodes']:
+            if episode > algo_cfg['warmup_episodes'] \
+               and episode % algo_cfg['update_freq'] == 0 \
+               and len(buffer) >= algo_cfg['batch_size']:
                 
                 batch = buffer.sample(algo_cfg['batch_size'])
                 if batch is not None:

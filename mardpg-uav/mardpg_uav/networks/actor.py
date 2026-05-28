@@ -28,7 +28,7 @@ class Actor(nn.Module):
                 hidden: tuple = None) -> tuple:
         """
         Args:
-            obs_sequence: (batch, seq_len, 30)
+            obs_sequence: (batch, seq_len, 34)
             hidden: (h_0, c_0) for LSTM
         Returns:
             action: (batch, 2) scaled to [-π/6, π/6]

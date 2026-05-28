@@ -9,7 +9,7 @@ import torch.nn as nn
 class AttentionCritic(nn.Module):
     def __init__(self, n_agents=5, obs_dim=34, action_dim=2, d_model=128, d_ff=256):
         super().__init__()
-        self.encoder = nn.Linear(obs_dim + action_dim, d_model)  # 38 → 128
+        self.encoder = nn.Linear(obs_dim + action_dim, d_model)  # 36 -> 128
         self.W_Q = nn.Linear(d_model, d_model, bias=False)
         self.W_K = nn.Linear(d_model, d_model, bias=False)
         self.W_V = nn.Linear(d_model, d_model, bias=False)
@@ -25,7 +25,7 @@ class AttentionCritic(nn.Module):
         self.scale = d_model ** 0.5
 
     def forward(self, obs_all, act_all, agent_idx):
-        # obs_all: (B, N, 36), act_all: (B, N, 2)
+        # obs_all: (B, N, 34), act_all: (B, N, 2)
         x = torch.relu(self.encoder(torch.cat([obs_all, act_all], dim=-1)))  # (B,N,128)
         Q = self.W_Q(x); K = self.W_K(x); V = self.W_V(x)
         A = torch.softmax(Q @ K.transpose(-1,-2) / self.scale, dim=-1)

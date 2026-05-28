@@ -91,7 +91,7 @@ class MultiUAVEnv(gym.Env):
         Args:
             actions: [n_agents, 2] in [-π/6, π/6]
         Returns:
-            observations: [n_agents, 30]
+            observations: [n_agents, 34]
             rewards: [n_agents]
             done: bool (episode terminates if any agent collides or all reach goals)
             info: dict
