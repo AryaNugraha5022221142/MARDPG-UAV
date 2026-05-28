@@ -24,10 +24,15 @@ class MetricsTracker:
         self.episode_lengths.append(length)
         
         n_agents = len(reached)
-        success = all(reached) and not collision
-        self.successes.append(success)
-        self.collisions.append(collision)
-        self.trapped.append(not success and not collision)
+        
+        # Calculate per-agent rates instead of all-or-nothing
+        success_ratio = sum(reached) / n_agents if n_agents > 0 else 0.0
+        self.successes.append(success_ratio)
+        self.collisions.append(collision) # Keeping overall collision rate for safety tracking
+
+        # Trapped means not reached and not collided
+        trapped_ratio = sum(1 for r, c in zip(reached, [collision]*n_agents) if not r and not c) / n_agents if n_agents > 0 else 0.0
+        self.trapped.append(trapped_ratio)
         
         # Path efficiency
         for i in range(n_agents):

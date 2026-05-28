@@ -224,11 +224,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # Logging
             if episode % 100 == 0 and episode > 0:
                 stats = metrics.get_stats()
+                current_noise = noise.get_sigma()
                 print(f"Episode {episode:5d} | "
                       f"AvgReward: {stats['avg_reward']:7.2f} | "
                       f"Success: {stats['success_rate']:.2%} | "
                       f"Collision: {stats['collision_rate']:.2%} | "
-                      f"Length: {stats['avg_episode_length']:5.1f}")
+                      f"Length: {stats['avg_episode_length']:5.1f} | "
+                      f"Noise: {current_noise:.3f}")
             
             # Save checkpoints
             if episode % 1000 == 0 and episode > 0:
