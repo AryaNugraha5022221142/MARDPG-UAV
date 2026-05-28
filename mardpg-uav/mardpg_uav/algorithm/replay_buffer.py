@@ -41,15 +41,19 @@ class EpisodeReplayBuffer:
         Sample batch of episode segments for BPTT.
         Returns tensors of shape (batch, seq_len, n_agents, dim)
         """
-        episodes = random.sample(self.buffer, min(batch_size, len(self.buffer)))
-        
         batch_obs = []
         batch_obs_next = []
         batch_actions = []
         batch_rewards = []
         batch_dones = []
         
-        for ep in episodes:
+        attempts = 0
+        max_attempts = batch_size * 20
+        
+        while len(batch_obs) < batch_size and attempts < max_attempts:
+            ep = random.choice(self.buffer)
+            attempts += 1
+            
             T = ep.length()
             if T < self.seq_len + 1:
                 continue
@@ -59,19 +63,13 @@ class EpisodeReplayBuffer:
             end = start + self.seq_len
             
             # Stack episode data
-            obs_seg = np.stack(ep.observations[start:end])      # (seq, n, obs)
-            obs_next_seg = np.stack(ep.observations[start+1:end+1]) # true next obs
-            act_seg = np.stack(ep.actions[start:end])           # (seq, n, act)
-            rew_seg = np.stack(ep.rewards[start:end])           # (seq, n)
-            done_seg = np.array(ep.agent_dones[start:end], dtype=bool) # (seq, n_agents)
+            batch_obs.append(np.stack(ep.observations[start:end]))
+            batch_obs_next.append(np.stack(ep.observations[start+1:end+1]))
+            batch_actions.append(np.stack(ep.actions[start:end]))
+            batch_rewards.append(np.stack(ep.rewards[start:end]))
+            batch_dones.append(np.array(ep.agent_dones[start:end], dtype=bool))
             
-            batch_obs.append(obs_seg)
-            batch_obs_next.append(obs_next_seg)
-            batch_actions.append(act_seg)
-            batch_rewards.append(rew_seg)
-            batch_dones.append(done_seg)
-        
-        if len(batch_obs) < batch_size // 4:
+        if len(batch_obs) < batch_size:
             return None
         
         # Convert to tensors

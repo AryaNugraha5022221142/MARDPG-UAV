@@ -20,6 +20,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     for i in range(n_agents):
         agent = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
+            obs_dim=env.obs_dim, action_dim=env.action_dim,
             hidden_dim=net_cfg['actor']['lstm_hidden'],
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],
@@ -65,18 +66,19 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
     
     # Plot obstacle
-    for obs_cfg in env_cfg['obstacles']:
-        ob_pos = obs_cfg['position']
-        ob_rad = obs_cfg['radius']
-        
-        # Gambar bola rintangan sederhana
-        u = np.linspace(0, 2 * np.pi, 20)
-        v = np.linspace(0, np.pi, 20)
-        x = ob_rad * np.outer(np.cos(u), np.sin(v)) + ob_pos[0]
-        y = ob_rad * np.outer(np.sin(u), np.sin(v)) + ob_pos[1]
-        z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
-        
-        ax.plot_wireframe(x, y, z, color='gray', alpha=0.3)
+    for ob in env.obstacles:
+        if ob.type == 'sphere':
+            ob_pos = ob.position
+            ob_rad = ob.size[0]
+            
+            # Gambar bola rintangan sederhana
+            u = np.linspace(0, 2 * np.pi, 20)
+            v = np.linspace(0, np.pi, 20)
+            x = ob_rad * np.outer(np.cos(u), np.sin(v)) + ob_pos[0]
+            y = ob_rad * np.outer(np.sin(u), np.sin(v)) + ob_pos[1]
+            z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
+            
+            ax.plot_wireframe(x, y, z, color='gray', alpha=0.3)
         
     for i in range(n_agents):
         c = colors[i % len(colors)]
@@ -95,9 +97,9 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
     ax.set_title(f'UAV Trajectories (Completed in {len(path_history)} steps)')
-    ax.set_xlim(0, env_cfg['arena_size'][0])
-    ax.set_ylim(0, env_cfg['arena_size'][1])
-    ax.set_zlim(0, env_cfg['arena_size'][2])
+    ax.set_xlim(0, env_cfg['env_size'][0])
+    ax.set_ylim(0, env_cfg['env_size'][1])
+    ax.set_zlim(0, env_cfg['env_size'][2])
     ax.legend()
     
     # Save the output

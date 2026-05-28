@@ -7,7 +7,8 @@ import numpy as np
 DELTA_MAX = (np.pi / 6) / 3   # ≈ 0.1745 rad/step — Eq.11
 
 class UAVDynamics:
-    def __init__(self, v=3.0, dt=0.1, max_altitude=60.0, min_altitude=0.0):
+    def __init__(self, v=3.0, dt=0.1, env_size=(50.0, 50.0, 60.0), max_altitude=60.0, min_altitude=0.0):
+        self.env_size = np.asarray(env_size, dtype=np.float32)
         self.v = v
         self.dt = dt
         self.max_altitude = max_altitude
@@ -25,7 +26,11 @@ class UAVDynamics:
         """
         # Rate limiting — Eq.10
         delta = np.clip(action_raw - action_prev_applied, -DELTA_MAX, DELTA_MAX)
-        action_applied = action_prev_applied + delta
+        action_applied = np.clip(
+            action_prev_applied + delta,
+            self.action_bounds[0],
+            self.action_bounds[1],
+        )
 
         x, y, z, theta, phi = state
         rho, tau = action_applied
@@ -34,6 +39,8 @@ class UAVDynamics:
         phi_next   = np.clip(phi + tau * self.dt, -np.pi/2, np.pi/2)  # Eq.5
         x_next = x + self.v * np.cos(theta_next) * np.cos(phi_next) * self.dt
         y_next = y + self.v * np.sin(theta_next) * np.cos(phi_next) * self.dt
+        x_next = np.clip(x_next, 0.0, self.env_size[0])
+        y_next = np.clip(y_next, 0.0, self.env_size[1])
         z_next = np.clip(z + self.v * np.sin(phi_next) * self.dt,
                          self.min_altitude, self.max_altitude)
 

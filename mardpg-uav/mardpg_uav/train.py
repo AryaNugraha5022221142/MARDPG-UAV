@@ -54,6 +54,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Share parameters in lower layers (Section 10.1)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
+    
+    shared_optimizer = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
         
     start_episode = 0
     if resume_dir:
@@ -103,8 +105,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     try:
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
-            # Sequence length curriculum (ramp from 20 to 50 over 3000 episodes)
-            buffer.seq_len = int(20 + min(30, (episode / 3000.0) * 30))
             
             obs = env.reset()
             
@@ -168,10 +168,26 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 if batch is not None:
                     batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = batch
                     
+                    actor_losses = []
                     for i, agent in enumerate(agents):
-                        c_loss, a_loss = agent.update(
+                        agent.actor_optimizer.zero_grad()
+                        c_loss_item, a_loss = agent.update(
                             batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones, agents
                         )
+                        actor_losses.append(a_loss)
+                    
+                    shared_optimizer.zero_grad()
+                    shared_actor_loss = sum(actor_losses) / n_agents
+                    shared_actor_loss.backward()
+                    
+                    torch.nn.utils.clip_grad_norm_(agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
+                    shared_optimizer.step()
+                    
+                    for agent in agents:
+                        torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), algo_cfg['gradient_clip'])
+                        agent.actor_optimizer.step()
+                        agent._soft_update(agent.actor_target, agent.actor)
+                        agent._soft_update(agent.critic_target, agent.critic)
             
             # Logging
             if episode % 100 == 0 and episode > 0:

@@ -13,7 +13,7 @@ from ..networks.critic import AttentionCritic
 
 
 class MARDPGAgent:
-    def __init__(self, agent_id: int, n_agents: int, obs_dim: int = 36,
+    def __init__(self, agent_id: int, n_agents: int, obs_dim: int = 34,
                  action_dim: int = 2, hidden_dim: int = 128,
                  lr_actor: float = 0.0001, lr_critic: float = 0.0003,
                  tau: float = 0.01, gamma: float = 0.99,
@@ -28,12 +28,15 @@ class MARDPGAgent:
         self.device = torch.device(device)
         
         # Shared feature extractor (Section 10.1)
+        import copy
         self.shared_extractor = SharedFeatureExtractor().to(self.device)
+        self.target_shared_extractor = copy.deepcopy(self.shared_extractor).to(self.device)
         
         # Actor network (decentralized execution)
         self.actor = Actor(self.shared_extractor, hidden_dim).to(self.device)
-        self.actor_target = Actor(self.shared_extractor, hidden_dim).to(self.device)
-        self.actor_optimizer = optim.Adam(self.actor.parameters(), lr=lr_actor)
+        self.actor_target = Actor(self.target_shared_extractor, hidden_dim).to(self.device)
+        private_actor_params = list(self.actor.lstm.parameters()) + list(self.actor.fc_out.parameters())
+        self.actor_optimizer = optim.Adam(private_actor_params, lr=lr_actor)
         
         # Critic network (centralized training)
         self.critic = AttentionCritic(n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim).to(self.device)
@@ -179,7 +182,9 @@ class MARDPGAgent:
                 act_i = agent.actor.tanh(agent.actor.fc_out(h_i)) * agent.actor.action_bound
                 actor_actions.append(act_i.view(batch_size * seq_len, -1))
             else:
-                actor_actions.append(actions[:, :, i, :].detach().reshape(batch_size * seq_len, -1))
+                h_i = agent_hiddens[i]
+                act_i = agent.actor.tanh(agent.actor.fc_out(h_i)) * agent.actor.action_bound
+                actor_actions.append(act_i.detach().view(batch_size * seq_len, -1))
                 
         actor_act_all = torch.stack(actor_actions, dim=1)
         
@@ -190,23 +195,12 @@ class MARDPGAgent:
         q_value = q_value_flat.view(batch_size, seq_len)
         
         # Policy gradient: maximize Masked Q
-        actor_loss = -(q_value * mask).sum() / (mask.sum() + eps) / self.n_agents
-        
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        nn.utils.clip_grad_norm_(self.actor.parameters(), self.gradient_clip)
-        self.actor_optimizer.step()
+        actor_loss = -(q_value * mask).sum() / (mask.sum() + eps)
         
         for p in self.critic.parameters():
             p.requires_grad = True
             
-        # ==========================================
-        # 4. Soft Update Target Networks
-        # ==========================================
-        self._soft_update(self.actor_target, self.actor)
-        self._soft_update(self.critic_target, self.critic)
-        
-        return critic_loss.item(), actor_loss.item()
+        return critic_loss.item(), actor_loss
     
     def _soft_update(self, target: nn.Module, source: nn.Module):
         for target_param, param in zip(target.parameters(), source.parameters()):
@@ -216,11 +210,9 @@ class MARDPGAgent:
         target.load_state_dict(source.state_dict())
     
     def share_parameters(self, other_agent: 'MARDPGAgent'):
-        """Share feature extractor — §14.2. Rebuilds optimiser to track correct params."""
+        """Share feature extractor — §14.2."""
         import copy
         self.shared_extractor = other_agent.shared_extractor
         self.actor.shared = self.shared_extractor
         self.actor_target.shared = copy.deepcopy(self.shared_extractor)
-        # Rebuild optimiser so it tracks the now-shared extractor parameters
-        self.actor_optimizer = optim.Adam(self.actor.parameters(),
-                                          lr=self.actor_optimizer.defaults['lr'])
+        # Note: shared_extractor parameters will be optimized externally.

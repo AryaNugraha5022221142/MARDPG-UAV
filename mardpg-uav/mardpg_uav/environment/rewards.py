@@ -42,12 +42,12 @@ class RewardFunction:
         # Unified d_all_min — Eq.40: min(obstacle_surface_dist, inter_agent_dist) - Rc
         d_obs_raw  = float(np.min(rangefinder)) - self.collision_radius     # lidar proxy
         d_agent    = self._compute_d_sep(position, other_positions)          # inter-UAV - 2Rc
-        d_all_min  = max(0.0, min(d_obs_raw, d_agent + self.collision_radius))   # unified
+        d_all_min  = min(d_obs_raw, d_agent + self.collision_radius)   # unified
 
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
 
         # Separate inter-agent separation — Eq.44 (agents only)
-        d_sep = max(0.0, self._compute_d_sep(position, other_positions))
+        d_sep = self._compute_d_sep(position, other_positions)
         r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
@@ -58,9 +58,9 @@ class RewardFunction:
 
         return (self.delta[0] * r_trans +
                 self.delta[1] * r_col +
-                self.delta[2] * r_sep +
-                self.delta[3] * r_free +
-                self.delta[4] * r_step)
+                self.delta[2] * r_free +
+                self.delta[3] * r_step +
+                self.delta[4] * r_sep)
 
     def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
         min_dist = float('inf')
@@ -68,4 +68,4 @@ class RewardFunction:
             dist = np.linalg.norm(position - other_pos)
             if dist < min_dist:
                 min_dist = dist
-        return max(0.0, min_dist - self.inter_uav_min)
+        return min_dist - self.inter_uav_min

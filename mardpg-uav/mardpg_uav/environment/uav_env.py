@@ -100,6 +100,9 @@ class MultiUAVEnv(gym.Env):
         
         # Update dynamics
         for i in range(self.n_agents):
+            if self.agent_done[i]:
+                continue
+                
             next_state, applied = self.dynamics.step(
                 self.agents_state[i], actions[i], self.prev_applied_actions[i])
             self.agents_state[i] = next_state
@@ -110,6 +113,11 @@ class MultiUAVEnv(gym.Env):
         positions = [self.agents_state[i, :3] for i in range(self.n_agents)]
         
         for i in range(self.n_agents):
+            if self.agent_done[i]:
+                obs_list.append(self._get_single_observation(i))
+                rewards[i] = 0.0
+                continue
+                
             pos = self.agents_state[i, :3]
             theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
             
@@ -131,7 +139,7 @@ class MultiUAVEnv(gym.Env):
             )
             
             # Check collision
-            if self._check_collision(i, positions):
+            if self._out_of_bounds(pos) or self._check_collision(i, positions):
                 collisions[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # -15
             
@@ -162,21 +170,21 @@ class MultiUAVEnv(gym.Env):
         
         return np.array(obs_list), rewards, episode_done, info
 
+    def _get_single_observation(self, i: int) -> np.ndarray:
+        pos = self.agents_state[i, :3]
+        theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
+        rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
+        goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
+        sin_cos_att = np.array([np.sin(theta), np.cos(theta),
+                                np.sin(phi),   np.cos(phi)], dtype=np.float32)
+        prev_act_norm = self.prev_applied_actions[i] / (np.pi / 6)
+        return np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm.flatten(), goal_sensing])
+
     def _get_observations(self) -> np.ndarray:
         """Get current observations for all agents."""
         obs_list = []
         for i in range(self.n_agents):
-            pos = self.agents_state[i, :3]
-            theta, phi = self.agents_state[i, 3], self.agents_state[i, 4]
-            rangefinder_raw, rangefinder_norm = self.rangefinder.scan(pos, theta, phi, self.obstacles)
-            goal_sensing = self.goal_sensor.compute(pos, theta, phi, self.goals[i])
-            
-            sin_cos_att = np.array([np.sin(theta), np.cos(theta),
-                                    np.sin(phi),   np.cos(phi)], dtype=np.float32)
-            prev_act_norm = self.prev_applied_actions[i] / (np.pi / 6)
-            
-            obs = np.concatenate([sin_cos_att, prev_act_norm, rangefinder_norm.flatten(), goal_sensing])
-            obs_list.append(obs)
+            obs_list.append(self._get_single_observation(i))
         return np.array(obs_list)
 
     def _sample_free_position(self) -> np.ndarray:
@@ -202,6 +210,13 @@ class MultiUAVEnv(gym.Env):
                 if np.all(np.abs(pos - obs.position) < obs.size):
                     return True
         return False
+
+    def _out_of_bounds(self, pos: np.ndarray) -> bool:
+        return (
+            pos[0] <= 0.0 or pos[0] >= self.cfg['env_size'][0] or
+            pos[1] <= 0.0 or pos[1] >= self.cfg['env_size'][1] or
+            pos[2] <= self.cfg.get('min_altitude', 0.0) or pos[2] >= self.cfg['max_altitude']
+        )
 
     def _check_collision(self, agent_id: int, positions: List[np.ndarray]) -> bool:
         pos = positions[agent_id]
