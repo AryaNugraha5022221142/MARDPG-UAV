@@ -56,18 +56,41 @@ class EpisodeReplayBuffer:
             
             T = ep.length()
             if T < self.seq_len + 1:
-                continue
-            
-            # Random starting point
-            start = random.randint(0, T - self.seq_len - 1)
-            end = start + self.seq_len
-            
-            # Stack episode data
-            batch_obs.append(np.stack(ep.observations[start:end]))
-            batch_obs_next.append(np.stack(ep.observations[start+1:end+1]))
-            batch_actions.append(np.stack(ep.actions[start:end]))
-            batch_rewards.append(np.stack(ep.rewards[start:end]))
-            batch_dones.append(np.array(ep.agent_dones[start:end], dtype=bool))
+                # Zero padding for short episodes
+                pad_len = self.seq_len + 1 - T
+                n_agents = len(ep.agent_dones[0])
+                obs_shape = ep.observations[0].shape
+                act_shape = ep.actions[0].shape
+                
+                obs_pad = [np.zeros(obs_shape, dtype=np.float32) for _ in range(pad_len)]
+                act_pad = [np.zeros(act_shape, dtype=np.float32) for _ in range(pad_len)]
+                rew_pad = [np.zeros(n_agents, dtype=np.float32) for _ in range(pad_len)]
+                done_pad = [np.ones(n_agents, dtype=bool) for _ in range(pad_len)] # Padding states act as absorbing terminal states
+                
+                ep_obs = ep.observations + obs_pad
+                ep_act = ep.actions + act_pad
+                ep_rew = ep.rewards + rew_pad
+                ep_dones = ep.agent_dones + done_pad
+                
+                start = 0
+                end = self.seq_len
+                
+                batch_obs.append(np.stack(ep_obs[start:end]))
+                batch_obs_next.append(np.stack(ep_obs[start+1:end+1]))
+                batch_actions.append(np.stack(ep_act[start:end]))
+                batch_rewards.append(np.stack(ep_rew[start:end]))
+                batch_dones.append(np.array(ep_dones[start:end], dtype=bool))
+            else:
+                # Random starting point
+                start = random.randint(0, T - self.seq_len - 1)
+                end = start + self.seq_len
+                
+                # Stack episode data
+                batch_obs.append(np.stack(ep.observations[start:end]))
+                batch_obs_next.append(np.stack(ep.observations[start+1:end+1]))
+                batch_actions.append(np.stack(ep.actions[start:end]))
+                batch_rewards.append(np.stack(ep.rewards[start:end]))
+                batch_dones.append(np.array(ep.agent_dones[start:end], dtype=bool))
             
         if len(batch_obs) < batch_size:
             return None

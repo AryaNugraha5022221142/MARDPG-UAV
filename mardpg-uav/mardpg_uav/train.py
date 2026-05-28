@@ -10,7 +10,7 @@ from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
 from .algorithm.replay_buffer import EpisodeReplayBuffer, Episode
-from .algorithm.noise import OUNoise
+from .algorithm.noise import GaussianNoise
 from .utils.metrics import MetricsTracker
 from tqdm import tqdm
 
@@ -103,7 +103,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len']
     )
-    noise = OUNoise(
+    noise = GaussianNoise(
         n_agents=n_agents,
         action_dim=env.action_dim,
         kappa=algo_cfg['exploration']['ou_kappa'],
@@ -154,13 +154,20 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 global_step += 1
                 
                 # Store transition
-                episode_data.append(obs.copy(), info['applied_actions'].copy(), rewards.copy(), info['agent_done'])
+                episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
                 
                 obs = next_obs
                 
                 if done:
+                    # Append terminal state to allow BPTT sampling of the final transition
+                    episode_data.append(
+                        obs.copy(), 
+                        np.zeros_like(actions), 
+                        np.zeros_like(rewards), 
+                        np.ones_like(info['agent_done'], dtype=bool)
+                    )
                     break
             
             # Store episode
