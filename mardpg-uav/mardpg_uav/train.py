@@ -234,8 +234,20 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         stats = metrics.get_stats()
         print(stats)
         import json
+        import numpy as np
+        
+        # Convert numpy types to native Python types for JSON serialization
+        serializable_stats = {}
+        for k, v in stats.items():
+            if isinstance(v, (np.floating, float)):
+                serializable_stats[k] = float(v)
+            elif isinstance(v, (np.integer, int)):
+                serializable_stats[k] = int(v)
+            else:
+                serializable_stats[k] = v
+                
         with open(f"{save_dir}/interrupted_stats.json", 'w') as f:
-            json.dump(stats, f, indent=4)
+            json.dump(serializable_stats, f, indent=4)
         print(f"Saved stats to {save_dir}/interrupted_stats.json")
         return agents
     
@@ -243,9 +255,21 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     stats = metrics.get_stats()
     print(stats)
     import json
+    import numpy as np
+    
+    # Convert numpy types to native Python types for JSON serialization
+    serializable_stats = {}
+    for k, v in stats.items():
+        if isinstance(v, (np.floating, float)):
+            serializable_stats[k] = float(v)
+        elif isinstance(v, (np.integer, int)):
+            serializable_stats[k] = int(v)
+        else:
+            serializable_stats[k] = v
+            
     os.makedirs("checkpoints", exist_ok=True)
     with open("checkpoints/final_stats.json", 'w') as f:
-        json.dump(stats, f, indent=4)
+        json.dump(serializable_stats, f, indent=4)
     print("Saved stats to checkpoints/final_stats.json")
     return agents
 
