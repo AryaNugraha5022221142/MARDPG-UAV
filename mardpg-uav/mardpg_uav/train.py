@@ -106,7 +106,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     noise = GaussianNoise(
         n_agents=n_agents,
         action_dim=env.action_dim,
-        kappa=algo_cfg['exploration']['ou_kappa'],
         sigma0=algo_cfg['exploration']['noise_std_start'],
         sigma_inf=algo_cfg['exploration']['noise_std_end'],
         anneal_steps=algo_cfg['exploration']['noise_anneal_steps']

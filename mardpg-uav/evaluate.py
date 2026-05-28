@@ -34,7 +34,16 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
             device=device
         )
         ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
-        agent.actor.load_state_dict(ckpt['actor'])
+        if 'actor_private' in ckpt:
+            if i == 0:
+                try:
+                    shared_ckpt = torch.load(f"{checkpoint_dir}/shared_actor.pt", map_location=device)
+                    agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
+                except Exception as e:
+                    print(f"Warning: Could not load shared actor: {e}")
+            agent.actor.load_state_dict(ckpt['actor_private'], strict=False)
+        else:
+            agent.actor.load_state_dict(ckpt['actor'])
         agent.critic.load_state_dict(ckpt['critic'])
         agent._hard_update(agent.actor_target, agent.actor)
         agent._hard_update(agent.critic_target, agent.critic)

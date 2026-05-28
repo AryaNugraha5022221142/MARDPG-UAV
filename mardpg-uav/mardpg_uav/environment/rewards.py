@@ -49,7 +49,9 @@ class RewardFunction:
 
         # Clamp to [0, ∞): penalty is maximised at contact, not inside
         # PDF §9.4 range analysis assumes d_all_min >= 0
-        d_all_min = max(0.0, min(d_obs_surface, d_agent_center) - self.collision_radius)
+        d_obs_surface_adj = d_obs_surface - self.collision_radius
+        d_agent_surface = d_agent_center - self.inter_uav_min
+        d_all_min = max(0.0, min(d_obs_surface_adj, d_agent_surface))
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
 
         # Clamp d_sep similarly — PDF Eq.44

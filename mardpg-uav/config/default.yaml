@@ -46,7 +46,6 @@ algorithm:
   n_episodes: 15000
 
   exploration:
-    ou_kappa: 0.15
     noise_std_start: 0.25
     noise_std_end: 0.05
     noise_anneal_steps: 3000000
