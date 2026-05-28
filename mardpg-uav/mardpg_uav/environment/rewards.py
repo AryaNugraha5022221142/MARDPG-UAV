@@ -39,12 +39,16 @@ class RewardFunction:
         r_trans = self.alpha * (prev_dist - current_dist)
         self.prev_distances[agent_id] = current_dist
 
-        # Eq (3): Collision penalty (obstacles) and Separation penalty (UAVs)
-        d_obs = self._compute_d_obs(position, obstacles)
-        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_obs)
-        
-        d_sep = self._compute_d_sep(position, other_positions)
-        r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)
+        # Unified d_all_min — Eq.40: min(obstacle_surface_dist, inter_agent_dist) - Rc
+        d_obs_raw  = float(np.min(rangefinder)) - self.collision_radius     # lidar proxy
+        d_agent    = self._compute_d_sep(position, other_positions)          # inter-UAV - 2Rc
+        d_all_min  = max(0.0, min(d_obs_raw, d_agent + self.collision_radius))   # unified
+
+        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
+
+        # Separate inter-agent separation — Eq.44 (agents only)
+        d_sep = max(0.0, self._compute_d_sep(position, other_positions))
+        r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
         r_free = self.r_free if np.all(rangefinder >= 9.9) else 0.0
@@ -57,10 +61,6 @@ class RewardFunction:
                 self.delta[2] * r_sep +
                 self.delta[3] * r_free +
                 self.delta[4] * r_step)
-
-    def _compute_d_obs(self, position: np.ndarray, obstacles: List) -> float:
-        # Simplified distance proxy to obstacles
-        return 0.0  # (Simplification since ray computing is better suited elsewhere, just returning 0 so penalty depends on rays or skip it. Wait, previously it computed min_dist)
 
     def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
         min_dist = float('inf')

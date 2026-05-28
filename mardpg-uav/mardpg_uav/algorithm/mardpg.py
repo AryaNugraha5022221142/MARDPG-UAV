@@ -212,7 +212,10 @@ class MARDPGAgent:
         target.load_state_dict(source.state_dict())
     
     def share_parameters(self, other_agent: 'MARDPGAgent'):
-        """Share lower-layer parameters (Section 10.1)."""
+        """Share feature extractor — §14.2. Rebuilds optimiser to track correct params."""
         self.shared_extractor = other_agent.shared_extractor
         self.actor.shared = self.shared_extractor
         self.actor_target.shared = self.shared_extractor
+        # Rebuild optimiser so it tracks the now-shared extractor parameters
+        self.actor_optimizer = optim.Adam(self.actor.parameters(),
+                                          lr=self.actor_optimizer.defaults['lr'])

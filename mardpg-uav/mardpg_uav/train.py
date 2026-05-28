@@ -105,7 +105,7 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
             global_step += 1
             
             # Store transition
-            episode_data.append(obs.copy(), actions.copy(), rewards.copy(), done)
+            episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'])
             episode_reward += sum(rewards)
             path_history.append(env.agents_state[:, :3].copy())
             
