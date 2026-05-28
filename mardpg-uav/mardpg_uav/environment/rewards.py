@@ -65,9 +65,9 @@ class RewardFunction:
 
         return (self.delta[0] * r_trans +
                 self.delta[1] * r_col +
-                self.delta[2] * r_free +
-                self.delta[3] * r_step +
-                self.delta[4] * r_sep)
+                self.delta[2] * r_sep +
+                self.delta[3] * r_free +
+                self.delta[4] * r_step)
 
     def _surface_distance(self, position, obs):
         p = position

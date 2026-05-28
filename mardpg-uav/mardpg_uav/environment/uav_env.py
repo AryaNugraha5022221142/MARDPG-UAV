@@ -58,7 +58,7 @@ class MultiUAVEnv(gym.Env):
               obstacle_density: Optional[float] = None) -> np.ndarray:
         cfg = self.cfg
         density = obstacle_density if obstacle_density is not None else cfg['obstacle_density']
-        scene = scene_type if scene_type is not None else np.random.choice(cfg['scene_types'])
+        scene = scene_type if scene_type is not None else self.scene_gen.rng.choice(cfg['scene_types'])
         
         # Generate obstacles
         self.obstacles = self.scene_gen.generate(scene, density, self.n_agents)
@@ -75,8 +75,8 @@ class MultiUAVEnv(gym.Env):
             self.agents_state[i, :3] = self._sample_free_position()
             self.goals[i] = self._sample_free_position()
             # Random initial orientation
-            self.agents_state[i, 3] = np.random.uniform(-np.pi, np.pi)  # theta
-            self.agents_state[i, 4] = np.random.uniform(-np.pi/4, np.pi/4)  # phi
+            self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
+            self.agents_state[i, 4] = self.scene_gen.rng.uniform(-np.pi/4, np.pi/4)  # phi
         
         # Initialize reward function distances
         dists = {i: np.linalg.norm(self.agents_state[i, :3] - self.goals[i])
@@ -214,7 +214,7 @@ class MultiUAVEnv(gym.Env):
         for _ in range(max_attempts):
             # Use a margin from all walls to avoid immediate boundary collision
             margin = 3.0
-            pos = np.random.uniform(
+            pos = self.scene_gen.rng.uniform(
                 [margin, margin, 3.0],
                 [env[0] - margin, env[1] - margin, env[2] - 3.0]
             )
@@ -225,9 +225,9 @@ class MultiUAVEnv(gym.Env):
         # so multiple agents don't share the fallback and immediately collide
         for attempt in range(50):
             pos = np.array([
-                np.random.uniform(5.0, env[0] - 5.0),
-                np.random.uniform(5.0, env[1] - 5.0),
-                np.random.uniform(5.0, env[2] - 5.0),
+                self.scene_gen.rng.uniform(5.0, env[0] - 5.0),
+                self.scene_gen.rng.uniform(5.0, env[1] - 5.0),
+                self.scene_gen.rng.uniform(5.0, env[2] - 5.0),
             ], dtype=np.float32)
             if not self._inside_obstacles(pos):
                 return pos
@@ -236,7 +236,9 @@ class MultiUAVEnv(gym.Env):
         import warnings
         warnings.warn(f"Could not find free position after all attempts. "
                       f"Arena may be over-saturated (density={self.cfg['obstacle_density']}).")
-        return np.array([env[0]/2, env[1]/2, env[2]/2], dtype=np.float32)
+        return self.scene_gen.rng.uniform(
+            [5.0, 5.0, 5.0], env - 5.0
+        ).astype(np.float32)
 
     def _inside_obstacles(self, pos: np.ndarray) -> bool:
         for obs in self.obstacles:

@@ -54,10 +54,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Share parameters in lower layers (Section 10.1)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
-        
-    # Unify target extractors — all agents point to agents[0]'s target
-    for i in range(1, n_agents):
-        agents[i].actor_target.shared = agents[0].actor_target.shared
     
     shared_optimizer = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
         
@@ -67,10 +63,27 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         for i, agent in enumerate(agents):
             try:
                 checkpoint = torch.load(f"{resume_dir}/agent_{i}.pt", map_location=device, weights_only=True)
-            except TypeError:
-                # Older torch versions might not support weights_only flag
+            except Exception:
+                # Older torch versions might not support weights_only flag or might be dictionary
                 checkpoint = torch.load(f"{resume_dir}/agent_{i}.pt", map_location=device)
-            agent.actor.load_state_dict(checkpoint['actor'])
+            
+            # Handle new save format if present
+            if 'actor' in checkpoint:
+                if i == 0:
+                    agent.actor.load_state_dict(checkpoint['actor'])
+                else:
+                    private = {k: v for k, v in checkpoint['actor'].items()
+                               if k.startswith(('lstm.', 'fc_out.'))}
+                    agent.actor.load_state_dict(private, strict=False)
+            elif 'actor_private' in checkpoint:
+                if i == 0:
+                    try:
+                        shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
+                        agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
+                    except Exception:
+                        pass
+                agent.actor.load_state_dict(checkpoint['actor_private'], strict=False)
+                
             agent.critic.load_state_dict(checkpoint['critic'])
             # Soft update target networks to match exactly
             for target_param, param in zip(agent.actor_target.parameters(), agent.actor.parameters()):
@@ -221,9 +234,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             if episode % 1000 == 0 and episode > 0:
                 save_dir = f"checkpoints/episode_{episode}"
                 os.makedirs(save_dir, exist_ok=True)
+                torch.save({'shared_actor': agents[0].shared_extractor.state_dict()},
+                           f"{save_dir}/shared_actor.pt")
                 for i, agent in enumerate(agents):
+                    private = {k: v for k, v in agent.actor.state_dict().items()
+                               if k.startswith(('lstm.', 'fc_out.'))}
                     torch.save({
-                        'actor': agent.actor.state_dict(),
+                        'actor_private': private,
                         'critic': agent.critic.state_dict(),
                     }, f"{save_dir}/agent_{i}.pt")
                     
@@ -242,9 +259,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         save_dir = f"checkpoints/interrupted_episode_{episode}"
         os.makedirs(save_dir, exist_ok=True)
         print(f"Saving emergency checkpoints to {save_dir} ...")
+        torch.save({'shared_actor': agents[0].shared_extractor.state_dict()},
+                   f"{save_dir}/shared_actor.pt")
         for i, agent in enumerate(agents):
+            private = {k: v for k, v in agent.actor.state_dict().items()
+                       if k.startswith(('lstm.', 'fc_out.'))}
             torch.save({
-                'actor': agent.actor.state_dict(),
+                'actor_private': private,
                 'critic': agent.critic.state_dict(),
             }, f"{save_dir}/agent_{i}.pt")
         

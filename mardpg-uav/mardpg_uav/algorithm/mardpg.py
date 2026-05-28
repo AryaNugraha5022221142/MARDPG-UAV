@@ -46,6 +46,7 @@ class MARDPGAgent:
         # Initialize targets
         self._hard_update(self.actor_target, self.actor)
         self._hard_update(self.critic_target, self.critic)
+        self.critic_target.eval()   # freeze dropout / batchnorm for stable targets
         
         # Hidden states (reset per episode)
         self.actor_hidden = None
@@ -218,5 +219,7 @@ class MARDPGAgent:
         import copy
         self.shared_extractor = other_agent.shared_extractor
         self.actor.shared = self.shared_extractor
-        self.actor_target.shared = copy.deepcopy(self.shared_extractor)
+        self.actor_target.shared = copy.deepcopy(other_agent.shared_extractor)
+        if hasattr(self, 'target_shared_extractor'):
+            delattr(self, 'target_shared_extractor')
         # Note: shared_extractor parameters will be optimized externally.
