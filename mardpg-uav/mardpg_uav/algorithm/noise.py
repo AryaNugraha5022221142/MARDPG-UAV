@@ -21,9 +21,10 @@ class OUNoise:
         self.epsilon[:] = 0.0   # reset OU state per episode
 
     def sample(self, dt=0.1):
-        """Update and return noise for all agents — OU discrete update."""
-        sigma_t = self.sigma_inf + (self.sigma0 - self.sigma_inf) * \
-                  np.exp(-self.total_steps / self.anneal_steps)          # Eq.19
+        """Update and return noise for all agents — OU discrete update with Sigmoid decay."""
+        # Sigmoid decay: scale = 1 / (1 + exp((total_steps - anneal_steps/2) / (anneal_steps/10)))
+        decay = 1.0 / (1.0 + np.exp((self.total_steps - self.anneal_steps / 2) / (self.anneal_steps / 10.0)))
+        sigma_t = self.sigma_inf + (self.sigma0 - self.sigma_inf) * decay
         xi = np.random.randn(self.n, self.dim).astype(np.float32)
         self.epsilon = (self.epsilon * (1 - self.kappa * dt)
                         + sigma_t * np.sqrt(dt) * xi)                   # OU
