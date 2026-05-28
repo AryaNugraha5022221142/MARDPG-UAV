@@ -28,8 +28,8 @@ class RewardFunction:
         self.prev_distances = {i: distances[i] for i in agent_ids}
 
     def compute(self, agent_id: int, position: np.ndarray, goal: np.ndarray,
-                rangefinder: np.ndarray, other_positions: List[np.ndarray],
-                obstacles: List) -> float:
+                rangefinder_raw: np.ndarray, rangefinder_norm: np.ndarray,
+                other_positions: List[np.ndarray], obstacles: List) -> float:
         """
         Eq (4): r = δ1*r_trans + δ2*r_col + δ3*r_sep + δ4*r_free + δ5*r_step
         """
@@ -40,18 +40,20 @@ class RewardFunction:
         self.prev_distances[agent_id] = current_dist
 
         # Unified d_all_min — Eq.40: min(obstacle_surface_dist, inter_agent_dist) - Rc
-        d_obs_raw  = float(np.min(rangefinder)) - self.collision_radius     # lidar proxy
-        d_agent    = self._compute_d_sep(position, other_positions)          # inter-UAV - 2Rc
-        d_all_min  = min(d_obs_raw, d_agent + self.collision_radius)   # unified
+        d_obs_surface = self._min_obstacle_surface_distance(position, obstacles)
+        d_agent_center = min(
+            (np.linalg.norm(position - other) for other in other_positions),
+            default=float('inf')
+        )
 
+        d_all_min = min(d_obs_surface, d_agent_center) - self.collision_radius
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
 
-        # Separate inter-agent separation — Eq.44 (agents only)
-        d_sep = self._compute_d_sep(position, other_positions)
+        d_sep = d_agent_center - self.inter_uav_min
         r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
-        r_free = self.r_free if np.all(rangefinder >= 9.5) else 0.0
+        r_free = self.r_free if np.min(rangefinder_norm) >= 0.95 else 0.0
 
         # Step penalty
         r_step = self.r_step
@@ -61,6 +63,32 @@ class RewardFunction:
                 self.delta[2] * r_free +
                 self.delta[3] * r_step +
                 self.delta[4] * r_sep)
+
+    def _surface_distance(self, position, obs):
+        p = position
+        c = obs.position
+
+        if obs.type == 'sphere':
+            return np.linalg.norm(p - c) - obs.size[0]
+
+        if obs.type == 'cylinder':
+            r, h = obs.size
+            q = np.array([
+                np.linalg.norm(p[:2] - c[:2]) - r,
+                abs(p[2] - c[2]) - h / 2.0
+            ])
+            return np.linalg.norm(np.maximum(q, 0.0)) + min(max(q[0], q[1]), 0.0)
+
+        if obs.type == 'box':
+            q = np.abs(p - c) - obs.size
+            return np.linalg.norm(np.maximum(q, 0.0)) + min(np.max(q), 0.0)
+
+        return float('inf')
+
+    def _min_obstacle_surface_distance(self, position, obstacles):
+        if not obstacles:
+            return float('inf')
+        return min(self._surface_distance(position, obs) for obs in obstacles)
 
     def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
         min_dist = float('inf')

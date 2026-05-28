@@ -184,7 +184,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     shared_optimizer.step()
                     
                     for agent in agents:
-                        torch.nn.utils.clip_grad_norm_(agent.actor.parameters(), algo_cfg['gradient_clip'])
+                        torch.nn.utils.clip_grad_norm_(agent.private_actor_params, algo_cfg['gradient_clip'])
                         agent.actor_optimizer.step()
                         agent._soft_update(agent.actor_target, agent.actor)
                         agent._soft_update(agent.critic_target, agent.critic)

@@ -35,8 +35,8 @@ class MARDPGAgent:
         # Actor network (decentralized execution)
         self.actor = Actor(self.shared_extractor, hidden_dim).to(self.device)
         self.actor_target = Actor(self.target_shared_extractor, hidden_dim).to(self.device)
-        private_actor_params = list(self.actor.lstm.parameters()) + list(self.actor.fc_out.parameters())
-        self.actor_optimizer = optim.Adam(private_actor_params, lr=lr_actor)
+        self.private_actor_params = list(self.actor.lstm.parameters()) + list(self.actor.fc_out.parameters())
+        self.actor_optimizer = optim.Adam(self.private_actor_params, lr=lr_actor)
         
         # Critic network (centralized training)
         self.critic = AttentionCritic(n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim).to(self.device)

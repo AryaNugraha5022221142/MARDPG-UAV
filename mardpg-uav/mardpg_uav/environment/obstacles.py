@@ -77,19 +77,24 @@ class SceneGenerator:
 
     def _circular_rings(self, density: float) -> List[Obstacle]:
         obstacles = []
-        n_rings = int(density * 20) + 1
-        for _ in range(n_rings):
+        target_volume = density * self._volume()
+        current_volume = 0.0
+
+        while current_volume < target_volume:
             center = self.rng.uniform([5, 5, 5], self.env_size - 5)
             major_r = self.rng.uniform(3.0, 8.0)
             tube_r = self.rng.uniform(0.5, 1.5)
-            # Approximate as collection of spheres along ring
             n_spheres = max(8, int(2 * np.pi * major_r / tube_r))
+
             for i in range(n_spheres):
                 angle = 2 * np.pi * i / n_spheres
                 pos = center + np.array([
                     major_r * np.cos(angle),
                     major_r * np.sin(angle),
-                    0
+                    0.0
                 ])
                 obstacles.append(Obstacle('sphere', pos, np.array([tube_r])))
+
+            current_volume += n_spheres * (4.0 / 3.0) * np.pi * tube_r ** 3
+
         return obstacles

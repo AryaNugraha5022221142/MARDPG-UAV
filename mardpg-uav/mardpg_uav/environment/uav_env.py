@@ -21,6 +21,7 @@ class MultiUAVEnv(gym.Env):
         self.dynamics = UAVDynamics(
             v=config['uav_speed'],
             dt=config['dt'],
+            env_size=config['env_size'],
             max_altitude=config['max_altitude'],
             min_altitude=config.get('min_altitude', 0.0)
         )
@@ -67,6 +68,8 @@ class MultiUAVEnv(gym.Env):
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
         self.prev_applied_actions = np.zeros((self.n_agents, 2), dtype=np.float32)
         self.agent_done = np.zeros(self.n_agents, dtype=bool)
+        self.agent_reached = np.zeros(self.n_agents, dtype=bool)
+        self.agent_collided = np.zeros(self.n_agents, dtype=bool)
         
         for i in range(self.n_agents):
             self.agents_state[i, :3] = self._sample_free_position()
@@ -135,7 +138,7 @@ class MultiUAVEnv(gym.Env):
             # Reward
             other_pos = [positions[j] for j in range(self.n_agents) if j != i]
             rewards[i] = self.reward_fn.compute(
-                i, pos, self.goals[i], rangefinder_raw, other_pos, self.obstacles
+                i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles
             )
             
             # Check collision
@@ -150,9 +153,12 @@ class MultiUAVEnv(gym.Env):
         
         self.steps += 1
         
+        self.agent_reached |= reached
+        self.agent_collided |= collisions
+        
         # Episode termination
         for i in range(self.n_agents):
-            self.agent_done[i] = self.agent_done[i] or collisions[i] or reached[i]
+            self.agent_done[i] = self.agent_done[i] or self.agent_collided[i] or self.agent_reached[i]
             
         timeout = self.steps >= self.cfg['max_steps_per_episode']
         episode_done = bool(np.all(self.agent_done)) or timeout
@@ -160,8 +166,10 @@ class MultiUAVEnv(gym.Env):
         applied_actions = self.prev_applied_actions.copy()
         
         info = {
-            'collisions': collisions,
-            'reached': reached,
+            'collisions': self.agent_collided.copy(),
+            'reached': self.agent_reached.copy(),
+            'step_collisions': collisions.copy(),
+            'step_reached': reached.copy(),
             'timeout': timeout,
             'steps': self.steps,
             'agent_done': self.agent_done.copy(),
@@ -222,17 +230,8 @@ class MultiUAVEnv(gym.Env):
         pos = positions[agent_id]
         # Obstacle collision
         for obs in self.obstacles:
-            if obs.type == 'sphere':
-                if np.linalg.norm(pos - obs.position) < obs.size[0] + self.cfg['collision_radius']:
-                    return True
-            elif obs.type == 'cylinder':
-                d_xy = np.linalg.norm(pos[:2] - obs.position[:2])
-                if d_xy < obs.size[0] + self.cfg['collision_radius']:
-                    if abs(pos[2] - obs.position[2]) < obs.size[1]/2 + self.cfg['collision_radius']:
-                        return True
-            elif obs.type == 'box':
-                if np.all(np.abs(pos - obs.position) < obs.size + self.cfg['collision_radius']):
-                    return True
+            if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
+                return True
         
         # Inter-UAV collision
         for j, other_pos in enumerate(positions):
