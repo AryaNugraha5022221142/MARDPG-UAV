@@ -12,6 +12,7 @@ from .algorithm.mardpg import MARDPGAgent
 from .algorithm.replay_buffer import EpisodeReplayBuffer, Episode
 from .algorithm.noise import OUNoise
 from .utils.metrics import MetricsTracker
+from tqdm import tqdm
 
 
 def load_config(path: str = "config/default.yaml") -> dict:
@@ -74,7 +75,7 @@ def train(config_path: str = "config/default.yaml", device: str = 'cpu'):
     print(f"Agents: {n_agents}, Device: {device}")
     print("=" * 60)
     
-    for episode in range(algo_cfg['n_episodes']):
+    for episode in tqdm(range(algo_cfg['n_episodes']), desc="Training progress"):
         obs = env.reset()
         
         # Reset hidden states at episode boundaries (Section 7.2)
