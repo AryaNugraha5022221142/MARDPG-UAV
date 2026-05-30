@@ -250,9 +250,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             actor_actions.append(a_j.view(batch_size * seq_len, -1))
                         
                         actor_act_all = torch.stack(actor_actions, dim=1)
-                        # Hiddens WITH gradients
-                        hidden_all_with_grad = torch.stack([h.reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)
-                        actor_losses.append(agent.compute_actor_loss(hidden_all_with_grad, actor_act_all, mask))
+                        # FIX: Delete 'hidden_all_with_grad' entirely. 
+                        # Re-use 'detached_hidden_all' created in Phase 2!
+                        actor_losses.append(agent.compute_actor_loss(detached_hidden_all, actor_act_all, mask))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents

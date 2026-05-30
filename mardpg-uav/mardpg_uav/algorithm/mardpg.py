@@ -123,12 +123,12 @@ class MARDPGAgent:
         
         return critic_loss.item()
 
-    def compute_actor_loss(self, hidden_all_with_grad, actor_act_all, mask):
+    def compute_actor_loss(self, detached_hidden_all, actor_act_all, mask):
         """Phase 2: Actor loss generation (Fixes Bugs 1 & 3)"""
         batch_size, seq_len = mask.shape
         
         self.critic.eval() # FIX (Bug 8): Disable dropout when evaluating Q for policy gradient
-        q_value_flat = self.critic.Q1(hidden_all_with_grad, actor_act_all, self.agent_id)
+        q_value_flat = self.critic.Q1(detached_hidden_all, actor_act_all, self.agent_id)
         
         q_value = q_value_flat.view(batch_size, seq_len)
         eps = 1e-8
