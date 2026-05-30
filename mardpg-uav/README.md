@@ -8,7 +8,7 @@ This repository implements a **decentralised multi‑agent path planning system*
 
 - Per‑agent LSTM belief approximation
 - Centralised attention critic with multi‑head self‑attention
-- Ornstein‑Uhlenbeck exploration with exponential annealing
+- Gaussian exploration with sigmoid annealing
 - Per‑agent episode termination (no global collision truncation)
 - Sin/cos attitude encoding (wrap‑free)
 - Action rate limiting for smooth trajectories

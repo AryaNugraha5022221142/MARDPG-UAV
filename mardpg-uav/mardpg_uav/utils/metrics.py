@@ -16,7 +16,7 @@ class MetricsTracker:
         self.straight_line_dists = []
         
     def record_episode(self, rewards: List[float], length: int,
-                      reached: List[bool], collision: bool,
+                      reached: List[bool], per_agent_collided: List[bool],
                       start_pos: List[np.ndarray],
                       goal_pos: List[np.ndarray],
                       path_history: List[List[np.ndarray]]):
@@ -28,10 +28,10 @@ class MetricsTracker:
         # Calculate per-agent rates instead of all-or-nothing
         success_ratio = sum(reached) / n_agents if n_agents > 0 else 0.0
         self.successes.append(success_ratio)
-        self.collisions.append(collision) # Keeping overall collision rate for safety tracking
+        self.collisions.append(any(per_agent_collided)) # Keeping overall collision rate for safety tracking
 
         # Trapped means not reached and not collided
-        trapped_ratio = sum(1 for r, c in zip(reached, [collision]*n_agents) if not r and not c) / n_agents if n_agents > 0 else 0.0
+        trapped_ratio = sum(1 for r, c in zip(reached, per_agent_collided) if not r and not c) / n_agents if n_agents > 0 else 0.0
         self.trapped.append(trapped_ratio)
         
         # Path efficiency

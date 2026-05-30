@@ -39,8 +39,8 @@ class MARDPGAgent:
         self.actor_optimizer = optim.Adam(self.private_actor_params, lr=lr_actor)
         
         # Critic network (centralized training)
-        self.critic = AttentionCritic(n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim).to(self.device)
-        self.critic_target = AttentionCritic(n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim).to(self.device)
+        self.critic = AttentionCritic(n_agents=n_agents, lstm_hidden=hidden_dim, action_dim=action_dim).to(self.device)
+        self.critic_target = AttentionCritic(n_agents=n_agents, lstm_hidden=hidden_dim, action_dim=action_dim).to(self.device)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
         
         # Initialize targets
@@ -129,26 +129,30 @@ class MARDPGAgent:
         # 2. Critic Update (Eq 12-13 with masking)
         # ==========================================
         # Flatten time and batch dimensions for AttentionCritic
-        obs_all = obs.reshape(batch_size * seq_len, n_agents, obs_dim)
+        hidden_all = torch.stack([agent_hiddens[i].reshape(batch_size * seq_len, -1)
+                                  for i in range(n_agents)], dim=1)  # (B*L, N, hidden_dim)
         act_all = actions.reshape(batch_size * seq_len, n_agents, -1)
         
-        Q_current_flat = self.critic(obs_all, act_all, self.agent_id)
+        Q_current_flat = self.critic(hidden_all, act_all, self.agent_id)
         Q_current = Q_current_flat.view(batch_size, seq_len)
         
         with torch.no_grad():
             target_actions = []
+            target_hiddens = []
             for i, agent in enumerate(all_agents):
                 next_obs_i = obs_next[:, :, i, :]
                 next_flat = next_obs_i.reshape(batch_size * seq_len, obs_dim)
                 next_features = agent.actor_target.shared(next_flat).view(batch_size, seq_len, -1)
                 next_lstm_out, _ = agent.actor_target.lstm(next_features, None)
+                target_hiddens.append(next_lstm_out)
                 next_act = agent.actor_target.tanh(agent.actor_target.fc_out(next_lstm_out)) * agent.actor_target.action_bound
                 target_actions.append(next_act.view(batch_size * seq_len, -1))
             
             next_act_all = torch.stack(target_actions, dim=1)  # (B*L, N, 2)
-            next_obs_all = obs_next.reshape(batch_size * seq_len, n_agents, obs_dim)
+            next_hidden_all = torch.stack([th.reshape(batch_size * seq_len, -1)
+                                           for th in target_hiddens], dim=1)
             
-            target_q_flat = self.critic_target(next_obs_all, next_act_all, self.agent_id)
+            target_q_flat = self.critic_target(next_hidden_all, next_act_all, self.agent_id)
             Q_target_next = target_q_flat.view(batch_size, seq_len)
             
             r = rewards[:, :, self.agent_id]
@@ -194,7 +198,7 @@ class MARDPGAgent:
         actor_act_all = torch.stack(actor_actions, dim=1)
         
         self.critic.eval()
-        q_value_flat = self.critic(obs_all, actor_act_all, self.agent_id)
+        q_value_flat = self.critic(hidden_all, actor_act_all, self.agent_id)
         self.critic.train()
         
         q_value = q_value_flat.view(batch_size, seq_len)

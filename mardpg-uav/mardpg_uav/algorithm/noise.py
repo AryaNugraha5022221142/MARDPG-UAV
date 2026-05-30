@@ -1,11 +1,11 @@
 """
-Gaussian exploration noise with linear decay.
+Gaussian exploration noise with sigmoid annealing.
 Reference: Section 11.1 of blueprint.
 """
 import numpy as np
 
 class GaussianNoise:
-    """Gaussian exploration noise representing physical sensor/actuator uncertainty."""
+    """Gaussian exploration noise representing physical sensor/actuator uncertainty with sigmoid decay."""
     def __init__(self, n_agents, action_dim=2, kappa=0.15,
                  sigma0=0.25, sigma_inf=0.05, anneal_steps=3_000_000):
         self.n = n_agents

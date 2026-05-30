@@ -6,6 +6,7 @@ import os
 import yaml
 import torch
 import numpy as np
+import random
 from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
@@ -20,10 +21,23 @@ def load_config(path: str = "config/default.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def train(config_path: str = "config/default.yaml", device: str = None, resume_dir: str = None):
+def train(config_path: str = "config/default.yaml", device: str = None, resume_dir: str = None, seed: int = 42):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+
     if device is None:
         device = 'cuda' if torch.cuda.is_available() else 'cpu'
     cfg = load_config(config_path)
+    if 'seed' in cfg:
+        seed = cfg['seed']
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+        np.random.seed(seed)
+        random.seed(seed)
+        torch.backends.cudnn.deterministic = True
     env_cfg = cfg['environment']
     algo_cfg = cfg['algorithm']
     net_cfg = cfg['network']
@@ -177,7 +191,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 [sum(episode_data.rewards[t]) for t in range(episode_data.length())],
                 episode_data.length(),
                 info['reached'].tolist() if isinstance(info['reached'], np.ndarray) else info['reached'],
-                any(info['collisions']) if isinstance(info['collisions'], np.ndarray) else any(info['collisions']),
+                info['collisions'].tolist() if isinstance(info['collisions'], np.ndarray) else info['collisions'],
                 [path_history[0][i] for i in range(n_agents)],
                 [env.goals[i] for i in range(n_agents)],
                 path_history
@@ -191,7 +205,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 batch = buffer.sample(algo_cfg['batch_size'])
                 if batch is not None:
                     batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = batch
-                    batch_obs_dev = batch_obs.to(device)
+                    batch_obs_g = batch_obs.to(device)
+                    batch_obs_next_g = batch_obs_next.to(device)
+                    batch_actions_g = batch_actions.to(device)
+                    batch_rewards_g = batch_rewards.to(device)
+                    batch_dones_g = batch_dones.to(device)
+
+                    batch_obs_dev = batch_obs_g
                     batch_size, seq_len, n_agents, obs_dim = batch_obs_dev.shape
                     
                     # Compute all agent hiddens ONCE — 5 forward passes, single computation graph
@@ -209,7 +229,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     actor_losses = []
                     for i, agent in enumerate(agents):
                         c_loss_item, a_loss = agent.update(
-                            batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones,
+                            batch_obs_g, batch_obs_next_g, batch_actions_g, batch_rewards_g, batch_dones_g,
                             agents, precomputed_hiddens=precomputed_hiddens
                         )
                         actor_losses.append(a_loss)
@@ -325,5 +345,6 @@ if __name__ == "__main__":
     parser.add_argument('--config', default='config/default.yaml')
     parser.add_argument('--device', default=None, choices=['cpu', 'cuda'])
     parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint directory to resume from')
+    parser.add_argument('--seed', type=int, default=42, help='Random seed')
     args = parser.parse_args()
-    train(args.config, args.device, args.resume)
+    train(args.config, args.device, args.resume, args.seed)

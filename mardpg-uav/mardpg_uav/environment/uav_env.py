@@ -62,18 +62,6 @@ class MultiUAVEnv(gym.Env):
         
         # Generate obstacles
         self.obstacles = self.scene_gen.generate(scene, density, self.n_agents)
-        self.obs_centers = np.array([obs.position for obs in self.obstacles]) if self.obstacles else np.empty((0, 3))
-        
-        # FIX: Compute true circumscribed bounding radii to prevent corner-clipping
-        sizes = []
-        for obs in self.obstacles:
-            if obs.type == 'box':
-                sizes.append(np.linalg.norm(obs.size))
-            elif obs.type == 'cylinder':
-                sizes.append(np.sqrt(obs.size[0]**2 + (obs.size[1]/2)**2))
-            else:
-                sizes.append(obs.size[0])
-        self.obs_max_sizes = np.array(sizes) if sizes else np.empty(0)
         
         # FIX: Inject physical arena boundaries so Lidar can see the walls
         t = 5.0 # Wall thickness
@@ -89,6 +77,19 @@ class MultiUAVEnv(gym.Env):
             Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
         ]
         self.obstacles.extend(walls)
+
+        self.obs_centers = np.array([obs.position for obs in self.obstacles])
+
+        # FIX: Compute true circumscribed bounding radii to prevent corner-clipping
+        sizes = []
+        for obs in self.obstacles:
+            if obs.type == 'box':
+                sizes.append(np.linalg.norm(obs.size))
+            elif obs.type == 'cylinder':
+                sizes.append(np.sqrt(obs.size[0]**2 + (obs.size[1]/2)**2))
+            else:
+                sizes.append(obs.size[0])
+        self.obs_max_sizes = np.array(sizes)
         
         # Sample start/goal positions (ensuring clearance)
         self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
@@ -98,8 +99,17 @@ class MultiUAVEnv(gym.Env):
         self.agent_reached = np.zeros(self.n_agents, dtype=bool)
         self.agent_collided = np.zeros(self.n_agents, dtype=bool)
         
+        positions = []
         for i in range(self.n_agents):
-            self.agents_state[i, :3] = self._sample_free_position()
+            for _ in range(50):
+                pos = self._sample_free_position()
+                if all(np.linalg.norm(pos - p) >= self.cfg['inter_uav_min_dist'] * 2
+                       for p in positions):
+                    positions.append(pos)
+                    break
+            else:
+                positions.append(self._sample_free_position())  # fallback
+            self.agents_state[i, :3] = positions[-1]
             self.goals[i] = self._sample_free_position()
             # Random initial orientation
             self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
@@ -175,7 +185,7 @@ class MultiUAVEnv(gym.Env):
             # Check collision
             if self._check_collision(i, positions):
                 collisions[i] = True
-                rewards[i] -= self.cfg['reward']['r_col']  # -15
+                rewards[i] -= self.cfg['reward']['r_col']  # -250
                 
             # Optional: boundary penalty
             WALL_MARGIN = 3.0
@@ -188,6 +198,9 @@ class MultiUAVEnv(gym.Env):
             )
             if wall_dist < WALL_MARGIN:
                 rewards[i] -= WALL_PENALTY_SCALE * (1.0 - wall_dist / WALL_MARGIN)
+                
+            if self._out_of_bounds(pos):
+                rewards[i] -= 5.0  # OOB soft penalty
             
             # Check goal reached
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
