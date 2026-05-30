@@ -71,7 +71,8 @@ class MARDPGAgent:
                     self.actor_hidden = self._init_hidden(1)
                 action, self.actor_hidden = self.actor(obs_tensor, self.actor_hidden)
             
-            return action[0, 0].cpu().numpy()
+            # --- FIX: Extract only the batch dimension ---
+            return action[0].cpu().numpy()
     
     def reset_hidden(self, batch_size: int = 1, eval_mode: bool = False):
         h = self._init_hidden(batch_size)
