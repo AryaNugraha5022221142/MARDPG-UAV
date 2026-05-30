@@ -84,132 +84,58 @@ class MARDPGAgent:
         return (torch.zeros(1, batch_size, self.actor.lstm.hidden_size).to(self.device),
                 torch.zeros(1, batch_size, self.actor.lstm.hidden_size).to(self.device))
     
-    def update(self, batch_obs: torch.Tensor, batch_obs_next: torch.Tensor,
-               batch_actions: torch.Tensor, batch_rewards: torch.Tensor,
-               batch_dones: torch.Tensor, all_agents: list, precomputed_hiddens=None) -> Tuple[float, float]:
-        """
-        Update actor and critic using BPTT.
-        Args:
-            batch_obs: (batch, seq_len, n_agents, obs_dim)
-            batch_obs_next: (batch, seq_len, n_agents, obs_dim)
-            batch_actions: (batch, seq_len, n_agents, action_dim)
-            batch_rewards: (batch, seq_len, n_agents)
-            batch_dones: (batch, seq_len, n_agents)
-            all_agents: list of MARDPGAgent instances
-            precomputed_hiddens: list of (B, L, hidden_dim) tensors
-        """
-        batch_size, seq_len, n_agents, obs_dim = batch_obs.shape
-        T_burn = self.burn_in
+    def update_critic(self, detached_hidden_all, act_all, next_hidden_all, next_act_all, 
+                      rewards, dones, seq_len, mask):
+        """Phase 1: Critic update with detached hiddens (Fixes Bugs 1 & 2)"""
+        batch_size = rewards.shape[0]
         
-        # Move to device
-        obs = batch_obs.to(self.device)
-        obs_next = batch_obs_next.to(self.device)
-        actions = batch_actions.to(self.device)
-        rewards = batch_rewards.to(self.device)
-        dones = batch_dones.to(self.device)
-        
-        # ==========================================
-        # 1. Extract hidden states from all actors
-        # ==========================================
-        if precomputed_hiddens is None:
-            agent_hiddens = []  # List of (batch, seq_len, hidden_dim)
-            
-            for i, agent in enumerate(all_agents):
-                agent_obs = obs[:, :, i, :]
-                flat_obs = agent_obs.reshape(batch_size * seq_len, obs_dim)
-                features = agent.actor.shared(flat_obs)
-                features = features.view(batch_size, seq_len, -1)
-                
-                lstm_out, _ = agent.actor.lstm(features, None)
-                agent_hiddens.append(lstm_out)
-        else:
-            agent_hiddens = precomputed_hiddens
-            
-        # ==========================================
-        # 2. Critic Update (Eq 12-13 with masking)
-        # ==========================================
-        # Flatten time and batch dimensions for AttentionCritic
-        hidden_all = torch.stack([agent_hiddens[i].reshape(batch_size * seq_len, -1)
-                                  for i in range(n_agents)], dim=1)  # (B*L, N, hidden_dim)
-        act_all = actions.reshape(batch_size * seq_len, n_agents, -1)
-        
-        Q_current_flat = self.critic(hidden_all, act_all, self.agent_id)
-        Q_current = Q_current_flat.view(batch_size, seq_len)
+        # Current Q-values (Online Critic in Train Mode)
+        self.critic.train()
+        q1_flat, q2_flat = self.critic(detached_hidden_all, act_all, self.agent_id)
+        q1_current = q1_flat.view(batch_size, seq_len)
+        q2_current = q2_flat.view(batch_size, seq_len)
         
         with torch.no_grad():
-            target_actions = []
-            target_hiddens = []
-            for i, agent in enumerate(all_agents):
-                next_obs_i = obs_next[:, :, i, :]
-                next_flat = next_obs_i.reshape(batch_size * seq_len, obs_dim)
-                next_features = agent.actor_target.shared(next_flat).view(batch_size, seq_len, -1)
-                next_lstm_out, _ = agent.actor_target.lstm(next_features, None)
-                target_hiddens.append(next_lstm_out)
-                next_act = agent.actor_target.tanh(agent.actor_target.fc_out(next_lstm_out)) * agent.actor_target.action_bound
-                target_actions.append(next_act.view(batch_size * seq_len, -1))
+            self.critic_target.eval() # FIX (Bug 8): Disable dropout for target calculation
             
-            next_act_all = torch.stack(target_actions, dim=1)  # (B*L, N, 2)
-            next_hidden_all = torch.stack([th.reshape(batch_size * seq_len, -1)
-                                           for th in target_hiddens], dim=1)
+            # Target Policy Smoothing (Fix Bug 7)
+            noise = (torch.randn_like(next_act_all) * 0.1).clamp(-0.1, 0.1)
+            next_act_all_noisy = (next_act_all + noise).clamp(-self.actor.action_bound, self.actor.action_bound)
             
-            target_q_flat = self.critic_target(next_hidden_all, next_act_all, self.agent_id)
-            Q_target_next = target_q_flat.view(batch_size, seq_len)
+            # Twin-Q Minimum
+            target_q1_flat, target_q2_flat = self.critic_target(next_hidden_all, next_act_all_noisy, self.agent_id)
+            target_q_next = torch.min(target_q1_flat, target_q2_flat).view(batch_size, seq_len)
             
             r = rewards[:, :, self.agent_id]
             batch_dones_agent = dones[:, :, self.agent_id]
-            
-            # TD target — Eq.91: bootstrap zeroed by per-agent flag
-            y = r + self.gamma * Q_target_next * (~batch_dones_agent)
+            y = r + self.gamma * target_q_next * (~batch_dones_agent)
 
-        # Compute validity mask — Eq.87
-        burn_mask  = torch.arange(seq_len).unsqueeze(0) >= T_burn
-        agent_done_prev = torch.cat([torch.zeros_like(dones[:, :1, self.agent_id]),
-                                      dones[:, :-1, self.agent_id]], dim=1)
-        mask = burn_mask.to(self.device) & ~agent_done_prev  # (B, L)
-        
-        # Masked Bellman loss — Eq.93
         eps = 1e-8
-        critic_loss = ((Q_current - y.detach())**2 * mask).sum() / (mask.sum() + eps)
+        critic_loss_1 = (((q1_current - y.detach())**2) * mask).sum() / (mask.sum() + eps)
+        critic_loss_2 = (((q2_current - y.detach())**2) * mask).sum() / (mask.sum() + eps)
+        critic_loss = critic_loss_1 + critic_loss_2
         
+        # Update Critic safely
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
+        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
         self.critic_optimizer.step()
         
-        # ==========================================
-        # 3. Actor Update (Eq 11)
-        # ==========================================
-        for p in self.critic.parameters():
-            p.requires_grad = False
-            
-        actor_actions = []
-        for i, agent in enumerate(all_agents):
-            if i == self.agent_id:
-                # We need actions from current policy that keep gradient
-                # using the already computed agent_hiddens
-                h_i = agent_hiddens[i]  # (B, L, hidden_dim)
-                act_i = agent.actor.tanh(agent.actor.fc_out(h_i)) * agent.actor.action_bound
-                actor_actions.append(act_i.view(batch_size * seq_len, -1))
-            else:
-                h_i = agent_hiddens[i]
-                act_i = agent.actor.tanh(agent.actor.fc_out(h_i)) * agent.actor.action_bound
-                actor_actions.append(act_i.detach().view(batch_size * seq_len, -1))
-                
-        actor_act_all = torch.stack(actor_actions, dim=1)
+        return critic_loss.item()
+
+    def compute_actor_loss(self, hidden_all_with_grad, actor_act_all, mask):
+        """Phase 2: Actor loss generation (Fixes Bugs 1 & 3)"""
+        batch_size, seq_len = mask.shape
         
-        self.critic.eval()
-        q_value_flat = self.critic(hidden_all, actor_act_all, self.agent_id)
-        self.critic.train()
+        self.critic.eval() # FIX (Bug 8): Disable dropout when evaluating Q for policy gradient
+        q_value_flat = self.critic.Q1(hidden_all_with_grad, actor_act_all, self.agent_id)
         
         q_value = q_value_flat.view(batch_size, seq_len)
+        eps = 1e-8
         
-        # Policy gradient: maximize Masked Q
+        # Deterministic Policy Gradient
         actor_loss = -(q_value * mask).sum() / (mask.sum() + eps)
-        
-        for p in self.critic.parameters():
-            p.requires_grad = True
-            
-        return critic_loss.item(), actor_loss
+        return actor_loss
     
     def _soft_update(self, target: nn.Module, source: nn.Module):
         for target_param, param in zip(target.parameters(), source.parameters()):

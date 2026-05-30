@@ -166,8 +166,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
                 
-                # Store transition
-                episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
+                # FIX (Bug 10): Store applied actions, not raw commanded actions
+                episode_data.append(obs.copy(), info['applied_actions'].copy(), rewards.copy(), info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
                 
@@ -197,55 +197,79 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 path_history
             )
             
-            # Update agents (Algorithm 1, line 28-35)
-            if episode > algo_cfg['warmup_episodes'] \
-               and episode % algo_cfg['update_freq'] == 0 \
-               and len(buffer) >= algo_cfg['batch_size']:
+            # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
+            if episode > algo_cfg['warmup_episodes'] and global_step % algo_cfg['update_freq'] == 0 and len(buffer) >= algo_cfg['batch_size']:
                 
-                batch = buffer.sample(algo_cfg['batch_size'])
-                if batch is not None:
-                    batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = batch
-                    batch_obs_g = batch_obs.to(device)
-                    batch_obs_next_g = batch_obs_next.to(device)
-                    batch_actions_g = batch_actions.to(device)
-                    batch_rewards_g = batch_rewards.to(device)
-                    batch_dones_g = batch_dones.to(device)
+                for _ in range(algo_cfg.get('grad_steps_per_update', 1)):
+                    batch = buffer.sample(algo_cfg['batch_size'])
+                    if batch is None: break
+                    batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
+                    batch_size, seq_len, _, obs_dim = batch_obs.shape
+                    
+                    # 1. Forward passes for all agents (Online and Target)
+                    agent_hiddens, next_agent_hiddens, target_actions = [], [], []
+                    for i, agent in enumerate(agents):
+                        feat = agent.actor.shared(batch_obs[:, :, i, :].flatten(0,1)).view(batch_size, seq_len, -1)
+                        h_out, _ = agent.actor.lstm(feat, None)
+                        agent_hiddens.append(h_out)
+                        
+                        with torch.no_grad():
+                            feat_next = agent.actor_target.shared(batch_obs_next[:, :, i, :].flatten(0,1)).view(batch_size, seq_len, -1)
+                            h_next, _ = agent.actor_target.lstm(feat_next, None)
+                            next_agent_hiddens.append(h_next)
+                            next_act = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
+                            target_actions.append(next_act)
 
-                    batch_obs_dev = batch_obs_g
-                    batch_size, seq_len, n_agents, obs_dim = batch_obs_dev.shape
-                    
-                    # Compute all agent hiddens ONCE — 5 forward passes, single computation graph
-                    precomputed_hiddens = []
-                    for ag in agents:
-                        agent_obs = batch_obs_dev[:, :, ag.agent_id, :]
-                        flat_obs = agent_obs.reshape(batch_size * seq_len, obs_dim)
-                        features = agents[0].shared_extractor(flat_obs).view(batch_size, seq_len, -1)
-                        lstm_out, _ = ag.actor.lstm(features, None)
-                        precomputed_hiddens.append(lstm_out)
-                    
-                    for agent in agents:
-                        agent.actor_optimizer.zero_grad()
+                    # 2. Prepare Critic Tensors (DETACHED to fix Bug 2)
+                    detached_hidden_all = torch.stack([h.detach().reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)
+                    next_hidden_all = torch.stack([h.reshape(batch_size*seq_len, -1) for h in next_agent_hiddens], dim=1)
+                    next_act_all = torch.stack([a.reshape(batch_size*seq_len, -1) for a in target_actions], dim=1)
+                    act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
+
+                    # FIX (Bug 9): Explicit padding mask to prevent zero-state leak
+                    burn_mask = torch.arange(seq_len, device=device).unsqueeze(0) >= algo_cfg['burn_in']
+                    done_mask = ~torch.cat([torch.zeros_like(batch_dones[:, :1, 0]), batch_dones[:, :-1, 0]], dim=1)
+                    mask = burn_mask & done_mask
+
+                    # 3. Update Critics (Independent graph)
+                    for i, agent in enumerate(agents):
+                        agent.update_critic(detached_hidden_all, act_all, next_hidden_all, next_act_all, 
+                                            batch_rewards, batch_dones, seq_len, mask)
+
+                    # 4. Update Actors & Shared Extractor (Fix Bug 6 - Order of zero_grad)
+                    shared_optimizer.zero_grad()
+                    for agent in agents: agent.actor_optimizer.zero_grad()
                     
                     actor_losses = []
                     for i, agent in enumerate(agents):
-                        c_loss_item, a_loss = agent.update(
-                            batch_obs_g, batch_obs_next_g, batch_actions_g, batch_rewards_g, batch_dones_g,
-                            agents, precomputed_hiddens=precomputed_hiddens
-                        )
-                        actor_losses.append(a_loss)
-                    
-                    shared_optimizer.zero_grad()
-                    shared_actor_loss = sum(actor_losses) / n_agents
-                    shared_actor_loss.backward()
+                        # Construct joint actions where only current agent retains local gradient
+                        actor_actions = []
+                        for j, other_agent in enumerate(agents):
+                            a_j = other_agent.actor.tanh(other_agent.actor.fc_out(agent_hiddens[j])) * other_agent.actor.action_bound
+                            if i != j: a_j = a_j.detach() 
+                            actor_actions.append(a_j.view(batch_size * seq_len, -1))
+                        
+                        actor_act_all = torch.stack(actor_actions, dim=1)
+                        # Hiddens WITH gradients
+                        hidden_all_with_grad = torch.stack([h.reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)
+                        actor_losses.append(agent.compute_actor_loss(hidden_all_with_grad, actor_act_all, mask))
+
+                    # Aggregate actor losses and backprop ONE time through shared components
+                    total_actor_loss = sum(actor_losses) / n_agents
+                    total_actor_loss.backward()
                     
                     torch.nn.utils.clip_grad_norm_(agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
                     shared_optimizer.step()
-                    
                     for agent in agents:
                         torch.nn.utils.clip_grad_norm_(agent.private_actor_params, algo_cfg['gradient_clip'])
                         agent.actor_optimizer.step()
+
+                    # 5. Soft Updates
+                    for agent in agents:
                         agent._soft_update(agent.actor_target, agent.actor)
                         agent._soft_update(agent.critic_target, agent.critic)
+                        # Fix: Shared target update
+                        agent._soft_update(agent.actor_target.shared, agent.actor.shared)
             
             # Logging
             if episode % 100 == 0 and episode > 0:
