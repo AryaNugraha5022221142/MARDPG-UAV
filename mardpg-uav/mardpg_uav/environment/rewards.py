@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 class RewardFunction:
     def __init__(self, alpha: float = 3.0, lambda_col: float = 5.0,
-                 sigma_col: float = 10.0, lambda_sep: float = 2.0,
+                 sigma_col: float = 1.0, lambda_sep: float = 2.0,
                  sigma_sep: float = 5.0, r_free: float = 0.1,
                  r_step: float = -0.4,
                  delta: Tuple[float, float, float, float, float] = (0.40, 0.30, 0.10, 0.10, 0.10),
@@ -59,9 +59,8 @@ class RewardFunction:
         r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
 
         # Free space reward
-        # r_free fires when ALL 25 beams clear 95% of max range (≥ 9.5 m)
-        # With σ_ℓ=0.02 noise, ~86% of truly-max-range scans satisfy this
-        r_free = self.r_free if float(np.min(rangefinder_norm)) >= 0.95 else 0.0
+        # r_free fires when average of beams clear 75% of max range
+        r_free = self.r_free if float(np.mean(rangefinder_norm)) >= 0.75 else 0.0
 
         # Step penalty
         r_step = self.r_step

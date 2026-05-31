@@ -1,9 +1,14 @@
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+import glob
 import argparse
 
-def plot_training_logs(csv_path="checkpoints/training_log.csv"):
+def plot_training_logs(csv_path=None):
+    if csv_path is None:
+        candidates = sorted(glob.glob("checkpoints/training_log_*.csv"))
+        csv_path = candidates[-1] if candidates else "checkpoints/training_log.csv"
+        
     if not os.path.exists(csv_path):
         print(f"Error: {csv_path} not found.")
         return

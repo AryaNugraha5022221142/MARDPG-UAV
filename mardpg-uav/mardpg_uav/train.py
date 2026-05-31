@@ -132,6 +132,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     # Restore global step and noise scheduling if resuming
     if resume_dir:
+        algo_cfg['warmup_episodes'] = max(algo_cfg['warmup_episodes'], start_episode + 50)
         try:
             shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
             if 'global_step' in shared_ckpt:
@@ -153,7 +154,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
             
             # Phase 1/2 Curriculum Learning
-            density = min(algo_cfg.get('obstacle_density', 0.10), episode / 10000)
+            density = min(env_cfg['obstacle_density'], episode / 10000)
             goal_thresh = max(2.0, 5.0 - episode / 500)
             
             env.cfg['obstacle_density'] = density
@@ -177,10 +178,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 
                 actions = []
                 for i, agent in enumerate(agents):
-                    action = agent.select_action(obs[i], evaluate=False)
-                    # Add noise during training (always added, OU anneals naturally)
-                    action += noise_val[i]
-                    action = np.clip(action, -np.pi/6, np.pi/6)
+                    if not env.agent_done[i]:
+                        action = agent.select_action(obs[i], evaluate=False)
+                        # Add noise during training (always added, OU anneals naturally)
+                        action += noise_val[i]
+                        action = np.clip(action, -np.pi/6, np.pi/6)
+                    else:
+                        action = np.zeros(env.action_dim, dtype=np.float32)
                     actions.append(action)
                 
                 actions = np.array(actions)

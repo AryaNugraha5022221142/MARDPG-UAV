@@ -105,6 +105,10 @@ class Rangefinder:
             t1 = (c - s - o) / d
             t2 = (c + s - o) / d
             
+        # Replace NaN with +/- inf before slab test
+        t1 = np.where(np.isnan(t1), -np.inf, t1)
+        t2 = np.where(np.isnan(t2), np.inf, t2)
+            
         t_min = np.minimum(t1, t2)
         t_max = np.maximum(t1, t2)
         

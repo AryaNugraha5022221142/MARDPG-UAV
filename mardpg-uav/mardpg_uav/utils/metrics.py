@@ -63,6 +63,10 @@ class MetricsTracker:
             'avg_episode_length': np.mean(self.episode_lengths[-100:]) if self.episode_lengths else 0,
         }
         if self.path_lengths:
-            efficiencies = [s / a for s, a in zip(self.straight_line_dists, self.path_lengths)]
-            stats['path_efficiency'] = np.mean(efficiencies)
+            efficiencies = [
+                s / max(a, 1e-8)
+                for s, a in zip(self.straight_line_dists, self.path_lengths)
+                if a > 1e-8
+            ]
+            stats['path_efficiency'] = np.mean(efficiencies) if efficiencies else 0.0
         return stats

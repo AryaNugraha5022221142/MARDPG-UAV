@@ -79,6 +79,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
     
     # Plot obstacle
+    print(f"Total simulated obstacles: {len(env.obstacles)}")
     for ob in env.obstacles:
         if ob.type == 'sphere':
             ob_pos = ob.position
@@ -92,6 +93,34 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
             
             ax.plot_wireframe(x, y, z, color='gray', alpha=0.3)
+            
+        elif ob.type == 'box':
+            ob_pos = ob.position
+            hl = ob.size
+            # Draw box limits
+            x = [ob_pos[0]-hl[0], ob_pos[0]+hl[0]]
+            y = [ob_pos[1]-hl[1], ob_pos[1]+hl[1]]
+            z = [ob_pos[2]-hl[2], ob_pos[2]+hl[2]]
+            
+            xx, yy = np.meshgrid(x, y)
+            for zz in z: ax.plot_wireframe(xx, yy, np.full_like(xx, zz), color='gray', alpha=0.3)
+            xx, zz = np.meshgrid(x, z)
+            for yy in y: ax.plot_wireframe(xx, np.full_like(xx, yy), zz, color='gray', alpha=0.3)
+            yy, zz = np.meshgrid(y, z)
+            for xx in x: ax.plot_wireframe(np.full_like(yy, xx), yy, zz, color='gray', alpha=0.3)
+            
+        elif ob.type == 'cylinder':
+            ob_pos = ob.position
+            ob_rad = ob.size[0]
+            ob_h = ob.size[2]
+            
+            # Cylinder up to height
+            zC = np.linspace(max(0, ob_pos[2] - ob_h), ob_pos[2] + ob_h, 5)
+            thetaC = np.linspace(0, 2*np.pi, 20)
+            theta_grid, z_grid = np.meshgrid(thetaC, zC)
+            x_grid = ob_pos[0] + ob_rad * np.cos(theta_grid)
+            y_grid = ob_pos[1] + ob_rad * np.sin(theta_grid)
+            ax.plot_wireframe(x_grid, y_grid, z_grid, color='gray', alpha=0.3)
         
     for i in range(n_agents):
         c = colors[i % len(colors)]

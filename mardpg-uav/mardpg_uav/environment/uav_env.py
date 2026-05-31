@@ -17,20 +17,25 @@ class MultiUAVEnv(gym.Env):
         self.cfg = config
         self.n_agents = config['n_agents']
         
+        self.obs_centers = np.zeros((0, 3), dtype=np.float32)
+        self.obs_max_sizes = np.zeros(0, dtype=np.float32)
+        
         # Subsystems
         self.dynamics = UAVDynamics(
             v=config['uav_speed'],
             dt=config['dt'],
             env_size=config['env_size'],
             max_altitude=config['max_altitude'],
-            min_altitude=config.get('min_altitude', 0.0)
+            min_altitude=config.get('min_altitude', 0.0),
+            action_bounds=tuple(config.get('action_bounds', [-np.pi/6, np.pi/6]))
         )
         self.scene_gen = SceneGenerator(
             env_size=config['env_size'],
             seed=config.get('seed', None)
         )
         self.rangefinder = Rangefinder(range_max=config['sensor_range'])
-        self.goal_sensor = GoalSensor()
+        env_diag = float(np.sqrt(sum(s**2 for s in config['env_size'])))
+        self.goal_sensor = GoalSensor(arena_diag=env_diag)
         self.reward_fn = RewardFunction(
             alpha=config['reward']['alpha'],
             lambda_col=config['reward']['lambda_col'],
@@ -47,6 +52,15 @@ class MultiUAVEnv(gym.Env):
         # Spaces
         self.obs_dim = 34  # 4 (att) + 2 (prev_act) + 25 (lidar) + 3 (goal)
         self.action_dim = 2  # rho, tau
+        
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf,
+            shape=(self.n_agents, self.obs_dim), dtype=np.float32
+        )
+        self.action_space = gym.spaces.Box(
+            low=-np.pi/6, high=np.pi/6,
+            shape=(self.n_agents, self.action_dim), dtype=np.float32
+        )
         
         # State
         self.agents_state = None  # [n_agents, 5] (x,y,z,theta,phi)
@@ -153,6 +167,8 @@ class MultiUAVEnv(gym.Env):
         obs_list = []
         positions = [self.agents_state[i, :3] for i in range(self.n_agents)]
         
+        pending_done = self.agent_done.copy()
+        
         for i in range(self.n_agents):
             if self.agent_done[i]:
                 obs_list.append(self._get_single_observation(i))
@@ -184,22 +200,11 @@ class MultiUAVEnv(gym.Env):
             )
             
             # Check collision or out of bounds
-            if self._check_collision(i, positions) or self._out_of_bounds(pos):
+            if self._check_collision(i, positions, pending_done) or self._out_of_bounds(pos):
                 collisions[i] = True
+                pending_done[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # -10.0
                 
-            # Optional: boundary penalty
-            WALL_MARGIN = self.cfg.get('wall_margin', 3.0)
-            WALL_PENALTY_SCALE = self.cfg.get('wall_penalty_scale', 0.5)
-            wall_dist = min(
-                pos[0], self.cfg['env_size'][0] - pos[0],
-                pos[1], self.cfg['env_size'][1] - pos[1],
-                pos[2] - self.cfg.get('min_altitude', 0.0),
-                self.cfg['max_altitude'] - pos[2]
-            )
-            if wall_dist < WALL_MARGIN:
-                rewards[i] -= WALL_PENALTY_SCALE * (1.0 - wall_dist / WALL_MARGIN)
-            
             # Check goal reached
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
@@ -298,7 +303,7 @@ class MultiUAVEnv(gym.Env):
             pos[2] < self.cfg.get('min_altitude', 0.0) + 1e-4 or pos[2] >= self.cfg['max_altitude']
         )
 
-    def _check_collision(self, agent_id: int, positions: List[np.ndarray]) -> bool:
+    def _check_collision(self, agent_id: int, positions: List[np.ndarray], pending_done: np.ndarray) -> bool:
         pos = positions[agent_id]
         
         # Fast culling for obstacles
@@ -317,7 +322,7 @@ class MultiUAVEnv(gym.Env):
         
         # Inter-UAV collision
         for j, other_pos in enumerate(positions):
-            if j != agent_id and not self.agent_done[j]:
+            if j != agent_id and not pending_done[j]:
                 if np.linalg.norm(pos - other_pos) < self.cfg['inter_uav_min_dist']:
                     return True
         return False
