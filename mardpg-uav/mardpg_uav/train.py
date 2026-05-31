@@ -188,8 +188,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             
             # Record metrics
             metrics.record_episode(
-                [sum(episode_data.rewards[t]) for t in range(episode_data.length())],
-                episode_data.length(),
+                [sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)],
+                episode_data.length() - 1,
                 info['reached'].tolist() if isinstance(info['reached'], np.ndarray) else info['reached'],
                 info['collisions'].tolist() if isinstance(info['collisions'], np.ndarray) else info['collisions'],
                 [path_history[0][i] for i in range(n_agents)],
@@ -198,7 +198,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             )
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
-            if episode > algo_cfg['warmup_episodes'] and global_step % algo_cfg['update_freq'] == 0 and len(buffer) >= algo_cfg['batch_size']:
+            if episode >= algo_cfg['warmup_episodes'] and global_step % algo_cfg['update_freq'] == 0 and len(buffer) >= algo_cfg['batch_size']:
                 
                 for _ in range(algo_cfg.get('grad_steps_per_update', 1)):
                     batch = buffer.sample(algo_cfg['batch_size'])
@@ -271,8 +271,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     for agent in agents:
                         agent._soft_update(agent.actor_target, agent.actor)
                         agent._soft_update(agent.critic_target, agent.critic)
-                        # Fix: Shared target update
-                        agent._soft_update(agent.actor_target.shared, agent.actor.shared)
             
             # Logging
             if episode % 100 == 0 and episode > 0:

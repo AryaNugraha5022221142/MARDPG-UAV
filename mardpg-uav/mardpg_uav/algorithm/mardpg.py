@@ -13,7 +13,7 @@ from ..networks.critic import AttentionCritic
 
 
 class MARDPGAgent:
-    def __init__(self, agent_id: int, n_agents: int, obs_dim: int = 34,
+    def __init__(self, agent_id: int, n_agents: int,
                  action_dim: int = 2, hidden_dim: int = 128,
                  lr_actor: float = 0.0001, lr_critic: float = 0.0003,
                  tau: float = 0.01, gamma: float = 0.99,

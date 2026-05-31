@@ -39,7 +39,7 @@ All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathe
 Key sections:
 
 - **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
-- **Observation space** (36‑dim: sin/cos attitude, previous action, 25‑beam lidar, goal vector)
+- **Observation space** (34‑dim: quaternion attitude (4), previous action (2), 25‑beam lidar, goal vector (3))
 - **Reward function** (progress + collision penalty + separation penalty + free‑space bonus)
 - **Centralised attention critic** (permutation‑invariant Q‑function)
 - **Per‑agent termination & validity masking** (for BPTT)

@@ -186,7 +186,7 @@ class MultiUAVEnv(gym.Env):
             # Check collision
             if self._check_collision(i, positions):
                 collisions[i] = True
-                rewards[i] -= self.cfg['reward']['r_col']  # -250
+                rewards[i] -= self.cfg['reward']['r_col']  # -10.0
                 
             # Optional: boundary penalty
             WALL_MARGIN = 3.0
@@ -206,7 +206,7 @@ class MultiUAVEnv(gym.Env):
             # Check goal reached
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
-                rewards[i] += self.cfg['reward']['r_goal']  # +15
+                rewards[i] += self.cfg['reward']['r_goal']  # +50.0
         
         self.steps += 1
         
@@ -298,7 +298,7 @@ class MultiUAVEnv(gym.Env):
         return (
             pos[0] <= 0.0 or pos[0] >= self.cfg['env_size'][0] or
             pos[1] <= 0.0 or pos[1] >= self.cfg['env_size'][1] or
-            pos[2] <= self.cfg.get('min_altitude', 0.0) or pos[2] >= self.cfg['max_altitude']
+            pos[2] < self.cfg.get('min_altitude', 0.0) + 1e-4 or pos[2] >= self.cfg['max_altitude']
         )
 
     def _check_collision(self, agent_id: int, positions: List[np.ndarray]) -> bool:

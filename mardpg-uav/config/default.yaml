@@ -28,7 +28,7 @@ environment:
     r_free: 0.1
     r_step: -0.4
     delta: [0.40, 0.30, 0.10, 0.10, 0.10]
-    r_goal: 5.0           # FIX (Bug 5): Scaled down from 50.0 to prevent Q-explosion
+    r_goal: 50.0          
     r_col: 10.0           # FIX (Bug 5): Scaled down from 250.0 (applied as penalty in env)
 
 algorithm:
@@ -38,7 +38,7 @@ algorithm:
   lr_critic: 0.0003
   batch_size: 128
   seq_len: 50
-  burn_in: 12
+  burn_in: 20
   replay_capacity: 2000
   update_freq: 50           # FIX (Bug 4): Update every 50 steps, not 10 episodes
   grad_steps_per_update: 4  # FIX (Bug 4): Multiple gradient steps per update
