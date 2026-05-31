@@ -21,8 +21,8 @@ environment:
   # Reward parameters (Eq 4)
   reward:
     alpha: 3.0
-    lambda_col: 1.0       # Reduced from 5.0 to prevent severe trapping penalties
-    sigma_col: 10.0
+    lambda_col: 2.0       # Reduced from 5.0 to prevent severe trapping penalties
+    sigma_col: 1.0
     lambda_sep: 1.0       # Reduced from 2.0 
     sigma_sep: 5.0
     r_free: 0.1

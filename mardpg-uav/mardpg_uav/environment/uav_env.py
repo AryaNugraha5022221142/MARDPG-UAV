@@ -67,14 +67,15 @@ class MultiUAVEnv(gym.Env):
         t = 5.0 # Wall thickness
         ex, ey, ez = self.cfg['env_size']
         min_z = self.cfg.get('min_altitude', 0.0)
+        cr = self.cfg['collision_radius']
         
         walls = [
-            Obstacle('box', np.array([-t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
-            Obstacle('box', np.array([ex+t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
-            Obstacle('box', np.array([ex/2, -t, ez/2]), np.array([ex/2, t, ez/2])), # Y min
-            Obstacle('box', np.array([ex/2, ey+t, ez/2]), np.array([ex/2, t, ez/2])), # Y max
-            Obstacle('box', np.array([ex/2, ey/2, min_z-t]), np.array([ex/2, ey/2, t])), # Z min (floor)
-            Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
+            Obstacle('box', np.array([-t - cr, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
+            Obstacle('box', np.array([ex+t+cr, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
+            Obstacle('box', np.array([ex/2, -t - cr, ez/2]), np.array([ex/2, t, ez/2])), # Y min
+            Obstacle('box', np.array([ex/2, ey+t+cr, ez/2]), np.array([ex/2, t, ez/2])), # Y max
+            Obstacle('box', np.array([ex/2, ey/2, min_z-t-cr]), np.array([ex/2, ey/2, t])), # Z min (floor)
+            Obstacle('box', np.array([ex/2, ey/2, ez+t+cr]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
         ]
         self.obstacles.extend(walls)
 
@@ -265,7 +266,7 @@ class MultiUAVEnv(gym.Env):
                 [margin, margin, 3.0],
                 [env[0] - margin, env[1] - margin, env[2] - 3.0]
             )
-            if not self._inside_obstacles(pos):
+            if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos.astype(np.float32)
         
         # Last resort: jitter a random safe-ish region rather than a fixed point
@@ -276,7 +277,7 @@ class MultiUAVEnv(gym.Env):
                 self.scene_gen.rng.uniform(5.0, env[1] - 5.0),
                 self.scene_gen.rng.uniform(5.0, env[2] - 5.0),
             ], dtype=np.float32)
-            if not self._inside_obstacles(pos):
+            if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos
         
         # Absolute fallback: log a warning and return centre of arena
@@ -287,18 +288,10 @@ class MultiUAVEnv(gym.Env):
             [5.0, 5.0, 5.0], env - 5.0
         ).astype(np.float32)
 
-    def _inside_obstacles(self, pos: np.ndarray) -> bool:
+    def _inside_obstacles(self, pos: np.ndarray, buffer: float = 0.0) -> bool:
         for obs in self.obstacles:
-            if obs.type == 'sphere':
-                if np.linalg.norm(pos - obs.position) < obs.size[0]:
-                    return True
-            elif obs.type == 'cylinder':
-                d_xy = np.linalg.norm(pos[:2] - obs.position[:2])
-                if d_xy < obs.size[0] and abs(pos[2] - obs.position[2]) < obs.size[1]/2:
-                    return True
-            elif obs.type == 'box':
-                if np.all(np.abs(pos - obs.position) < obs.size):
-                    return True
+            if self.reward_fn._surface_distance(pos, obs) < buffer:
+                return True
         return False
 
     def _out_of_bounds(self, pos: np.ndarray) -> bool:

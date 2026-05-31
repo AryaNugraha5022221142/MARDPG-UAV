@@ -228,7 +228,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
 
                     # FIX (Bug 9): Explicit padding mask to prevent zero-state leak
                     burn_mask = torch.arange(seq_len, device=device).unsqueeze(0) >= algo_cfg['burn_in']
-                    done_mask = ~torch.cat([torch.zeros_like(batch_dones[:, :1, 0]), batch_dones[:, :-1, 0]], dim=1)
+                    done_mask = ~torch.cat(
+                        [torch.zeros(batch_size, 1, device=device, dtype=torch.bool),
+                         batch_dones[:, :-1, :].any(dim=-1)], dim=1
+                    )
                     mask = burn_mask & done_mask
 
                     # 3. Update Critics (Independent graph)
