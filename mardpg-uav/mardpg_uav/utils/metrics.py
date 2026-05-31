@@ -57,9 +57,9 @@ class MetricsTracker:
     def get_stats(self) -> Dict[str, float]:
         stats = {
             'avg_reward': np.mean(self.episode_rewards[-100:]) if self.episode_rewards else 0,
-            'success_rate': np.mean(self.successes[-250:]) if len(self.successes) >= 250 else np.mean(self.successes),
-            'collision_rate': np.mean(self.collisions[-250:]) if len(self.collisions) >= 250 else np.mean(self.collisions),
-            'trapped_rate': np.mean(self.trapped[-250:]) if len(self.trapped) >= 250 else np.mean(self.trapped),
+            'success_rate': np.mean(self.successes[-100:]) if len(self.successes) >= 100 else np.mean(self.successes) if self.successes else 0,
+            'collision_rate': np.mean(self.collisions[-100:]) if len(self.collisions) >= 100 else np.mean(self.collisions) if self.collisions else 0,
+            'trapped_rate': np.mean(self.trapped[-100:]) if len(self.trapped) >= 100 else np.mean(self.trapped) if self.trapped else 0,
             'avg_episode_length': np.mean(self.episode_lengths[-100:]) if self.episode_lengths else 0,
         }
         if self.path_lengths:

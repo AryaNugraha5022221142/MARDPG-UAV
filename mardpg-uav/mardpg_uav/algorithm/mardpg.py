@@ -47,6 +47,7 @@ class MARDPGAgent:
         self._hard_update(self.actor_target, self.actor)
         self._hard_update(self.critic_target, self.critic)
         self.critic_target.eval()   # freeze dropout / batchnorm for stable targets
+        self.actor_target.eval()    # ensure target policy behaves deterministically if stateful layers are added
         
         # Hidden states (reset per episode)
         self.actor_hidden = None

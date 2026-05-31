@@ -109,10 +109,4 @@ class RewardFunction:
             return float('inf')
         return min(self._surface_distance(position, obs) for obs in close_obstacles)
 
-    def _compute_d_sep(self, position: np.ndarray, other_positions: List[np.ndarray]) -> float:
-        min_dist = float('inf')
-        for other_pos in other_positions:
-            dist = np.linalg.norm(position - other_pos)
-            if dist < min_dist:
-                min_dist = dist
-        return min_dist - self.inter_uav_min
+

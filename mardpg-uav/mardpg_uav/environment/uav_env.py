@@ -189,8 +189,8 @@ class MultiUAVEnv(gym.Env):
                 rewards[i] -= self.cfg['reward']['r_col']  # -10.0
                 
             # Optional: boundary penalty
-            WALL_MARGIN = 3.0
-            WALL_PENALTY_SCALE = 0.5
+            WALL_MARGIN = self.cfg.get('wall_margin', 3.0)
+            WALL_PENALTY_SCALE = self.cfg.get('wall_penalty_scale', 0.5)
             wall_dist = min(
                 pos[0], self.cfg['env_size'][0] - pos[0],
                 pos[1], self.cfg['env_size'][1] - pos[1],

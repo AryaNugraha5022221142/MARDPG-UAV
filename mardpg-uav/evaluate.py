@@ -31,6 +31,7 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
             lr_critic=algo_cfg['lr_critic'],
             tau=algo_cfg['tau'], gamma=algo_cfg['gamma'],
             gradient_clip=algo_cfg['gradient_clip'],
+            burn_in=algo_cfg['burn_in'],
             device=device
         )
         ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
@@ -40,7 +41,8 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
                     shared_ckpt = torch.load(f"{checkpoint_dir}/shared_actor.pt", map_location=device)
                     agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
                 except Exception as e:
-                    print(f"Warning: Could not load shared actor: {e}")
+                    print(f"Error: Could not load shared actor: {e}")
+                    raise SystemExit(1)
             agent.actor.load_state_dict(ckpt['actor_private'], strict=False)
         else:
             agent.actor.load_state_dict(ckpt['actor'])

@@ -7,6 +7,7 @@ import yaml
 import torch
 import numpy as np
 import random
+import datetime
 from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
@@ -38,6 +39,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         np.random.seed(seed)
         random.seed(seed)
         torch.backends.cudnn.deterministic = True
+    
+    run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     env_cfg = cfg['environment']
     algo_cfg = cfg['algorithm']
     net_cfg = cfg['network']
@@ -127,6 +130,20 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     metrics = MetricsTracker()
     global_step = 0
     
+    # Restore global step and noise scheduling if resuming
+    if resume_dir:
+        try:
+            shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
+            if 'global_step' in shared_ckpt:
+                global_step = shared_ckpt['global_step']
+            if 'noise_steps' in shared_ckpt:
+                noise.total_steps = shared_ckpt['noise_steps']
+                # Fast-forward the noise sigma calculation to match the restored step
+                noise.sample() 
+            print(f"Restored global_step: {global_step}, noise_steps: {noise.total_steps}")
+        except Exception as e:
+            print(f"Warning: Could not load global_step/noise_steps from checkpoint: {e}")
+
     print("=" * 60)
     print("MARDPG-NAV Training")
     print(f"Agents: {n_agents}, Device: {device}")
@@ -134,6 +151,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     try:
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
+            
+            # Phase 1/2 Curriculum Learning
+            density = min(algo_cfg.get('obstacle_density', 0.10), episode / 10000)
+            goal_thresh = max(2.0, 5.0 - episode / 500)
+            
+            env.cfg['obstacle_density'] = density
+            env.cfg['goal_threshold'] = goal_thresh
             
             obs = env.reset()
             
@@ -205,6 +229,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
                     batch_size, seq_len, _, obs_dim = batch_obs.shape
                     
+                    # Define environment limit (matches dynamics.py)
+                    DELTA_MAX = (np.pi / 6) / 3 
+
                     # 1. Forward passes for all agents (Online and Target)
                     agent_hiddens, next_agent_hiddens, target_actions = [], [], []
                     for i, agent in enumerate(agents):
@@ -216,8 +243,20 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             feat_next = agent.actor_target.shared(batch_obs_next[:, :, i, :].flatten(0,1)).view(batch_size, seq_len, -1)
                             h_next, _ = agent.actor_target.lstm(feat_next, None)
                             next_agent_hiddens.append(h_next)
-                            next_act = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
-                            target_actions.append(next_act)
+                            
+                            # 1. Get raw unconstrained target action
+                            next_act_raw = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
+                            
+                            # 2. Fetch the applied action from step t to constrain step t+1
+                            prev_act = batch_actions[:, :, i, :] 
+                            
+                            # 3. Apply the environment's kinematic constraints explicitly
+                            delta = torch.clamp(next_act_raw - prev_act, -DELTA_MAX, DELTA_MAX)
+                            next_act_constrained = torch.clamp(prev_act + delta, 
+                                                               -agent.actor_target.action_bound, 
+                                                               agent.actor_target.action_bound)
+                            
+                            target_actions.append(next_act_constrained)
 
                     # 2. Prepare Critic Tensors (DETACHED to fix Bug 2)
                     detached_hidden_all = torch.stack([h.detach().reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)
@@ -289,8 +328,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             if episode % 1000 == 0 and episode > 0:
                 save_dir = f"checkpoints/episode_{episode}"
                 os.makedirs(save_dir, exist_ok=True)
-                torch.save({'shared_actor': agents[0].shared_extractor.state_dict()},
-                           f"{save_dir}/shared_actor.pt")
+                torch.save({
+                    'shared_actor': agents[0].shared_extractor.state_dict(),
+                    'global_step': global_step,
+                    'noise_steps': noise.total_steps
+                }, f"{save_dir}/shared_actor.pt")
                 for i, agent in enumerate(agents):
                     private = {k: v for k, v in agent.actor.state_dict().items()
                                if k.startswith(('lstm.', 'fc_out.'))}
@@ -302,7 +344,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # Continuous JSON logging every 100 episodes
             if episode % 100 == 0 and episode > 0:
                 os.makedirs("checkpoints", exist_ok=True)
-                log_file = "checkpoints/training_log.csv"
+                log_file = f"checkpoints/training_log_{run_id}.csv"
                 is_new = not os.path.exists(log_file)
                 with open(log_file, 'a') as f:
                     if is_new:
@@ -314,8 +356,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         save_dir = f"checkpoints/interrupted_episode_{episode}"
         os.makedirs(save_dir, exist_ok=True)
         print(f"Saving emergency checkpoints to {save_dir} ...")
-        torch.save({'shared_actor': agents[0].shared_extractor.state_dict()},
-                   f"{save_dir}/shared_actor.pt")
+        torch.save({
+            'shared_actor': agents[0].shared_extractor.state_dict(),
+            'global_step': global_step,
+            'noise_steps': noise.total_steps
+        }, f"{save_dir}/shared_actor.pt")
         for i, agent in enumerate(agents):
             private = {k: v for k, v in agent.actor.state_dict().items()
                        if k.startswith(('lstm.', 'fc_out.'))}
