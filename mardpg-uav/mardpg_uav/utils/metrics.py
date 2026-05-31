@@ -35,7 +35,8 @@ class MetricsTracker:
         if isinstance(reached, bool):
             reached = [reached] * n_agents
 
-        self.collisions.append(any(per_agent_collided))
+        collision_ratio = sum(per_agent_collided) / n_agents if n_agents > 0 else 0.0
+        self.collisions.append(collision_ratio)
 
         # Trapped means not reached and not collided
         trapped_ratio = sum(1 for r, c in zip(reached, per_agent_collided) if not r and not c) / n_agents if n_agents > 0 else 0.0

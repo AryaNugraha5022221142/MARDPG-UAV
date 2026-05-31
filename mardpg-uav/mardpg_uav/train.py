@@ -226,17 +226,19 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
 
                     # FIX (Bug 9): Explicit padding mask to prevent zero-state leak
-                    burn_mask = torch.arange(seq_len, device=device).unsqueeze(0) >= algo_cfg['burn_in']
-                    done_mask = ~torch.cat(
-                        [torch.zeros(batch_size, 1, device=device, dtype=torch.bool),
-                         batch_dones[:, :-1, :].any(dim=-1)], dim=1
-                    )
-                    mask = burn_mask & done_mask
+                    burn_mask = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(-1) >= algo_cfg['burn_in']
+                    
+                    done_mask = ~torch.cat([
+                        torch.zeros(batch_size, 1, n_agents, device=device, dtype=torch.bool),
+                        batch_dones[:, :-1, :]
+                    ], dim=1)
+                    agent_mask = burn_mask & done_mask
 
                     # 3. Update Critics (Independent graph)
                     for i, agent in enumerate(agents):
+                        mask_i = agent_mask[:, :, i]
                         agent.update_critic(detached_hidden_all, act_all, next_hidden_all, next_act_all, 
-                                            batch_rewards, batch_dones, seq_len, mask)
+                                            batch_rewards, batch_dones, seq_len, mask_i)
 
                     # 4. Update Actors & Shared Extractor (Fix Bug 6 - Order of zero_grad)
                     shared_optimizer.zero_grad()
@@ -244,6 +246,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     
                     actor_losses = []
                     for i, agent in enumerate(agents):
+                        mask_i = agent_mask[:, :, i]
                         # Construct joint actions where only current agent retains local gradient
                         actor_actions = []
                         for j, other_agent in enumerate(agents):
@@ -254,7 +257,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                         actor_act_all = torch.stack(actor_actions, dim=1)
                         # FIX: Delete 'hidden_all_with_grad' entirely. 
                         # Re-use 'detached_hidden_all' created in Phase 2!
-                        actor_losses.append(agent.compute_actor_loss(detached_hidden_all, actor_act_all, mask))
+                        actor_losses.append(agent.compute_actor_loss(detached_hidden_all, actor_act_all, mask_i))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents

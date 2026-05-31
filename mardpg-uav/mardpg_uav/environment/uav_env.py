@@ -183,8 +183,8 @@ class MultiUAVEnv(gym.Env):
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
             )
             
-            # Check collision
-            if self._check_collision(i, positions):
+            # Check collision or out of bounds
+            if self._check_collision(i, positions) or self._out_of_bounds(pos):
                 collisions[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # -10.0
                 
@@ -199,9 +199,6 @@ class MultiUAVEnv(gym.Env):
             )
             if wall_dist < WALL_MARGIN:
                 rewards[i] -= WALL_PENALTY_SCALE * (1.0 - wall_dist / WALL_MARGIN)
-                
-            if self._out_of_bounds(pos):
-                rewards[i] -= 5.0  # OOB soft penalty
             
             # Check goal reached
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
