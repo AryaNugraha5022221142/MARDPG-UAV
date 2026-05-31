@@ -7,13 +7,13 @@ import numpy as np
 DELTA_MAX = (np.pi / 6) / 3   # ≈ 0.1745 rad/step — Eq.11
 
 class UAVDynamics:
-    def __init__(self, v=3.0, dt=0.1, env_size=(50.0, 50.0, 60.0), max_altitude=60.0, min_altitude=0.0):
+    def __init__(self, v=3.0, dt=0.1, env_size=(50.0, 50.0, 60.0), max_altitude=60.0, min_altitude=0.0, action_bounds=(-np.pi/6, np.pi/6)):
         self.env_size = np.asarray(env_size, dtype=np.float32)
         self.v = v
         self.dt = dt
         self.max_altitude = max_altitude
         self.min_altitude = min_altitude
-        self.action_bounds = (-np.pi / 6, np.pi / 6)
+        self.action_bounds = action_bounds
 
     @staticmethod
     def _wrap(theta):
