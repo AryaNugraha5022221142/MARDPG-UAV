@@ -64,7 +64,7 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
         episode_reward = 0
         path_history = [env.agents_state[:, :3].copy()]
         reached = [False] * n_agents
-        collision = False
+        per_agent_collided = [False] * n_agents
         
         for step in range(env_cfg['max_steps_per_episode']):
             actions = []
@@ -82,15 +82,15 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
                 reached = info['reached']
             
             if isinstance(info['collisions'], np.ndarray):
-                collision = any(info['collisions'])
+                per_agent_collided = info['collisions'].tolist()
             else:
-                collision = any(info['collisions']) if isinstance(info['collisions'], list) else info['collisions']
+                per_agent_collided = info['collisions']
             
             if done:
                 break
         
         metrics.record_episode(
-            [episode_reward], step+1, reached, collision,
+            [episode_reward], step+1, reached, per_agent_collided,
             [path_history[0][i] for i in range(n_agents)],
             [env.goals[i] for i in range(n_agents)],
             path_history

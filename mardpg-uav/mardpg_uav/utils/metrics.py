@@ -28,7 +28,14 @@ class MetricsTracker:
         # Calculate per-agent rates instead of all-or-nothing
         success_ratio = sum(reached) / n_agents if n_agents > 0 else 0.0
         self.successes.append(success_ratio)
-        self.collisions.append(any(per_agent_collided)) # Keeping overall collision rate for safety tracking
+        
+        # Ensure lists
+        if isinstance(per_agent_collided, bool):
+            per_agent_collided = [per_agent_collided] * n_agents
+        if isinstance(reached, bool):
+            reached = [reached] * n_agents
+
+        self.collisions.append(any(per_agent_collided))
 
         # Trapped means not reached and not collided
         trapped_ratio = sum(1 for r, c in zip(reached, per_agent_collided) if not r and not c) / n_agents if n_agents > 0 else 0.0
