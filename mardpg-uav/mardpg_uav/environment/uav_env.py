@@ -297,10 +297,12 @@ class MultiUAVEnv(gym.Env):
         return False
 
     def _out_of_bounds(self, pos: np.ndarray) -> bool:
+        cr = self.cfg.get('collision_radius', 0.5)
         return (
-            pos[0] <= 0.0 or pos[0] >= self.cfg['env_size'][0] or
-            pos[1] <= 0.0 or pos[1] >= self.cfg['env_size'][1] or
-            pos[2] < self.cfg.get('min_altitude', 0.0) + 1e-4 or pos[2] >= self.cfg['max_altitude']
+            pos[0] < cr or pos[0] > self.cfg['env_size'][0] - cr or
+            pos[1] < cr or pos[1] > self.cfg['env_size'][1] - cr or
+            pos[2] < self.cfg.get('min_altitude', 0.0) + cr or
+            pos[2] > self.cfg['max_altitude'] - cr
         )
 
     def _check_collision(self, agent_id: int, positions: List[np.ndarray], pending_done: np.ndarray) -> bool:

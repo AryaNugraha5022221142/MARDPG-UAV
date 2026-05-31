@@ -62,7 +62,15 @@ class EpisodeReplayBuffer:
                 obs_shape = ep.observations[0].shape
                 act_shape = ep.actions[0].shape
                 
-                obs_pad = [np.zeros(obs_shape, dtype=np.float32) for _ in range(pad_len)]
+                def _make_neutral_obs(shape):
+                    obs = np.zeros(shape, dtype=np.float32)
+                    if len(shape) == 2:
+                        obs[:, 6:31] = 1.0  # lidar at max range
+                        obs[:, 0] = 0.0; obs[:, 1] = 1.0
+                        obs[:, 2] = 0.0; obs[:, 3] = 1.0
+                    return obs
+                
+                obs_pad = [_make_neutral_obs(obs_shape) for _ in range(pad_len)]
                 act_pad = [np.zeros(act_shape, dtype=np.float32) for _ in range(pad_len)]
                 rew_pad = [np.zeros(n_agents, dtype=np.float32) for _ in range(pad_len)]
                 done_pad = [np.ones(n_agents, dtype=bool) for _ in range(pad_len)] # Padding states act as absorbing terminal states

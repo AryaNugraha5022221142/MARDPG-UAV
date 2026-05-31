@@ -153,11 +153,19 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     try:
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
             
-            # Phase 1/2 Curriculum Learning
-            density = min(env_cfg['obstacle_density'], episode / 10000)
-            goal_thresh = max(2.0, 5.0 - episode / 500)
+            # Curriculum Learning
+            # Shrinking arena curriculum: start at 30x30x30, grow to full 50x50x60
+            # by episode 5000. Walls are always present; this directly controls
+            # how quickly a random policy hits them.
+            curriculum_frac = min(1.0, episode / 5000)
+            scale = 0.6 + 0.4 * curriculum_frac   # 60% -> 100% of arena dimensions
+            env.cfg['env_size'] = [
+                env_cfg['env_size'][0] * scale,
+                env_cfg['env_size'][1] * scale,
+                env_cfg['env_size'][2] * scale
+            ]
             
-            env.cfg['obstacle_density'] = density
+            goal_thresh = max(2.0, 5.0 - episode / 500)
             env.cfg['goal_threshold'] = goal_thresh
             
             obs = env.reset()

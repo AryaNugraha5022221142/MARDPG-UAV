@@ -28,8 +28,8 @@ environment:
     r_free: 0.1
     r_step: -0.4
     delta: [0.40, 0.30, 0.10, 0.10, 0.10]
-    r_goal: 50.0          
-    r_col: 10.0           # FIX (Bug 5): Scaled down from 250.0 (applied as penalty in env)
+    r_goal: 200.0          
+    r_col: 100.0           # CRITICAL fix
 
 algorithm:
   gamma: 0.99
@@ -48,8 +48,8 @@ algorithm:
 
   exploration:
     noise_std_start: 0.25
-    noise_std_end: 0.05
-    noise_anneal_steps: 3000000
+    noise_std_end: 0.02
+    noise_anneal_steps: 1500000
 
 network:
   shared:

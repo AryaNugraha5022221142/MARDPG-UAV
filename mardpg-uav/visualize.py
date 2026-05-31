@@ -112,7 +112,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         elif ob.type == 'cylinder':
             ob_pos = ob.position
             ob_rad = ob.size[0]
-            ob_h = ob.size[2]
+            ob_h = ob.size[1]
             
             # Cylinder up to height
             zC = np.linspace(max(0, ob_pos[2] - ob_h), ob_pos[2] + ob_h, 5)
