@@ -20,7 +20,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     for i in range(n_agents):
         agent = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
-            obs_dim=env.obs_dim, action_dim=env.action_dim,
+            action_dim=env.action_dim,
             hidden_dim=net_cfg['actor']['lstm_hidden'],
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],
