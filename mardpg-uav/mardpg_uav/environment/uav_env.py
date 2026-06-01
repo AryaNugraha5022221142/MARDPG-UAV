@@ -5,7 +5,7 @@ Implements Dec-POMDP from Section 1.2.
 import gymnasium as gym
 import numpy as np
 from typing import Tuple, Dict, List, Optional
-from .dynamics import UAVDynamics
+from .dynamics import QuadcopterDynamics
 from .obstacles import SceneGenerator, Obstacle
 from .sensors import Rangefinder, GoalSensor
 from .rewards import RewardFunction
