@@ -189,7 +189,7 @@ class MultiUAVEnv(gym.Env):
                         
                 # Inter-UAV collision (symmetric check)
                 for j in range(self.n_agents):
-                    if i != j and not self.agent_done[j]:
+                    if i != j:
                         if np.linalg.norm(pos - self.agents_state[j, :3]) < self.cfg['inter_uav_min_dist']:
                             collisions[i] = True
                             break
@@ -296,10 +296,10 @@ class MultiUAVEnv(gym.Env):
         env = np.array(self.cfg['env_size'])
         for _ in range(max_attempts):
             # Use a margin from all walls to avoid immediate boundary collision
-            margin = 3.0
+            margin = min(3.0, np.min(env) * 0.1)
             pos = self.scene_gen.rng.uniform(
-                [margin, margin, 3.0],
-                [env[0] - margin, env[1] - margin, env[2] - 3.0]
+                [margin, margin, margin],
+                [env[0] - margin, env[1] - margin, env[2] - margin]
             )
             if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos.astype(np.float32)

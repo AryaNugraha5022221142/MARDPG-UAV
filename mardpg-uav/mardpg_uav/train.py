@@ -180,10 +180,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # how quickly a random policy hits them.
             curriculum_frac = min(1.0, episode / 5000)
             scale = 0.6 + 0.4 * curriculum_frac   # 60% -> 100% of arena dimensions
+            base_env_size = cfg['environment']['env_size']
             env.cfg['env_size'] = [
-                env_cfg['env_size'][0] * scale,
-                env_cfg['env_size'][1] * scale,
-                env_cfg['env_size'][2] * scale
+                base_env_size[0] * scale,
+                base_env_size[1] * scale,
+                base_env_size[2] * scale
             ]
             
             goal_thresh = max(2.0, 5.0 - episode / 500)
@@ -297,9 +298,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             next_act_constrained = torch.clamp(next_act_raw, -v_max, v_max)
                             
                             # 3. Add clipped exploration noise (TD3 smoothing)
-                            noise = torch.randn_like(next_act_constrained) * algo_cfg['policy_noise']
-                            noise = torch.clamp(noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
-                            final_next_act = torch.clamp(next_act_constrained + noise, -v_max, v_max)
+                            target_noise = torch.randn_like(next_act_constrained) * algo_cfg['policy_noise']
+                            target_noise = torch.clamp(target_noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
+                            final_next_act = torch.clamp(next_act_constrained + target_noise, -v_max, v_max)
                             
                             target_actions.append(final_next_act)
 
