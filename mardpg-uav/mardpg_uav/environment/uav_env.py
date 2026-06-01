@@ -169,6 +169,31 @@ class MultiUAVEnv(gym.Env):
         
         pending_done = self.agent_done.copy()
         
+        # 1. Pre-calculate all collisions simultaneously
+        for i in range(self.n_agents):
+            if self.agent_done[i]: continue
+            pos = self.agents_state[i, :3]
+            
+            # Check bounds and obstacles
+            if self._out_of_bounds(pos):
+                collisions[i] = True
+            else:
+                # Fast culling & Obstacles
+                dists = np.linalg.norm(self.obs_centers - pos, axis=1) if len(self.obstacles) > 0 else []
+                mask = dists < (self.cfg['collision_radius'] + self.obs_max_sizes + 0.1) if len(self.obstacles) > 0 else []
+                close_obstacles = [self.obstacles[idx] for idx, m in enumerate(mask) if m]
+                for obs in close_obstacles:
+                    if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
+                        collisions[i] = True
+                        break
+                        
+                # Inter-UAV collision (symmetric check)
+                for j in range(self.n_agents):
+                    if i != j and not self.agent_done[j]:
+                        if np.linalg.norm(pos - self.agents_state[j, :3]) < self.cfg['inter_uav_min_dist']:
+                            collisions[i] = True
+                            break
+
         for i in range(self.n_agents):
             if self.agent_done[i]:
                 obs_list.append(self._get_single_observation(i))
@@ -198,9 +223,8 @@ class MultiUAVEnv(gym.Env):
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
             )
             
-            # Check collision or out of bounds
-            if self._check_collision(i, positions, pending_done) or self._out_of_bounds(pos):
-                collisions[i] = True
+            # Apply pre-calculated penalties
+            if collisions[i]:
                 pending_done[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # penalty
                 

@@ -263,18 +263,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             # 1. Get raw unconstrained target action
                             next_act_raw = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
                             
-                            # 2. Fetch the applied action from step t to constrain step t+1
-                            prev_act = batch_actions[:, :, i, :] 
+                            # 2. Apply environment velocity bounds (no artificial acceleration delta needed for kinematic model)
+                            next_act_constrained = torch.clamp(next_act_raw, -v_max, v_max)
                             
-                            # 3. Apply the environment's kinematic constraints explicitly
-                            delta = torch.clamp(next_act_raw - prev_act, -DELTA_MAX_V, DELTA_MAX_V)
-                            next_act_constrained = torch.clamp(prev_act + delta, -v_max, v_max)
-                            
-                            # Add clipped exploration noise
+                            # 3. Add clipped exploration noise (TD3 smoothing)
                             noise = torch.randn_like(next_act_constrained) * algo_cfg['policy_noise']
                             noise = torch.clamp(noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
-                            final_next_act = torch.clamp(
-                                next_act_constrained + noise, -v_max, v_max)
+                            final_next_act = torch.clamp(next_act_constrained + noise, -v_max, v_max)
                             
                             target_actions.append(final_next_act)
 
