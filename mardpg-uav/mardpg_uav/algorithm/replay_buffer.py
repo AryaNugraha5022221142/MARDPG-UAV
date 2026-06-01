@@ -27,91 +27,98 @@ class Episode:
 
 
 class EpisodeReplayBuffer:
-    def __init__(self, capacity: int = 1000, seq_len: int = 80):
+    def __init__(self, capacity: int = 1000, seq_len: int = 80, max_steps: int = 250):
         self.capacity = capacity
         self.seq_len = seq_len
-        self.buffer = deque(maxlen=capacity)
+        self.max_ep_len = max(max_steps, seq_len) + 1
+        
+        self.obs_buffer = None
+        self.act_buffer = None
+        self.rew_buffer = None
+        self.done_buffer = None
+        self.ep_lens = np.zeros(capacity, dtype=np.int32)
+        
+        self.ptr = 0
+        self.size = 0
         
     def add_episode(self, episode: Episode):
-        if episode.length() > 0:
-            self.buffer.append(episode)
+        T = episode.length()
+        if T == 0:
+            return
+            
+        if self.obs_buffer is None:
+            n_agents = len(episode.agent_dones[0])
+            obs_shape = episode.observations[0].shape
+            act_shape = episode.actions[0].shape
+            
+            self.obs_buffer = np.zeros((self.capacity, self.max_ep_len) + obs_shape, dtype=np.float32)
+            self.act_buffer = np.zeros((self.capacity, self.max_ep_len) + act_shape, dtype=np.float32)
+            self.rew_buffer = np.zeros((self.capacity, self.max_ep_len, n_agents), dtype=np.float32)
+            self.done_buffer = np.ones((self.capacity, self.max_ep_len, n_agents), dtype=bool)
+            
+        idx = self.ptr
+        
+        obs = np.stack(episode.observations)
+        act = np.stack(episode.actions)
+        rew = np.stack(episode.rewards)
+        dones = np.stack(episode.agent_dones)
+        
+        pad_len = max(0, self.seq_len + 1 - T)
+        
+        self.ep_lens[idx] = T + pad_len
+        
+        self.obs_buffer[idx, :T] = obs
+        self.act_buffer[idx, :T] = act
+        self.rew_buffer[idx, :T] = rew
+        self.done_buffer[idx, :T] = dones
+        
+        if pad_len > 0:
+            # fill neutral obs
+            neutral_obs = np.zeros_like(obs[0])
+            if neutral_obs.ndim == 2:
+                neutral_obs[:, 6:31] = 1.0
+            
+            self.obs_buffer[idx, T:T+pad_len] = neutral_obs
+            self.act_buffer[idx, T:T+pad_len] = 0.0
+            self.rew_buffer[idx, T:T+pad_len] = 0.0
+            self.done_buffer[idx, T:T+pad_len] = True
+            
+        self.ptr = (self.ptr + 1) % self.capacity
+        self.size = min(self.size + 1, self.capacity)
     
     def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
-        """
-        Sample batch of episode segments for BPTT.
-        Returns tensors of shape (batch, seq_len, n_agents, dim)
-        """
-        batch_obs = []
-        batch_obs_next = []
-        batch_actions = []
-        batch_rewards = []
-        batch_dones = []
-        
-        attempts = 0
-        max_attempts = batch_size * 20
-        
-        while len(batch_obs) < batch_size and attempts < max_attempts:
-            ep = random.choice(self.buffer)
-            attempts += 1
-            
-            T = ep.length()
-            if T < self.seq_len + 1:
-                # Zero padding for short episodes
-                pad_len = self.seq_len + 1 - T
-                n_agents = len(ep.agent_dones[0])
-                obs_shape = ep.observations[0].shape
-                act_shape = ep.actions[0].shape
-                
-                def _make_neutral_obs(shape):
-                    obs = np.zeros(shape, dtype=np.float32)
-                    if len(shape) == 2:
-                        # NEW layout: [vel(0:3)=0, prev_cmd(3:6)=0, lidar(6:31)=1, goal(31:34)=0]
-                        obs[:, 6:31] = 1.0  # lidar at max range
-                        # velocity, prev_cmd, goal all zero — already set by np.zeros
-                    return obs
-                
-                obs_pad = [_make_neutral_obs(obs_shape) for _ in range(pad_len)]
-                act_pad = [np.zeros(act_shape, dtype=np.float32) for _ in range(pad_len)]
-                rew_pad = [np.zeros(n_agents, dtype=np.float32) for _ in range(pad_len)]
-                done_pad = [np.ones(n_agents, dtype=bool) for _ in range(pad_len)] # Padding states act as absorbing terminal states
-                
-                ep_obs = ep.observations + obs_pad
-                ep_act = ep.actions + act_pad
-                ep_rew = ep.rewards + rew_pad
-                ep_dones = ep.agent_dones + done_pad
-                
-                start = 0
-                end = self.seq_len
-                
-                batch_obs.append(np.stack(ep_obs[start:end]))
-                batch_obs_next.append(np.stack(ep_obs[start+1:end+1]))
-                batch_actions.append(np.stack(ep_act[start:end]))
-                batch_rewards.append(np.stack(ep_rew[start:end]))
-                batch_dones.append(np.array(ep_dones[start:end], dtype=bool))
-            else:
-                # Random starting point
-                start = random.randint(0, T - self.seq_len - 1)
-                end = start + self.seq_len
-                
-                # Stack episode data
-                batch_obs.append(np.stack(ep.observations[start:end]))
-                batch_obs_next.append(np.stack(ep.observations[start+1:end+1]))
-                batch_actions.append(np.stack(ep.actions[start:end]))
-                batch_rewards.append(np.stack(ep.rewards[start:end]))
-                batch_dones.append(np.array(ep.agent_dones[start:end], dtype=bool))
-            
-        if len(batch_obs) < batch_size:
+        if self.size == 0:
             return None
+            
+        batch_idxs = np.random.randint(0, self.size, size=batch_size)
         
-        # Convert to tensors
-        obs_tensor = torch.tensor(np.stack(batch_obs), dtype=torch.float32)
-        obs_next_tensor = torch.tensor(np.stack(batch_obs_next), dtype=torch.float32)
-        act_tensor = torch.tensor(np.stack(batch_actions), dtype=torch.float32)
-        rew_tensor = torch.tensor(np.stack(batch_rewards), dtype=torch.float32)
-        done_tensor = torch.tensor(np.stack(batch_dones),
-                                   dtype=torch.bool)  # shape (B, seq, n_agents)
+        batch_obs = np.zeros((batch_size, self.seq_len) + self.obs_buffer.shape[2:], dtype=np.float32)
+        batch_obs_next = np.zeros((batch_size, self.seq_len) + self.obs_buffer.shape[2:], dtype=np.float32)
+        batch_actions = np.zeros((batch_size, self.seq_len) + self.act_buffer.shape[2:], dtype=np.float32)
+        batch_rewards = np.zeros((batch_size, self.seq_len) + self.rew_buffer.shape[2:], dtype=np.float32)
+        batch_dones = np.zeros((batch_size, self.seq_len) + self.done_buffer.shape[2:], dtype=bool)
         
-        return obs_tensor, obs_next_tensor, act_tensor, rew_tensor, done_tensor
+        for i, idx in enumerate(batch_idxs):
+            T = self.ep_lens[idx]
+            if T <= self.seq_len:
+                start = 0
+            else:
+                start = np.random.randint(0, T - self.seq_len)
+            end = start + self.seq_len
+            
+            batch_obs[i] = self.obs_buffer[idx, start:end]
+            batch_obs_next[i] = self.obs_buffer[idx, start+1:end+1]
+            batch_actions[i] = self.act_buffer[idx, start:end]
+            batch_rewards[i] = self.rew_buffer[idx, start:end]
+            batch_dones[i] = self.done_buffer[idx, start:end]
+            
+        return (
+            torch.tensor(batch_obs),
+            torch.tensor(batch_obs_next),
+            torch.tensor(batch_actions),
+            torch.tensor(batch_rewards),
+            torch.tensor(batch_dones)
+        )
     
     def __len__(self):
-        return len(self.buffer)
+        return self.size

@@ -121,10 +121,10 @@ class MARDPGAgent:
         # Update Critic safely
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
-        torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
+        c_grad_norm = torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
         self.critic_optimizer.step()
         
-        return critic_loss.item()
+        return critic_loss.item(), q1_current.detach().mean().item(), c_grad_norm.item()
 
     def compute_actor_loss(self, detached_hidden_all, actor_act_all, mask):
         """Phase 2: Actor loss generation (Fixes Bugs 1 & 3)"""

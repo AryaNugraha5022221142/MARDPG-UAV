@@ -8,3 +8,4 @@ pandas
 PyYAML>=6.0
 pytest
 tqdm
+wandb

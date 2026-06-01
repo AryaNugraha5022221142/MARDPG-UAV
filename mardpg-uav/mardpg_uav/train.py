@@ -8,6 +8,7 @@ import torch
 import numpy as np
 import random
 import datetime
+import wandb
 from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
@@ -41,6 +42,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         torch.backends.cudnn.deterministic = True
     
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    
+    wandb.init(project="mardpg-uav", name=f"run_{run_id}_seed_{seed}", config=cfg)
+    
     env_cfg = cfg['environment']
     algo_cfg = cfg['algorithm']
     net_cfg = cfg['network']
@@ -97,11 +101,19 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     try:
                         shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
                         agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
+                        if i == 0 and 'shared_opt' in shared_ckpt:
+                            shared_optimizer.load_state_dict(shared_ckpt['shared_opt'])
                     except Exception:
                         pass
                 agent.actor.load_state_dict(checkpoint['actor_private'], strict=False)
                 
             agent.critic.load_state_dict(checkpoint['critic'])
+            
+            if 'actor_opt' in checkpoint:
+                agent.actor_optimizer.load_state_dict(checkpoint['actor_opt'])
+            if 'critic_opt' in checkpoint:
+                agent.critic_optimizer.load_state_dict(checkpoint['critic_opt'])
+                
             # Soft update target networks to match exactly
             for target_param, param in zip(agent.actor_target.parameters(), agent.actor.parameters()):
                 target_param.data.copy_(param.data)
@@ -118,7 +130,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Replay buffer and noise
     buffer = EpisodeReplayBuffer(
         capacity=algo_cfg['replay_capacity'],
-        seq_len=algo_cfg['seq_len']
+        seq_len=algo_cfg['seq_len'],
+        max_steps=env_cfg['max_steps_per_episode']
     )
     noise = GaussianNoise(
         n_agents=n_agents,
@@ -169,7 +182,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             goal_thresh = max(2.0, 5.0 - episode / 500)
             env.cfg['goal_threshold'] = goal_thresh
             
-            obs = env.reset()
+            density_curriculum = min(env_cfg.get('obstacle_density', 0.1), (episode / 3000) * 0.1)
+            obs = env.reset(obstacle_density=density_curriculum)
             
             # Reset hidden states at episode boundaries (Section 7.2)
             for agent in agents:
@@ -234,6 +248,15 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 path_history
             )
             
+            wandb.log({
+                "episode": episode,
+                "reward": sum([sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]),
+                "length": episode_data.length() - 1,
+                "success_rate": np.mean(info['reached']),
+                "collision_rate": np.mean(info['collisions']),
+                "noise_sigma": noise.get_sigma()
+            }, step=global_step)
+            
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
             if episode >= algo_cfg['warmup_episodes'] and global_step % algo_cfg['update_freq'] == 0 and len(buffer) >= algo_cfg['batch_size']:
                 
@@ -289,10 +312,17 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     agent_mask = burn_mask & done_mask
 
                     # 3. Update Critics (Independent graph)
+                    c_losses = []
+                    q_vals = []
+                    c_grad_norms = []
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
-                        agent.update_critic(detached_hidden_all, act_all, next_hidden_all, next_act_all, 
+                        # Capture criticize loss
+                        c_loss, q_val, c_grad = agent.update_critic(detached_hidden_all, act_all, next_hidden_all, next_act_all, 
                                             batch_rewards, batch_dones, seq_len, mask_i)
+                        c_losses.append(c_loss)
+                        q_vals.append(q_val)
+                        c_grad_norms.append(c_grad)
 
                     # 4. Update Actors & Shared Extractor (Fix Bug 6 - Order of zero_grad)
                     shared_optimizer.zero_grad()
@@ -317,16 +347,28 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     total_actor_loss = sum(actor_losses) / n_agents
                     total_actor_loss.backward()
                     
-                    torch.nn.utils.clip_grad_norm_(agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
+                    shared_grad_norm = torch.nn.utils.clip_grad_norm_(agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
                     shared_optimizer.step()
+                    
+                    actor_grad_norms = []
                     for agent in agents:
-                        torch.nn.utils.clip_grad_norm_(agent.private_actor_params, algo_cfg['gradient_clip'])
+                        a_grad = torch.nn.utils.clip_grad_norm_(agent.private_actor_params, algo_cfg['gradient_clip'])
+                        actor_grad_norms.append(a_grad.item())
                         agent.actor_optimizer.step()
 
                     # 5. Soft Updates
                     for agent in agents:
                         agent._soft_update(agent.actor_target, agent.actor)
                         agent._soft_update(agent.critic_target, agent.critic)
+                        
+                    wandb.log({
+                        "actor_loss": total_actor_loss.item(),
+                        "critic_loss": np.mean(c_losses),
+                        "q_vals": np.mean(q_vals),
+                        "critic_grad_norm": np.mean(c_grad_norms),
+                        "shared_grad_norm": shared_grad_norm.item(),
+                        "actor_grad_norm": np.mean(actor_grad_norms)
+                    }, step=global_step)
             
             # Logging
             if episode % 100 == 0 and episode > 0:
@@ -345,6 +387,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 os.makedirs(save_dir, exist_ok=True)
                 torch.save({
                     'shared_actor': agents[0].shared_extractor.state_dict(),
+                    'shared_opt': shared_optimizer.state_dict(),
                     'global_step': global_step,
                     'noise_steps': noise.total_steps
                 }, f"{save_dir}/shared_actor.pt")
@@ -354,6 +397,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     torch.save({
                         'actor_private': private,
                         'critic': agent.critic.state_dict(),
+                        'actor_opt': agent.actor_optimizer.state_dict(),
+                        'critic_opt': agent.critic_optimizer.state_dict(),
                     }, f"{save_dir}/agent_{i}.pt")
                     
             # Continuous JSON logging every 100 episodes
@@ -373,6 +418,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         print(f"Saving emergency checkpoints to {save_dir} ...")
         torch.save({
             'shared_actor': agents[0].shared_extractor.state_dict(),
+            'shared_opt': shared_optimizer.state_dict(),
             'global_step': global_step,
             'noise_steps': noise.total_steps
         }, f"{save_dir}/shared_actor.pt")
@@ -382,6 +428,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             torch.save({
                 'actor_private': private,
                 'critic': agent.critic.state_dict(),
+                'actor_opt': agent.actor_optimizer.state_dict(),
+                'critic_opt': agent.critic_optimizer.state_dict(),
             }, f"{save_dir}/agent_{i}.pt")
         
         print("\nInterrupted Training Stats:")
