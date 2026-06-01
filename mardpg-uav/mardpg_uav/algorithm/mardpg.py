@@ -14,7 +14,7 @@ from ..networks.critic import AttentionCritic
 
 class MARDPGAgent:
     def __init__(self, agent_id: int, n_agents: int,
-                 action_dim: int = 2, hidden_dim: int = 128,
+                 action_dim: int = 3, action_bound: float = 3.0, hidden_dim: int = 128,
                  lr_actor: float = 0.0001, lr_critic: float = 0.0003,
                  tau: float = 0.01, gamma: float = 0.99,
                  burn_in: int = 12,
@@ -26,6 +26,7 @@ class MARDPGAgent:
         self.burn_in = burn_in
         self.gradient_clip = gradient_clip
         self.device = torch.device(device)
+        self.action_bound = action_bound
         
         # Shared feature extractor (Section 10.1)
         import copy
@@ -33,8 +34,8 @@ class MARDPGAgent:
         self.target_shared_extractor = copy.deepcopy(self.shared_extractor).to(self.device)
         
         # Actor network (decentralized execution)
-        self.actor = Actor(self.shared_extractor, hidden_dim).to(self.device)
-        self.actor_target = Actor(self.target_shared_extractor, hidden_dim).to(self.device)
+        self.actor = Actor(self.shared_extractor, hidden_dim, action_bound=action_bound).to(self.device)
+        self.actor_target = Actor(self.target_shared_extractor, hidden_dim, action_bound=action_bound).to(self.device)
         self.private_actor_params = list(self.actor.lstm.parameters()) + list(self.actor.fc_out.parameters())
         self.actor_optimizer = optim.Adam(self.private_actor_params, lr=lr_actor)
         

@@ -1,13 +1,14 @@
 environment:
   n_agents: 5
-  uav_speed: 3.0              # m/s (inferred from typical quadrotor sim)
+  v_max: 3.0              # m/s — replaces uav_speed semantics
+  tau_v: 0.3              # velocity tracking time constant (s)
   dt: 0.1                     # s (10Hz control frequency)
   max_altitude: 60.0          # meters
   min_altitude: 0.0
   sensor_range: 10.0          # meters
   collision_radius: 0.5       # R (inferred)
   inter_uav_min_dist: 1.0     # 2R
-  action_bounds: [-0.5235987755982988, 0.5235987755982988]  # ±π/6 rad/s
+  action_bounds: [-3.0, 3.0]  # m/s
   
   # Obstacle generation
   obstacle_density: 0.1       # 10% space occupancy
@@ -45,10 +46,12 @@ algorithm:
   warmup_episodes: 300
   gradient_clip: 1.0
   n_episodes: 15000
+  policy_noise: 0.3      # m/s (10% of v_max)
+  noise_clip: 0.5        # m/s
 
   exploration:
-    noise_std_start: 0.25
-    noise_std_end: 0.02
+    noise_std_start: 0.75  # 25% of v_max
+    noise_std_end: 0.06  # 2% of v_max
     noise_anneal_steps: 1500000
 
 network:

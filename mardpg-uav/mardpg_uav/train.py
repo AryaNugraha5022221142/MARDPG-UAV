@@ -56,6 +56,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             agent_id=i,
             n_agents=n_agents,
             action_dim=env.action_dim,
+            action_bound=env_cfg.get('v_max', 3.0),
             hidden_dim=net_cfg['actor']['lstm_hidden'],
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],
@@ -184,13 +185,14 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 # Decentralized execution with exploration (Algorithm 1, line 8-9)
                 noise_val = noise.sample()
                 
+                v_max = env_cfg.get('v_max', 3.0)
                 actions = []
                 for i, agent in enumerate(agents):
                     if not env.agent_done[i]:
                         action = agent.select_action(obs[i], evaluate=False)
                         # Add noise during training (always added, OU anneals naturally)
                         action += noise_val[i]
-                        action = np.clip(action, -np.pi/6, np.pi/6)
+                        action = np.clip(action, -v_max, v_max)
                     else:
                         action = np.zeros(env.action_dim, dtype=np.float32)
                     actions.append(action)
@@ -242,7 +244,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     batch_size, seq_len, _, obs_dim = batch_obs.shape
                     
                     # Define environment limit (matches dynamics.py)
-                    DELTA_MAX = (np.pi / 6) / 3 
+                    tau_v = env_cfg.get('tau_v', 0.3)
+                    v_max  = env_cfg.get('v_max', 3.0)
+                    DELTA_MAX_V = v_max * (algo_cfg['dt'] / tau_v) 
 
                     # 1. Forward passes for all agents (Online and Target)
                     agent_hiddens, next_agent_hiddens, target_actions = [], [], []
@@ -263,12 +267,16 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             prev_act = batch_actions[:, :, i, :] 
                             
                             # 3. Apply the environment's kinematic constraints explicitly
-                            delta = torch.clamp(next_act_raw - prev_act, -DELTA_MAX, DELTA_MAX)
-                            next_act_constrained = torch.clamp(prev_act + delta, 
-                                                               -agent.actor_target.action_bound, 
-                                                               agent.actor_target.action_bound)
+                            delta = torch.clamp(next_act_raw - prev_act, -DELTA_MAX_V, DELTA_MAX_V)
+                            next_act_constrained = torch.clamp(prev_act + delta, -v_max, v_max)
                             
-                            target_actions.append(next_act_constrained)
+                            # Add clipped exploration noise
+                            noise = torch.randn_like(next_act_constrained) * algo_cfg['policy_noise']
+                            noise = torch.clamp(noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
+                            final_next_act = torch.clamp(
+                                next_act_constrained + noise, -v_max, v_max)
+                            
+                            target_actions.append(final_next_act)
 
                     # 2. Prepare Critic Tensors (DETACHED to fix Bug 2)
                     detached_hidden_all = torch.stack([h.detach().reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)

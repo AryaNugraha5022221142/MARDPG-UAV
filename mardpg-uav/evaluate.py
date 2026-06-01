@@ -26,6 +26,7 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
         agent = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
             action_dim=env.action_dim,
+            action_bound=env_cfg.get('v_max', 3.0),
             hidden_dim=net_cfg['actor']['lstm_hidden'],
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],

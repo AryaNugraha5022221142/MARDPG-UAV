@@ -12,7 +12,7 @@ from .shared import SharedFeatureExtractor
 class Actor(nn.Module):
     def __init__(self, shared_extractor: SharedFeatureExtractor,
                  lstm_hidden: int = 128,
-                 action_bound: float = np.pi / 6):
+                 action_bound: float = 3.0):
         super().__init__()
         self.shared = shared_extractor
         self.action_bound = action_bound
@@ -21,7 +21,7 @@ class Actor(nn.Module):
         self.lstm = nn.LSTM(self.shared.feature_dim, lstm_hidden, batch_first=True)
         
         # Agent-specific head (Section 10.1)
-        self.fc_out = nn.Linear(lstm_hidden, 2)
+        self.fc_out = nn.Linear(lstm_hidden, 3)
         self.tanh = nn.Tanh()
         
     def forward(self, obs_sequence: torch.Tensor,
@@ -31,7 +31,7 @@ class Actor(nn.Module):
             obs_sequence: (batch, seq_len, 34)
             hidden: (h_0, c_0) for LSTM
         Returns:
-            action: (batch, 2) scaled to [-π/6, π/6]
+            action: (batch, 3) scaled to [-v_max, v_max]
             hidden: updated LSTM state
         """
         batch_size, seq_len, obs_dim = obs_sequence.shape

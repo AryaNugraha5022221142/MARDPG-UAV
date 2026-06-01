@@ -65,9 +65,9 @@ class EpisodeReplayBuffer:
                 def _make_neutral_obs(shape):
                     obs = np.zeros(shape, dtype=np.float32)
                     if len(shape) == 2:
+                        # NEW layout: [vel(0:3)=0, prev_cmd(3:6)=0, lidar(6:31)=1, goal(31:34)=0]
                         obs[:, 6:31] = 1.0  # lidar at max range
-                        obs[:, 0] = 0.0; obs[:, 1] = 1.0
-                        obs[:, 2] = 0.0; obs[:, 3] = 1.0
+                        # velocity, prev_cmd, goal all zero — already set by np.zeros
                     return obs
                 
                 obs_pad = [_make_neutral_obs(obs_shape) for _ in range(pad_len)]

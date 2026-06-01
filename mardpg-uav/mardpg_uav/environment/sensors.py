@@ -7,32 +7,31 @@ from typing import List, Tuple
 from .obstacles import Obstacle
 
 class Rangefinder:
-    def __init__(self, range_max: float = 10.0,
-                 h_fov: float = 120.0,  # degrees
-                 v_fov: float = 60.0):  # degrees
+    def __init__(self, range_max: float = 10.0):
         self.range_max = range_max
         self.n_h = 5
         self.n_v = 5
-        
-        self.h_angles = np.linspace(-h_fov/2, h_fov/2, self.n_h) * np.pi / 180
-        self.v_angles = np.linspace(-v_fov/2, v_fov/2, self.n_v) * np.pi / 180
 
-    def scan(self, position: np.ndarray, theta: float, phi: float,
-             obstacles: List[Obstacle], sigma_l: float = 0.02,
+        # Fixed world-frame azimuths (uniform 360° coverage)
+        h_angles = np.linspace(0, 2 * np.pi, self.n_h, endpoint=False)
+        # Elevation angles: ±30° symmetric
+        v_angles = np.linspace(-np.pi / 6, np.pi / 6, self.n_v)
+
+        yaw_grid = np.broadcast_to(h_angles, (self.n_v, self.n_h)).flatten()
+        pitch_grid = np.broadcast_to(
+            v_angles[:, None], (self.n_v, self.n_h)).flatten()
+
+        # Pre-compute and cache unit direction vectors (25, 3) — constant
+        self._dir_vecs = np.stack([
+            np.cos(pitch_grid) * np.cos(yaw_grid),
+            np.cos(pitch_grid) * np.sin(yaw_grid),
+            np.sin(pitch_grid)
+        ], axis=-1).astype(np.float32)   # shape (25, 3)
+
+    def scan(self, position: np.ndarray, obstacles: List[Obstacle], sigma_l: float = 0.02,
              obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
-        yaw = theta + self.h_angles
-        pitch = phi + self.v_angles[:, None]
-        
-        yaw = np.broadcast_to(yaw, (self.n_v, self.n_h)).flatten()
-        pitch = np.broadcast_to(pitch, (self.n_v, self.n_h)).flatten()
-
-        dir_vecs = np.stack([
-            np.cos(pitch) * np.cos(yaw),
-            np.cos(pitch) * np.sin(yaw),
-            np.sin(pitch)
-        ], axis=-1)
-
-        min_dists = np.full(dir_vecs.shape[0], self.range_max, dtype=np.float32)
+        """No heading parameters — world-frame fixed beams."""
+        min_dists = np.full(self._dir_vecs.shape[0], self.range_max, dtype=np.float32)
 
         if obs_centers is not None and obs_max_sizes is not None:
             dists_to_centers = np.linalg.norm(obs_centers - position, axis=1)
@@ -44,11 +43,11 @@ class Rangefinder:
 
         for obs in close_obstacles:
             if obs.type == 'sphere':
-                dist = self._ray_sphere_vec(position, dir_vecs, obs.position, obs.size[0])
+                dist = self._ray_sphere_vec(position, self._dir_vecs, obs.position, obs.size[0])
             elif obs.type == 'cylinder':
-                dist = self._ray_cylinder_vec(position, dir_vecs, obs.position, obs.size[0], obs.size[1])
+                dist = self._ray_cylinder_vec(position, self._dir_vecs, obs.position, obs.size[0], obs.size[1])
             elif obs.type == 'box':
-                dist = self._ray_box_vec(position, dir_vecs, obs.position, obs.size)
+                dist = self._ray_box_vec(position, self._dir_vecs, obs.position, obs.size)
             else:
                 continue
             
@@ -127,25 +126,15 @@ class Rangefinder:
 
 
 class GoalSensor:
-    def __init__(self, arena_diag=89.4, sigma_psi=0.0349):
+    def __init__(self, arena_diag=89.4):
         self.arena_diag = arena_diag
-        self.sigma_psi = sigma_psi
+        # No heading noise — no heading in model
 
-    def compute(self, position, heading_yaw, heading_pitch, goal):
-        """Returns [d_norm, Δθ_norm, Δφ_norm] ∈ (-1,1]³  — Eqs.24-27."""
+    def compute(self, position: np.ndarray, goal: np.ndarray) -> np.ndarray:
+        """
+        Returns normalised world-frame displacement [dx/D, dy/D, dz/D]
+        Each component ∈ (-1, 1); zero vector when at goal.
+        """
         diff = goal - position
-        d_norm = np.linalg.norm(diff) / self.arena_diag              # Eq.25
+        return (diff / self.arena_diag).astype(np.float32)  # shape (3,)
 
-        noisy_yaw = heading_yaw + np.random.normal(0, self.sigma_psi)
-        raw_yaw = np.arctan2(diff[1], diff[0])
-        delta_theta = self._wrap(raw_yaw - noisy_yaw) / np.pi       # Eq.26
-
-        d_xy = np.linalg.norm(diff[:2])
-        raw_pitch = np.arctan2(diff[2], d_xy)
-        delta_phi = self._wrap(raw_pitch - heading_pitch) / np.pi   # Eq.27
-
-        return np.array([d_norm, delta_theta, delta_phi], dtype=np.float32)
-
-    @staticmethod
-    def _wrap(a):
-        return (a + np.pi) % (2 * np.pi) - np.pi
