@@ -49,7 +49,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     print("If you are not logged in, W&B might prompt you for an API key or choice.")
     print("You can press '3' to run offline if prompted.")
     
-    wandb.init(project="mardpg-uav", name=f"run_{run_id}_seed_{seed}", config=cfg)
+    wandb.init(project="mardpg-uav", name=f"run_{run_id}_seed_{seed}", config=cfg, mode="disabled")
 
     
     env_cfg = cfg['environment']
