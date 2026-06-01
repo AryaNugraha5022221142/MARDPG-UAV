@@ -245,7 +245,7 @@ class MultiUAVEnv(gym.Env):
             self.agent_done[i] = self.agent_done[i] or self.agent_collided[i] or self.agent_reached[i]
             
         timeout = self.steps >= self.cfg['max_steps_per_episode']
-        episode_done = bool(np.all(self.agent_done)) or timeout
+        episode_done = timeout
         
         applied_actions = self.prev_applied_actions.copy()
         

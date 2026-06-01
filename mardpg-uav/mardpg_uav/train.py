@@ -178,6 +178,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     # STORE ORIGINAL DIMENSIONS BEFORE THE LOOP
     original_env_size = list(cfg['environment']['env_size'])
+    last_update_step = 0
 
     try:
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
@@ -193,9 +194,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 original_env_size[2] * scale
             ]
             env.cfg['env_size'] = new_env_size
+            env.cfg['max_altitude'] = new_env_size[2]
             
             # FIX: Push the updated dimensions to dependent modules so physics don't break
             env.dynamics.env_size = np.array(new_env_size, dtype=np.float32)
+            env.scene_gen.env_size = np.array(new_env_size, dtype=np.float32)
             env.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
             
             goal_thresh = max(2.0, 5.0 - episode / 500)
@@ -284,9 +287,14 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
-            if episode >= algo_cfg['warmup_episodes'] and global_step % algo_cfg['update_freq'] == 0 and len(buffer) >= algo_cfg['batch_size']:
+            if episode >= algo_cfg['warmup_episodes'] and len(buffer) >= algo_cfg['batch_size']:
+                updates_to_do = (global_step - last_update_step) // algo_cfg['update_freq']
+                total_grad_steps = updates_to_do * algo_cfg.get('grad_steps_per_update', 1)
                 
-                for _ in range(algo_cfg.get('grad_steps_per_update', 1)):
+                if updates_to_do > 0:
+                    last_update_step += updates_to_do * algo_cfg['update_freq']
+                
+                for _ in range(total_grad_steps):
                     batch = buffer.sample(algo_cfg['batch_size'])
                     if batch is None: break
                     batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
@@ -383,8 +391,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                         agent.actor_optimizer.step()
 
                     # 5. Soft Updates
+                    agents[0]._soft_update(agents[0].actor_target.shared, agents[0].actor.shared)
                     for agent in agents:
-                        agent._soft_update(agent.actor_target, agent.actor)
+                        agent._soft_update(agent.actor_target.lstm, agent.actor.lstm)
+                        agent._soft_update(agent.actor_target.fc_out, agent.actor.fc_out)
                         agent._soft_update(agent.critic_target, agent.critic)
                         
                     wandb.log({

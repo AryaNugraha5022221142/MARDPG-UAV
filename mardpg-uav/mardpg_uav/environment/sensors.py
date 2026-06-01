@@ -14,8 +14,8 @@ class Rangefinder:
 
         # Fixed world-frame azimuths (uniform 360° coverage)
         h_angles = np.linspace(0, 2 * np.pi, self.n_h, endpoint=False)
-        # Elevation angles: ±30° symmetric
-        v_angles = np.linspace(-np.pi / 6, np.pi / 6, self.n_v)
+        # Elevation angles: ±90° (hemispherical/spherical)
+        v_angles = np.linspace(-np.pi / 2, np.pi / 2, self.n_v)
 
         yaw_grid = np.broadcast_to(h_angles, (self.n_v, self.n_h)).flatten()
         pitch_grid = np.broadcast_to(
