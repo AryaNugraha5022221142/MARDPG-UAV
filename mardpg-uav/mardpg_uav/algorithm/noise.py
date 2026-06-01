@@ -22,7 +22,7 @@ class GaussianNoise:
     def get_sigma(self):
         return self.current_sigma
 
-    def sample(self, dt=0.1):
+    def sample(self):
         decay = 1.0 / (1.0 + np.exp((self.total_steps - self.anneal_steps / 2) / (self.anneal_steps / 10.0)))
         sigma_t = self.sigma_inf + (self.sigma0 - self.sigma_inf) * decay
         self.current_sigma = sigma_t

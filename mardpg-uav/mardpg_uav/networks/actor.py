@@ -46,6 +46,6 @@ class Actor(nn.Module):
         
         # Output action at last timestep
         action = self.tanh(self.fc_out(lstm_out[:, -1, :]))
-        action = action * self.action_bound  # Scale to [-π/6, π/6]
+        action = action * self.action_bound  # Scale to [-v_max, v_max]
         
         return action, hidden

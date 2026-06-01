@@ -116,6 +116,7 @@ class MultiUAVEnv(gym.Env):
         self.agent_collided = np.zeros(self.n_agents, dtype=bool)
         
         positions = []
+        goals = []
         for i in range(self.n_agents):
             for _ in range(50):
                 pos = self._sample_free_position()
@@ -126,7 +127,16 @@ class MultiUAVEnv(gym.Env):
             else:
                 positions.append(self._sample_free_position())  # fallback
             self.agents_state[i, :3] = positions[-1]
-            self.goals[i] = self._sample_free_position()
+            
+            for _ in range(50):
+                goal = self._sample_free_position()
+                if all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist']
+                       for g in goals):
+                    goals.append(goal)
+                    break
+            else:
+                goals.append(self._sample_free_position())
+            self.goals[i] = goals[-1]
             # Random initial orientation/velocity
             # In world-frame, velocity initializes to 0.0 (already zeroed above)
         
@@ -216,11 +226,11 @@ class MultiUAVEnv(gym.Env):
             v_norm = vel / self.dynamics.v_max
             prev_cmd_norm = self.prev_applied_actions[i] / self.dynamics.v_max
             
-            obs = np.concatenate([v_norm, prev_cmd_norm, rangefinder_norm.flatten(), goal_disp])
+            obs = np.concatenate([v_norm, prev_cmd_norm, rangefinder_norm.flatten(), goal_disp, self._neighbor_feat(i)])
             obs_list.append(obs.astype(np.float32))
             
             # Reward
-            other_pos = [positions[j] for j in range(self.n_agents) if j != i and not self.agent_done[j]]
+            other_pos = [positions[j] for j in range(self.n_agents) if j != i]
             rewards[i] = self.reward_fn.compute(
                 i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles,
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
@@ -245,7 +255,7 @@ class MultiUAVEnv(gym.Env):
             self.agent_done[i] = self.agent_done[i] or self.agent_collided[i] or self.agent_reached[i]
             
         timeout = self.steps >= self.cfg['max_steps_per_episode']
-        episode_done = timeout
+        episode_done = timeout or bool(np.all(self.agent_done))
         
         applied_actions = self.prev_applied_actions.copy()
         
@@ -261,6 +271,20 @@ class MultiUAVEnv(gym.Env):
         }
         
         return np.array(obs_list), rewards, episode_done, info
+
+    def _neighbor_feat(self, i: int, k: int = 2) -> np.ndarray:
+        pos_i, vel_i = self.agents_state[i, :3], self.agents_state[i, 3:6]
+        others = [(np.linalg.norm(self.agents_state[j, :3] - pos_i), j)
+                  for j in range(self.n_agents) if j != i]
+        others.sort()
+        feats = []
+        for _, j in others[:k]:
+            rel_p = (self.agents_state[j, :3] - pos_i) / self.dynamics.v_max
+            rel_v = (self.agents_state[j, 3:6] - vel_i) / self.dynamics.v_max
+            feats.append(np.concatenate([rel_p, rel_v]))
+        while len(feats) < k:
+            feats.append(np.zeros(6, dtype=np.float32))
+        return np.concatenate(feats).astype(np.float32)
 
     def _get_single_observation(self, i: int) -> np.ndarray:
         # NEW: extract position and velocity from 6D state
@@ -279,10 +303,10 @@ class MultiUAVEnv(gym.Env):
         # Normalised previous command
         prev_cmd_norm = self.prev_applied_actions[i] / self.dynamics.v_max  # shape (3,)
 
-        # NEW obs layout: [vel(3), prev_cmd(3), lidar(25), goal(3)] = 34
+        # NEW obs layout: [vel(3), prev_cmd(3), lidar(25), goal(3), neighbors(12)] = 46
         obs = np.concatenate([v_norm, prev_cmd_norm,
-                              lidar_norm.flatten(), goal_disp])
-        assert obs.shape == (34,), f"obs_dim mismatch: {obs.shape}"
+                              lidar_norm.flatten(), goal_disp, self._neighbor_feat(i)])
+        assert obs.shape == (46,), f"obs_dim mismatch: {obs.shape}"
         return obs.astype(np.float32)
 
     def _get_observations(self) -> np.ndarray:

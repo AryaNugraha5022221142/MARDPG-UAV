@@ -303,7 +303,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     # Define environment limit (matches dynamics.py)
                     tau_v = env_cfg.get('tau_v', 0.3)
                     v_max  = env_cfg.get('v_max', 3.0)
-                    DELTA_MAX_V = v_max * (env_cfg.get('dt', 0.1) / tau_v) 
 
                     # 1. Forward passes for all agents (Online and Target)
                     agent_hiddens, next_agent_hiddens, target_actions = [], [], []
@@ -337,12 +336,16 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
 
                     # FIX (Bug 9): Explicit padding mask to prevent zero-state leak
-                    burn_mask = torch.arange(seq_len, device=device).unsqueeze(0).unsqueeze(-1) >= algo_cfg['burn_in']
+                    burn_mask = torch.arange(seq_len, device=device).view(1, -1, 1) >= algo_cfg['burn_in']
                     
                     done_mask = ~torch.cat([
                         torch.zeros(batch_size, 1, n_agents, device=device, dtype=torch.bool),
                         batch_dones[:, :-1, :]
                     ], dim=1)
+                    
+                    is_terminal = batch_dones & done_mask
+                    burn_mask = burn_mask | is_terminal
+                    
                     agent_mask = burn_mask & done_mask
 
                     # 3. Update Critics (Independent graph)
