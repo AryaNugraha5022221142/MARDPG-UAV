@@ -276,7 +276,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     # Define environment limit (matches dynamics.py)
                     tau_v = env_cfg.get('tau_v', 0.3)
                     v_max  = env_cfg.get('v_max', 3.0)
-                    DELTA_MAX_V = v_max * (algo_cfg['dt'] / tau_v) 
+                    DELTA_MAX_V = v_max * (env_cfg.get('dt', 0.1) / tau_v) 
 
                     # 1. Forward passes for all agents (Online and Target)
                     agent_hiddens, next_agent_hiddens, target_actions = [], [], []
