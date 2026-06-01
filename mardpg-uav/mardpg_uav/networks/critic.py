@@ -8,7 +8,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class AttentionCritic(nn.Module):
-    def __init__(self, n_agents=5, lstm_hidden=128, action_dim=2, d_model=128, d_ff=256, n_heads=4):
+    def __init__(self, n_agents=5, lstm_hidden=128, action_dim=3, d_model=128, d_ff=256, n_heads=4):
         super().__init__()
         self.d_model = d_model
         

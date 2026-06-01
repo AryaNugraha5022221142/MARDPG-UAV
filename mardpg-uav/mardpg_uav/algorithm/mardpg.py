@@ -101,12 +101,11 @@ class MARDPGAgent:
         with torch.no_grad():
             self.critic_target.eval() # FIX (Bug 8): Disable dropout for target calculation
             
-            # Target Policy Smoothing (Fix Bug 7)
-            noise = (torch.randn_like(next_act_all) * 0.1).clamp(-0.1, 0.1)
-            next_act_all_noisy = (next_act_all + noise).clamp(-self.actor.action_bound, self.actor.action_bound)
+            # FIX FOR BUG 4: Remove the inner noise layer. 
+            # train.py already calculates and bounds target_noise properly.
             
             # Twin-Q Minimum
-            target_q1_flat, target_q2_flat = self.critic_target(next_hidden_all, next_act_all_noisy, self.agent_id)
+            target_q1_flat, target_q2_flat = self.critic_target(next_hidden_all, next_act_all, self.agent_id)
             target_q_next = torch.min(target_q1_flat, target_q2_flat).view(batch_size, seq_len)
             
             r = rewards[:, :, self.agent_id]
@@ -149,10 +148,14 @@ class MARDPGAgent:
     
     def share_parameters(self, other_agent: 'MARDPGAgent'):
         """Share feature extractor — §14.2."""
-        import copy
         self.shared_extractor = other_agent.shared_extractor
         self.actor.shared = self.shared_extractor
-        self.actor_target.shared = copy.deepcopy(other_agent.shared_extractor)
+        
+        # FIX FOR BUG 7: Share the exact same target extractor object, do not deepcopy per-agent
+        self.actor_target.shared = other_agent.actor_target.shared
+        
+        if hasattr(self, 'target_shared_extractor'):
+            delattr(self, 'target_shared_extractor')
         if hasattr(self, 'target_shared_extractor'):
             delattr(self, 'target_shared_extractor')
         # Note: shared_extractor parameters will be optimized externally.

@@ -49,7 +49,12 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     print("If you are not logged in, W&B might prompt you for an API key or choice.")
     print("You can press '3' to run offline if prompted.")
     
-    wandb.init(project="mardpg-uav", name=f"run_{run_id}_seed_{seed}", config=cfg, mode="disabled")
+    wandb.init(
+        project="mardpg-uav",
+        entity="aryanugraha0412-institut-teknologi-sepuluh-nopember",
+        name=f"run_{run_id}_seed_{seed}",
+        config=cfg
+    )
 
     
     env_cfg = cfg['environment']
@@ -171,21 +176,27 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     print(f"Agents: {n_agents}, Device: {device}")
     print("=" * 60)
     
+    # STORE ORIGINAL DIMENSIONS BEFORE THE LOOP
+    original_env_size = list(cfg['environment']['env_size'])
+
     try:
         for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
             
             # Curriculum Learning
-            # Shrinking arena curriculum: start at 30x30x30, grow to full 50x50x60
-            # by episode 5000. Walls are always present; this directly controls
-            # how quickly a random policy hits them.
             curriculum_frac = min(1.0, episode / 5000)
             scale = 0.6 + 0.4 * curriculum_frac   # 60% -> 100% of arena dimensions
-            base_env_size = cfg['environment']['env_size']
-            env.cfg['env_size'] = [
-                base_env_size[0] * scale,
-                base_env_size[1] * scale,
-                base_env_size[2] * scale
+            
+            # FIX: Use the original_env_size, do not self-multiply
+            new_env_size = [
+                original_env_size[0] * scale,
+                original_env_size[1] * scale,
+                original_env_size[2] * scale
             ]
+            env.cfg['env_size'] = new_env_size
+            
+            # FIX: Push the updated dimensions to dependent modules so physics don't break
+            env.dynamics.env_size = np.array(new_env_size, dtype=np.float32)
+            env.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
             
             goal_thresh = max(2.0, 5.0 - episode / 500)
             env.cfg['goal_threshold'] = goal_thresh
@@ -256,12 +267,19 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 path_history
             )
             
+            stats = metrics.get_stats()
+            
+            # FIX FOR BUG 9: Log both raw and smoothed metrics to match CSV exactly
             wandb.log({
                 "episode": episode,
-                "reward": sum([sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]),
-                "length": episode_data.length() - 1,
-                "success_rate": np.mean(info['reached']),
-                "collision_rate": np.mean(info['collisions']),
+                "ep_reward_raw": sum([sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]),
+                "ep_length_raw": episode_data.length() - 1,
+                "success_rate_raw": np.mean(info['reached']),
+                "collision_rate_raw": np.mean(info['collisions']),
+                "smoothed_success_rate": stats['success_rate'],
+                "smoothed_collision_rate": stats['collision_rate'],
+                "smoothed_trapped_rate": stats['trapped_rate'],
+                "smoothed_avg_reward": stats['avg_reward'],
                 "noise_sigma": noise.get_sigma()
             }, step=global_step)
             

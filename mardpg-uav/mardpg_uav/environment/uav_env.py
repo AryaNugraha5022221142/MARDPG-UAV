@@ -167,8 +167,6 @@ class MultiUAVEnv(gym.Env):
         obs_list = []
         positions = [self.agents_state[i, :3] for i in range(self.n_agents)]
         
-        pending_done = self.agent_done.copy()
-        
         # 1. Pre-calculate all collisions simultaneously
         for i in range(self.n_agents):
             if self.agent_done[i]: continue
@@ -230,11 +228,10 @@ class MultiUAVEnv(gym.Env):
             
             # Apply pre-calculated penalties
             if collisions[i]:
-                pending_done[i] = True
                 rewards[i] -= self.cfg['reward']['r_col']  # penalty
                 
-            # Check goal reached
-            if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
+            # FIX: Change to `elif`. An agent cannot succeed if it crashed!
+            elif np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
                 rewards[i] += self.cfg['reward']['r_goal']
         
@@ -344,27 +341,3 @@ class MultiUAVEnv(gym.Env):
             pos[2] < self.cfg.get('min_altitude', 0.0) + cr or
             pos[2] > self.cfg['max_altitude'] - cr
         )
-
-    def _check_collision(self, agent_id: int, positions: List[np.ndarray], pending_done: np.ndarray) -> bool:
-        pos = positions[agent_id]
-        
-        # Fast culling for obstacles
-        if len(self.obstacles) > 0:
-            dists = np.linalg.norm(self.obs_centers - pos, axis=1)
-            # RC (collision threshold) is small, typically 0.5. Add it to max_size.
-            mask = dists < (self.cfg['collision_radius'] + self.obs_max_sizes + 0.1)
-            close_obstacles = [self.obstacles[idx] for idx, m in enumerate(mask) if m]
-        else:
-            close_obstacles = []
-
-        # Obstacle collision
-        for obs in close_obstacles:
-            if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
-                return True
-        
-        # Inter-UAV collision
-        for j, other_pos in enumerate(positions):
-            if j != agent_id and not pending_done[j]:
-                if np.linalg.norm(pos - other_pos) < self.cfg['inter_uav_min_dist']:
-                    return True
-        return False
