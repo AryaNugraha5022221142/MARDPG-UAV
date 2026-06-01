@@ -3,7 +3,9 @@ Main training loop for MARDPG-NAV.
 Reference: Section 14.2 and Algorithm 1 of blueprint.
 """
 import os
+print("Loading Machine Learning libraries (PyTorch, WandB, etc.). Please wait, this may take up to a minute...")
 import yaml
+
 import torch
 import numpy as np
 import random
@@ -43,7 +45,12 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     
+    print("Initializing Weights & Biases (W&B)...")
+    print("If you are not logged in, W&B might prompt you for an API key or choice.")
+    print("You can press '3' to run offline if prompted.")
+    
     wandb.init(project="mardpg-uav", name=f"run_{run_id}_seed_{seed}", config=cfg)
+
     
     env_cfg = cfg['environment']
     algo_cfg = cfg['algorithm']
