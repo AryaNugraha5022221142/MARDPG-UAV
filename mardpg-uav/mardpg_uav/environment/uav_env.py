@@ -197,7 +197,12 @@ class MultiUAVEnv(gym.Env):
         for i in range(self.n_agents):
             if self.agent_done[i]:
                 obs_list.append(self._get_single_observation(i))
-                rewards[i] = 0.0
+                
+                # FIX: Prevent suicide exploit by punishing collided agents until episode ends
+                if self.agent_collided[i]:
+                    rewards[i] = self.cfg['reward']['r_step']
+                else:
+                    rewards[i] = 0.0
                 continue
                 
             pos = self.agents_state[i, :3]
@@ -306,11 +311,13 @@ class MultiUAVEnv(gym.Env):
         
         # Last resort: jitter a random safe-ish region rather than a fixed point
         # so multiple agents don't share the fallback and immediately collide
+        margin_x = min(3.0, env[0] * 0.1)
+        margin_y = min(3.0, env[1] * 0.1)
         for attempt in range(50):
             pos = np.array([
-                self.scene_gen.rng.uniform(5.0, env[0] - 5.0),
-                self.scene_gen.rng.uniform(5.0, env[1] - 5.0),
-                self.scene_gen.rng.uniform(5.0, env[2] - 5.0),
+                self.scene_gen.rng.uniform(margin_x, env[0] - margin_x),
+                self.scene_gen.rng.uniform(margin_y, env[1] - margin_y),
+                self.scene_gen.rng.uniform(3.0, env[2] - 3.0),
             ], dtype=np.float32)
             if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos

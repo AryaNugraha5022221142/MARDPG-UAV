@@ -20,10 +20,10 @@ class MetricsTracker:
                       start_pos: List[np.ndarray],
                       goal_pos: List[np.ndarray],
                       path_history: List[List[np.ndarray]]):
-        self.episode_rewards.append(sum(rewards))
-        self.episode_lengths.append(length)
-        
         n_agents = len(reached)
+        team_reward = sum(rewards)
+        self.episode_rewards.append(team_reward / max(1, n_agents))
+        self.episode_lengths.append(length)
         
         # Calculate per-agent rates instead of all-or-nothing
         success_ratio = sum(reached) / n_agents if n_agents > 0 else 0.0
