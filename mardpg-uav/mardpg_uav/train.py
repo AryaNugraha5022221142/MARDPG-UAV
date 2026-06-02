@@ -25,6 +25,38 @@ def load_config(path: str = "config/default.yaml") -> dict:
         return yaml.safe_load(f)
 
 
+def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done):
+    # obs_all: (n_agents, obs_dim)
+    n = len(agents)
+    obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
+    
+    with torch.no_grad():
+        flat = obs_tensor.view(n, -1)
+        shared_feat = agents[0].actor.shared(flat)
+        shared_feat = shared_feat.unsqueeze(1)
+        
+        actions = []
+        for i, agent in enumerate(agents):
+            if not agent_done[i]:
+                feat_i = shared_feat[i:i+1]
+                h_in = agent.actor_hidden if agent.actor_hidden is not None else (
+                    torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device),
+                    torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device)
+                )
+                lstm_out, h_out = agent.actor.lstm(feat_i, h_in)
+                act = agent.actor.tanh(agent.actor.fc_out(lstm_out[:, -1, :])) * agent.actor.action_bound
+                agent.actor_hidden = h_out
+                
+                action = act[0].cpu().numpy()
+                action += noise_val[i]
+                action = np.clip(action, -v_max, v_max)
+            else:
+                action = np.zeros(agents[0].action_dim, dtype=np.float32)
+            actions.append(action)
+            
+    return np.array(actions)
+
+
 def train(config_path: str = "config/default.yaml", device: str = None, resume_dir: str = None, seed: int = 42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
@@ -32,9 +64,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
-    if device is None:
-        device = 'cuda' if torch.cuda.is_available() else 'cpu'
     cfg = load_config(config_path)
+    if device is None:
+        device = cfg.get('algorithm', {}).get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
     if 'seed' in cfg:
         seed = cfg['seed']
         torch.manual_seed(seed)
@@ -202,7 +234,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             env.scene_gen.env_size = np.array(new_env_size, dtype=np.float32)
             env.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
             
-            goal_thresh = max(2.0, 5.0 - episode / 500)
+            goal_thresh = max(2.0, 5.0 * (1.0 - curriculum_frac))
             env.cfg['goal_threshold'] = goal_thresh
             
             density_curriculum = min(env_cfg.get('obstacle_density', 0.1), (episode / 3000) * 0.1)
@@ -223,22 +255,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 noise_val = noise.sample()
                 
                 v_max = env_cfg.get('v_max', 3.0)
-                actions = []
-                for i, agent in enumerate(agents):
-                    if not env.agent_done[i]:
-                        action = agent.select_action(obs[i], evaluate=False)
-                        # Add noise during training (always added, OU anneals naturally)
-                        action += noise_val[i]
-                        action = np.clip(action, -v_max, v_max)
-                    else:
-                        action = np.zeros(env.action_dim, dtype=np.float32)
-                    actions.append(action)
-                
-                actions = np.array(actions)
+                actions = select_actions_batch(agents, obs, noise_val, v_max, env.agent_done)
                 
                 # Execute joint action
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
+                if global_step % 50 == 0:
+                    wandb.log({"noise_sigma": noise.get_sigma()}, step=global_step)
                 
                 # FIX (Bug 10): Store applied actions, not raw commanded actions
                 episode_data.append(obs.copy(), info['applied_actions'].copy(), rewards.copy(), info['agent_done'].copy())
@@ -283,8 +306,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 "smoothed_success_rate": stats['success_rate'],
                 "smoothed_collision_rate": stats['collision_rate'],
                 "smoothed_trapped_rate": stats['trapped_rate'],
-                "smoothed_avg_reward": stats['avg_reward'],
-                "noise_sigma": noise.get_sigma()
+                "smoothed_avg_reward": stats['avg_reward']
             }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)

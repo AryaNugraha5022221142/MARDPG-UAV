@@ -37,6 +37,7 @@ class EpisodeReplayBuffer:
         self.rew_buffer = None
         self.done_buffer = None
         self.ep_lens = np.zeros(capacity, dtype=np.int32)
+        self.ep_true_lens = np.zeros(capacity, dtype=np.int32)
         
         self.ptr = 0
         self.size = 0
@@ -66,6 +67,7 @@ class EpisodeReplayBuffer:
         pad_len = max(0, self.seq_len + 1 - T)
         
         self.ep_lens[idx] = T + pad_len
+        self.ep_true_lens[idx] = T
         
         self.obs_buffer[idx, :T] = obs
         self.act_buffer[idx, :T] = act
@@ -99,8 +101,11 @@ class EpisodeReplayBuffer:
         batch_dones = np.zeros((batch_size, self.seq_len) + self.done_buffer.shape[2:], dtype=bool)
         
         for i, idx in enumerate(batch_idxs):
-            T = self.ep_lens[idx]
-            if T <= self.seq_len:
+            T = self.ep_true_lens[idx]
+            if T < 2:
+                # Fallback to start = 0
+                start = 0
+            elif T <= self.seq_len:
                 start = 0
             else:
                 start = np.random.randint(0, T - self.seq_len)

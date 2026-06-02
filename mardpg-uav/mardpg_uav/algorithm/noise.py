@@ -6,7 +6,7 @@ import numpy as np
 
 class GaussianNoise:
     """Gaussian exploration noise representing physical sensor/actuator uncertainty with sigmoid decay."""
-    def __init__(self, n_agents, action_dim=3, kappa=0.15,
+    def __init__(self, n_agents, action_dim=3,
                  sigma0=0.25, sigma_inf=0.05, anneal_steps=3_000_000):
         self.n = n_agents
         self.dim = action_dim

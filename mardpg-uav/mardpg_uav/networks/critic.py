@@ -14,17 +14,17 @@ class AttentionCritic(nn.Module):
         
         # Shared Encoder & MHA
         self.encoder = nn.Linear(lstm_hidden + action_dim, d_model)
-        self.mha = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=0.1)
+        self.mha = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=0.0)
         self.ln1 = nn.LayerNorm(d_model)
         
         # Twin Q-networks (TD3 style to prevent overestimation)
         self.ffn1 = nn.Sequential(
-            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.1), nn.Linear(d_ff, d_model))
+            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.0), nn.Linear(d_ff, d_model))
         self.ln2_1 = nn.LayerNorm(d_model)
         self.readout1 = nn.Sequential(nn.Linear(d_model, 64), nn.ReLU(), nn.Linear(64, 1))
         
         self.ffn2 = nn.Sequential(
-            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.1), nn.Linear(d_ff, d_model))
+            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.0), nn.Linear(d_ff, d_model))
         self.ln2_2 = nn.LayerNorm(d_model)
         self.readout2 = nn.Sequential(nn.Linear(d_model, 64), nn.ReLU(), nn.Linear(64, 1))
 

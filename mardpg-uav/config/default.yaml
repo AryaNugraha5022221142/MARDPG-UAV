@@ -33,6 +33,7 @@ environment:
     r_col: 25.0           # CRITICAL fix
 
 algorithm:
+  device: cuda
   gamma: 0.99
   tau: 0.01
   lr_actor: 0.0001

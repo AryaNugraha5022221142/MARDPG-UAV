@@ -123,10 +123,14 @@ class MultiUAVEnv(gym.Env):
                 pos = self._sample_free_position()
                 if all(np.linalg.norm(pos - p) >= self.cfg['inter_uav_min_dist'] * 2
                        for p in positions):
-                    positions.append(pos)
                     break
             else:
-                positions.append(self._sample_free_position())  # fallback
+                pos = self._sample_free_position()  # fallback
+            
+            assert not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.1), \
+                f"Agent {i} spawned inside obstacle. Arena may be over-dense."
+            
+            positions.append(pos)
             self.agents_state[i, :3] = positions[-1]
             
             for _ in range(50):
@@ -179,7 +183,17 @@ class MultiUAVEnv(gym.Env):
         positions = [self.agents_state[i, :3] for i in range(self.n_agents)]
         
         # 1. Pre-calculate all collisions simultaneously
+        # Vectorised inter-agent collision
+        positions_arr = self.agents_state[:, :3]  # (N, 3)
+        diffs = positions_arr[:, None, :] - positions_arr[None, :, :]  # (N, N, 3)
+        dist_matrix = np.linalg.norm(diffs, axis=-1)  # (N, N)
+        np.fill_diagonal(dist_matrix, np.inf)
+        inter_collisions = np.any(dist_matrix < self.cfg['inter_uav_min_dist'], axis=1)  # (N,)
+
         for i in range(self.n_agents):
+            if inter_collisions[i]:
+                collisions[i] = True
+            
             if self.agent_done[i]: continue
             pos = self.agents_state[i, :3]
             
@@ -195,13 +209,6 @@ class MultiUAVEnv(gym.Env):
                     if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
                         collisions[i] = True
                         break
-                        
-                # Inter-UAV collision (symmetric check)
-                for j in range(self.n_agents):
-                    if i != j:
-                        if np.linalg.norm(pos - self.agents_state[j, :3]) < self.cfg['inter_uav_min_dist']:
-                            collisions[i] = True
-                            break
 
         for i in range(self.n_agents):
             if self.agent_done[i]:
@@ -209,7 +216,7 @@ class MultiUAVEnv(gym.Env):
                 
                 # FIX: Prevent suicide exploit by punishing collided agents until episode ends
                 if self.agent_collided[i]:
-                    rewards[i] = self.cfg['reward']['r_step']
+                    rewards[i] = self.reward_fn.delta[4] * self.cfg['reward']['r_step']
                 else:
                     rewards[i] = 0.0
                 continue
@@ -282,7 +289,7 @@ class MultiUAVEnv(gym.Env):
         others.sort()
         feats = []
         for _, j in others[:k]:
-            rel_p = (self.agents_state[j, :3] - pos_i) / self.dynamics.v_max
+            rel_p = (self.agents_state[j, :3] - pos_i) / self.rangefinder.range_max
             rel_v = (self.agents_state[j, 3:6] - vel_i) / self.dynamics.v_max
             feats.append(np.concatenate([rel_p, rel_v]))
         while len(feats) < k:
