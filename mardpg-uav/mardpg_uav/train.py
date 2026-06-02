@@ -268,7 +268,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     wandb.log({"noise_sigma": noise.get_sigma()}, step=global_step)
                 
                 # FIX (Bug 10): Store applied actions, not raw commanded actions
-                episode_data.append(obs.copy(), info['applied_actions'].copy(), rewards.copy(), info['agent_done'].copy())
+                episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
                 

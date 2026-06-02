@@ -85,12 +85,12 @@ class MultiUAVEnv(gym.Env):
         cr = self.cfg['collision_radius']
         
         walls = [
-            Obstacle('box', np.array([-t - cr, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
-            Obstacle('box', np.array([ex+t+cr, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
-            Obstacle('box', np.array([ex/2, -t - cr, ez/2]), np.array([ex/2, t, ez/2])), # Y min
-            Obstacle('box', np.array([ex/2, ey+t+cr, ez/2]), np.array([ex/2, t, ez/2])), # Y max
-            Obstacle('box', np.array([ex/2, ey/2, min_z-t-cr]), np.array([ex/2, ey/2, t])), # Z min (floor)
-            Obstacle('box', np.array([ex/2, ey/2, ez+t+cr]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
+            Obstacle('box', np.array([-t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
+            Obstacle('box', np.array([ex+t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
+            Obstacle('box', np.array([ex/2, -t, ez/2]), np.array([ex/2, t, ez/2])), # Y min
+            Obstacle('box', np.array([ex/2, ey+t, ez/2]), np.array([ex/2, t, ez/2])), # Y max
+            Obstacle('box', np.array([ex/2, ey/2, min_z-t]), np.array([ex/2, ey/2, t])), # Z min (floor)
+            Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
         ]
         self.obstacles.extend(walls)
 
