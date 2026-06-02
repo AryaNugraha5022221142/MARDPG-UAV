@@ -79,6 +79,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             tau=algo_cfg['tau'],
             gamma=algo_cfg['gamma'],
             gradient_clip=algo_cfg['gradient_clip'],
+            burn_in=algo_cfg['burn_in'],
             device=device
         )
         agents.append(agent)
@@ -197,6 +198,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             
             # FIX: Push the updated dimensions to dependent modules so physics don't break
             env.dynamics.env_size = np.array(new_env_size, dtype=np.float32)
+            env.dynamics.max_altitude = new_env_size[2]
             env.scene_gen.env_size = np.array(new_env_size, dtype=np.float32)
             env.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
             

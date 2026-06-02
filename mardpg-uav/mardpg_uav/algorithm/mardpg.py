@@ -17,12 +17,13 @@ class MARDPGAgent:
                  action_dim: int = 3, action_bound: float = 3.0, hidden_dim: int = 128,
                  lr_actor: float = 0.0001, lr_critic: float = 0.0003,
                  tau: float = 0.01, gamma: float = 0.99,
-                 gradient_clip: float = 1.0, device: str = 'cpu'):
+                 gradient_clip: float = 1.0, burn_in: int = 6, device: str = 'cpu'):
         self.agent_id = agent_id
         self.n_agents = n_agents
         self.gamma = gamma
         self.tau = tau
         self.gradient_clip = gradient_clip
+        self.burn_in = burn_in
         self.device = torch.device(device)
         self.action_bound = action_bound
         

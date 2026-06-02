@@ -39,20 +39,20 @@ algorithm:
   lr_critic: 0.0003
   batch_size: 128
   seq_len: 25
-  burn_in: 6
+  burn_in: 12
   replay_capacity: 2000
   update_freq: 50           # FIX (Bug 4): Update every 50 steps, not 10 episodes
   grad_steps_per_update: 4  # FIX (Bug 4): Multiple gradient steps per update
   warmup_episodes: 300
   gradient_clip: 1.0
   n_episodes: 15000
-  policy_noise: 0.3      # m/s (10% of v_max)
-  noise_clip: 0.5        # m/s
+  policy_noise: 0.10      # m/s (10% of v_max)
+  noise_clip: 0.15        # m/s
 
   exploration:
-    noise_std_start: 0.75  # 25% of v_max
-    noise_std_end: 0.06  # 2% of v_max
-    noise_anneal_steps: 1500000
+    noise_std_start: 0.20  # 25% of v_max
+    noise_std_end: 0.05  # 2% of v_max
+    noise_anneal_steps: 3000000
 
 network:
   shared:

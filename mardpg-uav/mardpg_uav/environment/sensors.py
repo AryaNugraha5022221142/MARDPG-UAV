@@ -41,13 +41,40 @@ class Rangefinder:
         else:
             close_obstacles = obstacles
 
-        for obs in close_obstacles:
+        # BATCHED BOX INTERSECTION (Dramatically accelerates wall boundary checks)
+        boxes = [obs for obs in close_obstacles if obs.type == 'box']
+        if boxes:
+            c = np.array([b.position for b in boxes], dtype=np.float32)[:, None, :]  # (M, 1, 3)
+            s = np.array([b.size for b in boxes], dtype=np.float32)[:, None, :]      # (M, 1, 3)
+            d = self._dir_vecs[None, :, :]                                           # (1, 25, 3)
+            o = position[None, None, :]                                              # (1, 1, 3)
+
+            with np.errstate(divide='ignore', invalid='ignore'):
+                t1 = (c - s - o) / d
+                t2 = (c + s - o) / d
+
+            t1 = np.where(np.isnan(t1), -np.inf, t1)
+            t2 = np.where(np.isnan(t2), np.inf, t2)
+            t_min = np.minimum(t1, t2)
+            t_max = np.maximum(t1, t2)
+            t_enter = np.max(t_min, axis=-1)  # (M, 25)
+            t_exit = np.min(t_max, axis=-1)   # (M, 25)
+
+            valid_mask = (t_exit >= t_enter) & (t_enter > 0)
+            t_enter_masked = np.where(valid_mask, t_enter, np.inf)
+            min_dists = np.minimum(min_dists, np.min(t_enter_masked, axis=0))
+
+            mask_in = (t_exit >= t_enter) & (t_enter <= 0) & (t_exit > 0)
+            t_exit_masked = np.where(mask_in, t_exit, np.inf)
+            min_dists = np.minimum(min_dists, np.min(t_exit_masked, axis=0))
+
+        # Fallback to loop for complex geometries (cylinders, spheres)
+        other_obs = [obs for obs in close_obstacles if obs.type != 'box']
+        for obs in other_obs:
             if obs.type == 'sphere':
                 dist = self._ray_sphere_vec(position, self._dir_vecs, obs.position, obs.size[0])
             elif obs.type == 'cylinder':
                 dist = self._ray_cylinder_vec(position, self._dir_vecs, obs.position, obs.size[0], obs.size[1])
-            elif obs.type == 'box':
-                dist = self._ray_box_vec(position, self._dir_vecs, obs.position, obs.size)
             else:
                 continue
             

@@ -51,7 +51,7 @@ class MultiUAVEnv(gym.Env):
         )
         
         # Spaces
-        self.obs_dim = 34  # 3 (vel) + 3 (prev_act) + 25 (lidar) + 3 (goal)
+        self.obs_dim = 46  # 3 (vel) + 3 (prev_act) + 25 (lidar) + 3 (goal) + 12 (neighbors)
         self.action_dim = 3  # vx, vy, vz
         
         self.observation_space = gym.spaces.Box(
