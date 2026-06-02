@@ -67,6 +67,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     cfg = load_config(config_path)
     if device is None:
         device = cfg.get('algorithm', {}).get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        
+    if device == 'cuda' and not torch.cuda.is_available():
+        print("Warning: CUDA requested but not available. Falling back to CPU.", flush=True)
+        device = 'cpu'
     if 'seed' in cfg:
         seed = cfg['seed']
         torch.manual_seed(seed)
