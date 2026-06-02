@@ -295,6 +295,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 if updates_to_do > 0:
                     last_update_step += updates_to_do * algo_cfg['update_freq']
                 
+                grad_metrics = {
+                    "actor_loss": [], "critic_loss": [], "q_vals": [],
+                    "critic_grad_norm": [], "shared_grad_norm": [], "actor_grad_norm": []
+                }
                 for _ in range(total_grad_steps):
                     batch = buffer.sample(algo_cfg['batch_size'])
                     if batch is None: break
@@ -307,13 +311,22 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
 
                     # 1. Forward passes for all agents (Online and Target)
                     agent_hiddens, next_agent_hiddens, target_actions = [], [], []
+
+                    # Batched shared feature extraction (Bug 2 Fix)
+                    all_obs_flat = batch_obs.permute(0, 2, 1, 3).reshape(batch_size * n_agents * seq_len, obs_dim)
+                    all_feats = agents[0].actor.shared(all_obs_flat).view(batch_size, n_agents, seq_len, -1)
+
+                    with torch.no_grad():
+                        all_obs_next_flat = batch_obs_next.permute(0, 2, 1, 3).reshape(batch_size * n_agents * seq_len, obs_dim)
+                        all_feats_next = agents[0].actor_target.shared(all_obs_next_flat).view(batch_size, n_agents, seq_len, -1)
+
                     for i, agent in enumerate(agents):
-                        feat = agent.actor.shared(batch_obs[:, :, i, :].flatten(0,1)).view(batch_size, seq_len, -1)
+                        feat = all_feats[:, i, :, :]
                         h_out, _ = agent.actor.lstm(feat, None)
                         agent_hiddens.append(h_out)
                         
                         with torch.no_grad():
-                            feat_next = agent.actor_target.shared(batch_obs_next[:, :, i, :].flatten(0,1)).view(batch_size, seq_len, -1)
+                            feat_next = all_feats_next[:, i, :, :]
                             h_next, _ = agent.actor_target.lstm(feat_next, None)
                             next_agent_hiddens.append(h_next)
                             
@@ -401,14 +414,15 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                         agent._soft_update(agent.actor_target.fc_out, agent.actor.fc_out)
                         agent._soft_update(agent.critic_target, agent.critic)
                         
-                    wandb.log({
-                        "actor_loss": total_actor_loss.item(),
-                        "critic_loss": np.mean(c_losses),
-                        "q_vals": np.mean(q_vals),
-                        "critic_grad_norm": np.mean(c_grad_norms),
-                        "shared_grad_norm": shared_grad_norm.item(),
-                        "actor_grad_norm": np.mean(actor_grad_norms)
-                    }, step=global_step)
+                    grad_metrics["actor_loss"].append(total_actor_loss.item())
+                    grad_metrics["critic_loss"].append(np.mean(c_losses))
+                    grad_metrics["q_vals"].append(np.mean(q_vals))
+                    grad_metrics["critic_grad_norm"].append(np.mean(c_grad_norms))
+                    grad_metrics["shared_grad_norm"].append(shared_grad_norm.item())
+                    grad_metrics["actor_grad_norm"].append(np.mean(actor_grad_norms))
+                
+                if total_grad_steps > 0:
+                    wandb.log({k: np.mean(v) for k, v in grad_metrics.items()}, step=global_step)
             
             # Logging
             if episode % 100 == 0 and episode > 0:

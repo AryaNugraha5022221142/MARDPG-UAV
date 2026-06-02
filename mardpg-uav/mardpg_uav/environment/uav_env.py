@@ -114,6 +114,7 @@ class MultiUAVEnv(gym.Env):
         self.agent_done = np.zeros(self.n_agents, dtype=bool)
         self.agent_reached = np.zeros(self.n_agents, dtype=bool)
         self.agent_collided = np.zeros(self.n_agents, dtype=bool)
+        self._cached_obs = [None] * self.n_agents
         
         positions = []
         goals = []
@@ -204,7 +205,7 @@ class MultiUAVEnv(gym.Env):
 
         for i in range(self.n_agents):
             if self.agent_done[i]:
-                obs_list.append(self._get_single_observation(i))
+                obs_list.append(self._cached_obs[i])
                 
                 # FIX: Prevent suicide exploit by punishing collided agents until episode ends
                 if self.agent_collided[i]:
@@ -227,7 +228,9 @@ class MultiUAVEnv(gym.Env):
             prev_cmd_norm = self.prev_applied_actions[i] / self.dynamics.v_max
             
             obs = np.concatenate([v_norm, prev_cmd_norm, rangefinder_norm.flatten(), goal_disp, self._neighbor_feat(i)])
-            obs_list.append(obs.astype(np.float32))
+            obs = obs.astype(np.float32)
+            self._cached_obs[i] = obs
+            obs_list.append(obs)
             
             # Reward
             other_pos = [positions[j] for j in range(self.n_agents) if j != i]
@@ -313,7 +316,10 @@ class MultiUAVEnv(gym.Env):
         """Get current observations for all agents."""
         obs_list = []
         for i in range(self.n_agents):
-            obs_list.append(self._get_single_observation(i))
+            obs = self._get_single_observation(i)
+            if hasattr(self, '_cached_obs'):
+                self._cached_obs[i] = obs
+            obs_list.append(obs)
         return np.array(obs_list)
 
     def _sample_free_position(self) -> np.ndarray:
