@@ -25,7 +25,7 @@ def load_config(path: str = "config/default.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done):
+def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_dim=3):
     # obs_all: (n_agents, obs_dim)
     n = len(agents)
     obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
@@ -51,7 +51,7 @@ def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done):
                 action += noise_val[i]
                 action = np.clip(action, -v_max, v_max)
             else:
-                action = np.zeros(agents[0].action_dim, dtype=np.float32)
+                action = np.zeros(action_dim, dtype=np.float32)
             actions.append(action)
             
     return np.array(actions)
@@ -259,7 +259,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 noise_val = noise.sample()
                 
                 v_max = env_cfg.get('v_max', 3.0)
-                actions = select_actions_batch(agents, obs, noise_val, v_max, env.agent_done)
+                actions = select_actions_batch(agents, obs, noise_val, v_max, env.agent_done, env.action_dim)
                 
                 # Execute joint action
                 next_obs, rewards, done, info = env.step(actions)
