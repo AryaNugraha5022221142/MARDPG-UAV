@@ -31,7 +31,6 @@ class MultiUAVEnv(gym.Env):
             action_bounds=tuple(config.get('action_bounds', [-3.0, 3.0]))
         )
         self.scene_gen = SceneGenerator(
-            env_size=config['env_size'],
             seed=config.get('seed', None)
         )
         self.rangefinder = Rangefinder(range_max=config['sensor_range'])
@@ -71,13 +70,14 @@ class MultiUAVEnv(gym.Env):
         
     def reset(self, stage_cfg: dict = None) -> np.ndarray:
         if stage_cfg is None:
-            stage_cfg = {'env_size': [50.0, 50.0, 60.0], 'static_obs': 0, 'min_sep': 20.0}
+            stage_cfg = {'env_size': [50.0, 50.0, 60.0], 'static_obs': 0, 'min_sep': 20.0, 'max_steps': 1500}
             
         self.current_stage_cfg = stage_cfg
         new_env_size = np.array(stage_cfg['env_size'], dtype=np.float32)
         
         # Update Environment Dimensions
         self.cfg['env_size'] = new_env_size
+        self.cfg['max_steps_per_episode'] = stage_cfg.get('max_steps', 1500)
         self.dynamics.env_size = new_env_size
         self.dynamics.max_altitude = new_env_size[2]
         self.scene_gen.env_size = new_env_size
