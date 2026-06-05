@@ -1,100 +1,66 @@
-"""
-Environment generation with 4 scene types.
-Reference: Section 2.4 of blueprint.
-"""
 import numpy as np
 from dataclasses import dataclass
-from typing import List, Tuple
-
+from typing import List
 
 @dataclass
 class Obstacle:
     type: str          # 'box', 'cylinder', 'sphere'
     position: np.ndarray
     size: np.ndarray   # [rx, ry, rz] for box, [r, h] for cylinder, [r] for sphere
-
+    velocity: np.ndarray = None  # [vx, vy, vz] for dynamic obstacles
 
 class SceneGenerator:
-    def __init__(self, env_size: Tuple[float, float, float] = (50.0, 50.0, 60.0),
-                 seed: int = None):
-        self.env_size = np.array(env_size)
+    def __init__(self, seed: int = None):
         self.rng = np.random.RandomState(seed)
+        self.env_size = np.array([50.0, 50.0, 60.0]) # Will be updated dynamically
 
-    def generate(self, scene_type: int, density: float, n_agents: int) -> List[Obstacle]:
-        """Generate obstacles ensuring valid start/goal regions exist."""
-        if scene_type == 1:
-            return self._square_columns(density)
-        elif scene_type == 2:
-            return self._cylinders(density)
-        elif scene_type == 3:
-            return self._forest(density)
-        elif scene_type == 4:
-            return self._circular_rings(density)
-        else:
-            raise ValueError(f"Unknown scene type: {scene_type}")
-
-    def _volume(self) -> float:
-        return np.prod(self.env_size)
-
-    def _square_columns(self, density: float) -> List[Obstacle]:
+    def generate_stage(self, stage_cfg: dict) -> List[Obstacle]:
+        """Generates exactly the obstacles defined in the CL stage."""
         obstacles = []
-        target_volume = density * self._volume()
-        current_volume = 0.0
-        while current_volume < target_volume:
-            w = self.rng.uniform(1.0, 4.0)
-            h = self.rng.uniform(5.0, self.env_size[2])
-            pos = self.rng.uniform([0, 0, 0], self.env_size)
-            pos[2] = h / 2  # center vertically
-            obstacles.append(Obstacle('box', pos, np.array([w/2, w/2, h/2])))
-            current_volume += (w ** 2) * h
-        return obstacles
+        
+        # 1. Generate Static Buildings (Boxes)
+        n_static = stage_cfg['static_obs']
+        if n_static > 0:
+            foot_w = stage_cfg['footprint'][0] # (min, max) width
+            foot_l = stage_cfg['footprint'][1] # (min, max) length
+            h_dist = stage_cfg['height_dist']  # (mean, sigma, clip_min, clip_max)
+            
+            for _ in range(n_static):
+                w = self.rng.uniform(foot_w[0], foot_w[1])
+                l = self.rng.uniform(foot_l[0], foot_l[1])
+                
+                # LogNormal Height
+                h = self.rng.lognormal(mean=h_dist[0], sigma=h_dist[1])
+                h = np.clip(h, h_dist[2], h_dist[3])
+                
+                pos = self.rng.uniform([0, 0, 0], self.env_size)
+                pos[2] = h / 2  # Ground it
+                
+                obstacles.append(Obstacle('box', pos, np.array([w/2, l/2, h/2])))
 
-    def _cylinders(self, density: float) -> List[Obstacle]:
-        obstacles = []
-        target_volume = density * self._volume()
-        current_volume = 0.0
-        while current_volume < target_volume:
-            r = self.rng.uniform(0.5, 2.5)
-            h = self.rng.uniform(5.0, self.env_size[2])
-            pos = self.rng.uniform([0, 0, 0], self.env_size)
-            pos[2] = h / 2
-            obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
-            current_volume += np.pi * (r ** 2) * h
-        return obstacles
-
-    def _forest(self, density: float) -> List[Obstacle]:
-        obstacles = []
-        target_volume = density * self._volume()
-        current_volume = 0.0
-        while current_volume < target_volume:
-            r = self.rng.uniform(0.3, 1.5)
-            h = self.rng.uniform(8.0, self.env_size[2])
-            pos = self.rng.uniform([0, 0, 0], self.env_size)
-            pos[2] = h / 2
-            obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
-            current_volume += np.pi * (r ** 2) * h
-        return obstacles
-
-    def _circular_rings(self, density: float) -> List[Obstacle]:
-        obstacles = []
-        target_volume = density * self._volume()
-        current_volume = 0.0
-
-        while current_volume < target_volume:
-            center = self.rng.uniform([5, 5, 5], self.env_size - 5)
-            major_r = self.rng.uniform(3.0, 8.0)
-            tube_r = self.rng.uniform(0.5, 1.5)
-            n_spheres = max(8, int(2 * np.pi * major_r / tube_r))
-
-            for i in range(n_spheres):
-                angle = 2 * np.pi * i / n_spheres
-                pos = center + np.array([
-                    major_r * np.cos(angle),
-                    major_r * np.sin(angle),
-                    0.0
-                ])
-                obstacles.append(Obstacle('sphere', pos, np.array([tube_r])))
-
-            current_volume += n_spheres * (4.0 / 3.0) * np.pi * tube_r ** 3
+        # 2. Generate Dynamic Spheres
+        n_dynamic = stage_cfg.get('dynamic_obs', 0)
+        if n_dynamic > 0:
+            r = stage_cfg['dynamic_radius']
+            v_range = stage_cfg['dynamic_speed']
+            
+            # Decide actual count if range is given (e.g., 1-3)
+            actual_dyn = self.rng.randint(n_dynamic[0], n_dynamic[1] + 1) if isinstance(n_dynamic, tuple) else n_dynamic
+            
+            for _ in range(actual_dyn):
+                pos = self.rng.uniform([r, r, r], self.env_size - r)
+                
+                # Random velocity direction
+                phi = self.rng.uniform(0, 2 * np.pi)
+                costheta = self.rng.uniform(-1, 1)
+                theta = np.arccos(costheta)
+                speed = self.rng.uniform(v_range[0], v_range[1])
+                
+                vx = speed * np.sin(theta) * np.cos(phi)
+                vy = speed * np.sin(theta) * np.sin(phi)
+                vz = speed * np.cos(theta)
+                
+                velocity = np.array([vx, vy, vz], dtype=np.float32)
+                obstacles.append(Obstacle('sphere', pos, np.array([r]), velocity=velocity))
 
         return obstacles

@@ -19,6 +19,84 @@ from .algorithm.noise import GaussianNoise
 from .utils.metrics import MetricsTracker
 from tqdm import tqdm
 
+CURRICULUM = [
+    { # Stage 0
+        'name': 'Pre-Training Warm-Up', 'env_size': [50.0, 50.0, 60.0], 'max_steps': 300, 
+        'static_obs': 0, 'min_sep': 20.0,
+        'criteria': {'success_rate': 0.95, 'path_efficiency': 0.95}
+    },
+    { # Stage 1
+        'name': 'Sparse Familiarisation', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 500,
+        'static_obs': 20, 'footprint': ((1.0, 3.0), (1.0, 3.0)), 'height_dist': (2.5, 0.4, 10, 40), 'min_sep': 40.0,
+        'criteria': {'success_rate': 0.90, 'collision_rate': 0.02, 'path_efficiency': 0.85, 'operator': 'less_col'}
+    },
+    { # Stage 2
+        'name': 'Coordination Under Pressure', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
+        'static_obs': 60, 'footprint': ((1.5, 4.0), (1.5, 4.0)), 'height_dist': (3.0, 0.5, 15, 50), 'min_sep': 60.0,
+        'criteria': {'success_rate': 0.85, 'collision_rate': 0.05, 'inter_uav_safe': 0.95, 'operator': 'less_col_greater_safe'}
+    },
+    { # Stage 3
+        'name': 'First Full-Scale Test', 'env_size': [150.0, 150.0, 60.0], 'max_steps': 1000,
+        'static_obs': 100, 'footprint': ((2.0, 5.0), (2.0, 5.0)), 'height_dist': (3.2, 0.6, 20, 60), 'min_sep': 80.0,
+        'criteria': {'success_rate': 0.80, 'trapped_rate': 0.05, 'path_efficiency': 0.80, 'operator': 'less_trap'}
+    },
+    { # Stage 4
+        'name': 'Saturated Navigation', 'env_size': [150.0, 150.0, 60.0], 'max_steps': 1200,
+        'static_obs': 200, 'footprint': ((2.0, 5.0), (2.0, 5.0)), 'height_dist': (3.2, 0.6, 20, 60), 'min_sep': 100.0,
+        'criteria': {'success_rate': 0.75, 'collision_rate': 0.10, 'path_efficiency': 0.75, 'operator': 'less_col'}
+    },
+    { # Stage 5
+        'name': 'Max Density Stress Test', 'env_size': [150.0, 150.0, 60.0], 'max_steps': 1500,
+        'static_obs': 300, 'footprint': ((2.0, 5.0), (2.0, 5.0)), 'height_dist': (3.2, 0.6, 20, 60), 'min_sep': 100.0,
+        'criteria': {'success_rate': 0.70, 'path_efficiency': 0.70}
+    },
+    { # Stage 6
+        'name': 'Dynamic Threats', 'env_size': [150.0, 150.0, 60.0], 'max_steps': 1500,
+        'static_obs': 50, 'footprint': ((1.5, 4.0), (1.5, 4.0)), 'height_dist': (3.0, 0.5, 15, 50), 'min_sep': 80.0,
+        'dynamic_obs': (1, 3), 'dynamic_radius': 1.0, 'dynamic_speed': (1.0, 2.0),
+        'criteria': {'success_rate': 0.70, 'dyn_collision_rate': 0.05, 'path_efficiency': 0.70, 'operator': 'less_dyn'}
+    }
+]
+
+class CurriculumManager:
+    def __init__(self, stages):
+        self.stages = stages
+        self.current_stage_idx = 0
+        self.episodes_in_stage = 0
+        
+    def get_current_config(self):
+        return self.stages[self.current_stage_idx]
+        
+    def evaluate_promotion(self, stats):
+        # Need at least 100 episodes in current stage to evaluate
+        if self.episodes_in_stage < 100:
+            return False
+            
+        c = self.stages[self.current_stage_idx]['criteria']
+        op = c.get('operator', 'standard')
+        
+        # Base criteria
+        passed = (stats['success_rate'] >= c['success_rate']) and \
+                 (stats.get('path_efficiency', 0) >= c.get('path_efficiency', 0))
+                 
+        if op == 'less_col':
+            passed = passed and (stats['collision_rate'] <= c['collision_rate'])
+        elif op == 'less_trap':
+            passed = passed and (stats['trapped_rate'] <= c['trapped_rate'])
+        elif op == 'less_col_greater_safe':
+            passed = passed and (stats['collision_rate'] <= c['collision_rate']) and \
+                     (stats['inter_uav_safe'] >= c['inter_uav_safe'])
+        elif op == 'less_dyn':
+            passed = passed and (stats['dyn_collision_rate'] <= c['dyn_collision_rate'])
+
+        if passed and self.current_stage_idx < len(self.stages) - 1:
+            self.current_stage_idx += 1
+            self.episodes_in_stage = 0
+            print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx}: {self.stages[self.current_stage_idx]['name']} 🚀\n")
+            return True
+        return False
+
+
 
 def load_config(path: str = "config/default.yaml") -> dict:
     with open(path, 'r') as f:
@@ -190,6 +268,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     )
     
     metrics = MetricsTracker()
+    cl_manager = CurriculumManager(CURRICULUM)
     global_step = 0
     
     # Restore global step and noise scheduling if resuming
@@ -217,32 +296,12 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     last_update_step = 0
 
     try:
-        for episode in tqdm(range(start_episode, algo_cfg['n_episodes']), desc="Training progress", initial=start_episode, total=algo_cfg['n_episodes']):
+        for episode in range(start_episode, algo_cfg['n_episodes']):
+            stage_cfg = cl_manager.get_current_config()
             
-            # Curriculum Learning
-            curriculum_frac = min(1.0, episode / 5000)
-            scale = 0.6 + 0.4 * curriculum_frac   # 60% -> 100% of arena dimensions
-            
-            # FIX: Use the original_env_size, do not self-multiply
-            new_env_size = [
-                original_env_size[0] * scale,
-                original_env_size[1] * scale,
-                original_env_size[2] * scale
-            ]
-            env.cfg['env_size'] = new_env_size
-            env.cfg['max_altitude'] = new_env_size[2]
-            
-            # FIX: Push the updated dimensions to dependent modules so physics don't break
-            env.dynamics.env_size = np.array(new_env_size, dtype=np.float32)
-            env.dynamics.max_altitude = new_env_size[2]
-            env.scene_gen.env_size = np.array(new_env_size, dtype=np.float32)
-            env.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
-            
-            goal_thresh = max(2.0, 5.0 * (1.0 - curriculum_frac))
-            env.cfg['goal_threshold'] = goal_thresh
-            
-            density_curriculum = min(env_cfg.get('obstacle_density', 0.1), (episode / 3000) * 0.1)
-            obs = env.reset(obstacle_density=density_curriculum)
+            # Reset Env with Stage Config
+            obs = env.reset(stage_cfg)
+            cl_manager.episodes_in_stage += 1
             
             # Reset hidden states at episode boundaries (Section 7.2)
             for agent in agents:
@@ -254,7 +313,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             episode_reward = 0
             path_history = [env.agents_state[:, :3].copy()]
             
-            for step in range(env_cfg['max_steps_per_episode']):
+            for step in range(stage_cfg['max_steps']):
                 # Decentralized execution with exploration (Algorithm 1, line 8-9)
                 noise_val = noise.sample()
                 
@@ -287,16 +346,22 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # Store episode
             buffer.add_episode(episode_data)
             
-            # Record metrics
+            # Record to metrics
             metrics.record_episode(
-                [sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)],
-                episode_data.length() - 1,
-                info['reached'].tolist() if isinstance(info['reached'], np.ndarray) else info['reached'],
-                info['collisions'].tolist() if isinstance(info['collisions'], np.ndarray) else info['collisions'],
-                [path_history[0][i] for i in range(n_agents)],
-                [env.goals[i] for i in range(n_agents)],
-                path_history
+                length=episode_data.length() - 1, 
+                info=info, 
+                start_pos=[path_history[0][i] for i in range(n_agents)],
+                goal_pos=[env.goals[i] for i in range(n_agents)], 
+                path_history=path_history,
+                rewards=[sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]
             )
+            
+            # Evaluate Promotion
+            stats = metrics.get_window_stats(100)
+            promoted = cl_manager.evaluate_promotion(stats)
+            if promoted:
+                # Inject a small amount of noise back into the policy to unfreeze it for the new difficulty
+                noise.total_steps = max(0, noise.total_steps - 50000) 
             
             stats = metrics.get_stats()
             
@@ -307,10 +372,13 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 "ep_length_raw": episode_data.length() - 1,
                 "success_rate_raw": np.mean(info['reached']),
                 "collision_rate_raw": np.mean(info['collisions']),
+                "dyn_collision_rate_raw": np.mean(info.get('dyn_collisions', [])),
                 "smoothed_success_rate": stats['success_rate'],
                 "smoothed_collision_rate": stats['collision_rate'],
+                "smoothed_dyn_collision_rate": stats.get('dyn_collision_rate', 0),
                 "smoothed_trapped_rate": stats['trapped_rate'],
-                "smoothed_avg_reward": stats['avg_reward']
+                "smoothed_avg_reward": stats['avg_reward'],
+                "stage": cl_manager.current_stage_idx
             }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)

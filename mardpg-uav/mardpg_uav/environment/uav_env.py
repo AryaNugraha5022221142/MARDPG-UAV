@@ -69,89 +69,81 @@ class MultiUAVEnv(gym.Env):
         self.obstacles: List[Obstacle] = []
         self.steps = 0
         
-    def reset(self, scene_type: Optional[int] = None,
-              obstacle_density: Optional[float] = None) -> np.ndarray:
-        cfg = self.cfg
-        density = obstacle_density if obstacle_density is not None else cfg['obstacle_density']
-        scene = scene_type if scene_type is not None else self.scene_gen.rng.choice(cfg['scene_types'])
+    def reset(self, stage_cfg: dict = None) -> np.ndarray:
+        if stage_cfg is None:
+            stage_cfg = {'env_size': [50.0, 50.0, 60.0], 'static_obs': 0, 'min_sep': 20.0}
+            
+        self.current_stage_cfg = stage_cfg
+        new_env_size = np.array(stage_cfg['env_size'], dtype=np.float32)
         
-        # Generate obstacles
-        self.obstacles = self.scene_gen.generate(scene, density, self.n_agents)
+        # Update Environment Dimensions
+        self.cfg['env_size'] = new_env_size
+        self.dynamics.env_size = new_env_size
+        self.dynamics.max_altitude = new_env_size[2]
+        self.scene_gen.env_size = new_env_size
+        self.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
         
-        # FIX: Inject physical arena boundaries so Lidar can see the walls
-        t = 5.0 # Wall thickness
-        ex, ey, ez = self.cfg['env_size']
+        # Generate Obstacles
+        self.obstacles = self.scene_gen.generate_stage(stage_cfg)
+        self.dynamic_obstacles = [obs for obs in self.obstacles if getattr(obs, 'velocity', None) is not None]
+        
+        # Inject Wall Boundaries
+        t = 5.0
+        ex, ey, ez = new_env_size
         min_z = self.cfg.get('min_altitude', 0.0)
-        cr = self.cfg['collision_radius']
-        
         walls = [
-            Obstacle('box', np.array([-t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X min
-            Obstacle('box', np.array([ex+t, ey/2, ez/2]), np.array([t, ey/2, ez/2])), # X max
-            Obstacle('box', np.array([ex/2, -t, ez/2]), np.array([ex/2, t, ez/2])), # Y min
-            Obstacle('box', np.array([ex/2, ey+t, ez/2]), np.array([ex/2, t, ez/2])), # Y max
-            Obstacle('box', np.array([ex/2, ey/2, min_z-t]), np.array([ex/2, ey/2, t])), # Z min (floor)
-            Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))  # Z max (ceiling)
+            Obstacle('box', np.array([-t, ey/2, ez/2]), np.array([t, ey/2, ez/2])),
+            Obstacle('box', np.array([ex+t, ey/2, ez/2]), np.array([t, ey/2, ez/2])),
+            Obstacle('box', np.array([ex/2, -t, ez/2]), np.array([ex/2, t, ez/2])),
+            Obstacle('box', np.array([ex/2, ey+t, ez/2]), np.array([ex/2, t, ez/2])),
+            Obstacle('box', np.array([ex/2, ey/2, min_z-t]), np.array([ex/2, ey/2, t])),
+            Obstacle('box', np.array([ex/2, ey/2, ez+t]), np.array([ex/2, ey/2, t]))
         ]
         self.obstacles.extend(walls)
+        self._update_obstacle_caches()
 
-        self.obs_centers = np.array([obs.position for obs in self.obstacles])
-
-        # FIX: Compute true circumscribed bounding radii to prevent corner-clipping
-        sizes = []
-        for obs in self.obstacles:
-            if obs.type == 'box':
-                sizes.append(np.linalg.norm(obs.size))
-            elif obs.type == 'cylinder':
-                sizes.append(np.sqrt(obs.size[0]**2 + (obs.size[1]/2)**2))
-            else:
-                sizes.append(obs.size[0])
-        self.obs_max_sizes = np.array(sizes)
-        
-        # Sample start/goal positions (ensuring clearance)
+        # Sample start/goal positions with min_point_separation
+        min_sep = stage_cfg.get('min_sep', 20.0)
         self.agents_state = np.zeros((self.n_agents, 6), dtype=np.float32)
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
+        
+        positions = []
+        for i in range(self.n_agents):
+            pos = self._sample_free_position()
+            positions.append(pos)
+            self.agents_state[i, :3] = pos
+            
+            for _ in range(100):
+                goal = self._sample_free_position()
+                # Check min point separation and goal interference
+                if np.linalg.norm(goal - pos) >= min_sep and \
+                   all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist'] for g in self.goals[:i]):
+                    break
+            self.goals[i] = goal
+
         self.prev_applied_actions = np.zeros((self.n_agents, 3), dtype=np.float32)
         self.agent_done = np.zeros(self.n_agents, dtype=bool)
         self.agent_reached = np.zeros(self.n_agents, dtype=bool)
         self.agent_collided = np.zeros(self.n_agents, dtype=bool)
+        self.agent_dyn_collided = np.zeros(self.n_agents, dtype=bool)
         self._cached_obs = [None] * self.n_agents
         
-        positions = []
-        goals = []
-        for i in range(self.n_agents):
-            for _ in range(50):
-                pos = self._sample_free_position()
-                if all(np.linalg.norm(pos - p) >= self.cfg['inter_uav_min_dist'] * 2
-                       for p in positions):
-                    break
-            else:
-                pos = self._sample_free_position()  # fallback
-            
-            assert not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.1), \
-                f"Agent {i} spawned inside obstacle. Arena may be over-dense."
-            
-            positions.append(pos)
-            self.agents_state[i, :3] = positions[-1]
-            
-            for _ in range(50):
-                goal = self._sample_free_position()
-                if all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist']
-                       for g in goals):
-                    goals.append(goal)
-                    break
-            else:
-                goals.append(self._sample_free_position())
-            self.goals[i] = goals[-1]
-            # Random initial orientation/velocity
-            # In world-frame, velocity initializes to 0.0 (already zeroed above)
-        
-        # Initialize reward function distances
-        dists = {i: np.linalg.norm(self.agents_state[i, :3] - self.goals[i])
-                 for i in range(self.n_agents)}
+        dists = {i: np.linalg.norm(self.agents_state[i, :3] - self.goals[i]) for i in range(self.n_agents)}
         self.reward_fn.reset(list(range(self.n_agents)), dists)
-        
         self.steps = 0
+        self.safe_inter_uav_steps = 0  # Track safe steps for Stage 2 metric
+        
         return self._get_observations()
+
+    def _update_obstacle_caches(self):
+        """Helper to refresh bounding boxes for lidar when objects move."""
+        self.obs_centers = np.array([obs.position for obs in self.obstacles])
+        sizes = []
+        for obs in self.obstacles:
+            if obs.type == 'box': sizes.append(np.linalg.norm(obs.size))
+            elif obs.type == 'cylinder': sizes.append(np.sqrt(obs.size[0]**2 + (obs.size[1]/2)**2))
+            else: sizes.append(obs.size[0])
+        self.obs_max_sizes = np.array(sizes)
 
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
         """
@@ -177,6 +169,21 @@ class MultiUAVEnv(gym.Env):
                 self.agents_state[i], actions[i], self.prev_applied_actions[i])
             self.agents_state[i] = next_state
             self.prev_applied_actions[i] = applied
+            
+        # --- NEW: UPDATE DYNAMIC OBSTACLES ---
+        if hasattr(self, 'dynamic_obstacles') and len(self.dynamic_obstacles) > 0:
+            env_s = self.cfg['env_size']
+            for obs in self.dynamic_obstacles:
+                obs.position = obs.position + obs.velocity * self.cfg['dt']
+                # Bounce logic
+                for axis in range(3):
+                    if obs.position[axis] - obs.size[0] < 0:
+                        obs.position[axis] = obs.size[0]
+                        obs.velocity[axis] *= -1
+                    elif obs.position[axis] + obs.size[0] > env_s[axis]:
+                        obs.position[axis] = env_s[axis] - obs.size[0]
+                        obs.velocity[axis] *= -1
+            self._update_obstacle_caches()
         
         # Compute observations and rewards
         obs_list = []
@@ -210,6 +217,21 @@ class MultiUAVEnv(gym.Env):
                     if self.reward_fn._surface_distance(pos, obs) < self.cfg['collision_radius']:
                         collisions[i] = True
                         break
+
+        # Check dynamic collisions
+        if hasattr(self, 'dynamic_obstacles'):
+            for i in range(self.n_agents):
+                if not self.agent_done[i] and len(self.dynamic_obstacles) > 0:
+                    pos = self.agents_state[i, :3]
+                    for dyn_obs in self.dynamic_obstacles:
+                        if self.reward_fn._surface_distance(pos, dyn_obs) < self.cfg['collision_radius']:
+                            self.agent_dyn_collided[i] = True
+                            collisions[i] = True
+                            break
+
+        # Check inter-uav safety for metrics
+        if np.all(dist_matrix >= 1.0):
+            self.safe_inter_uav_steps += 1
 
         for i in range(self.n_agents):
             if self.agent_done[i]:
@@ -270,9 +292,13 @@ class MultiUAVEnv(gym.Env):
         
         applied_actions = self.prev_applied_actions.copy()
         
+        dyn_collisions_copy = self.agent_dyn_collided.copy() if hasattr(self, 'agent_dyn_collided') else np.zeros(self.n_agents, dtype=bool)
+
         info = {
             'collisions': self.agent_collided.copy(),
+            'dyn_collisions': dyn_collisions_copy,
             'reached': self.agent_reached.copy(),
+            'safe_inter_uav_ratio': self.safe_inter_uav_steps / max(1, self.steps),
             'step_collisions': collisions.copy(),
             'step_reached': reached.copy(),
             'timeout': timeout,

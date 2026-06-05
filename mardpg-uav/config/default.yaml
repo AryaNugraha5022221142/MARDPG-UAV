@@ -11,12 +11,11 @@ environment:
   action_bounds: [-3.0, 3.0]  # m/s
   
   # Obstacle generation
-  obstacle_density: 0.1       # 10% space occupancy
   scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
   env_size: [50.0, 50.0, 60.0]  # x, y, z bounds
   
   # Episode settings
-  max_steps_per_episode: 500
+  max_steps_per_episode: 1500
   goal_threshold: 2.0         # meters to count as "reached"
   
   # Reward parameters (Eq 4)
