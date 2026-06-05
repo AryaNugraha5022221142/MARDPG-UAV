@@ -191,10 +191,11 @@ class MultiUAVEnv(gym.Env):
         inter_collisions = np.any(dist_matrix < self.cfg['inter_uav_min_dist'], axis=1)  # (N,)
 
         for i in range(self.n_agents):
+            if self.agent_done[i]: continue
+            
             if inter_collisions[i]:
                 collisions[i] = True
             
-            if self.agent_done[i]: continue
             pos = self.agents_state[i, :3]
             
             # Check bounds and obstacles

@@ -51,7 +51,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         agents[i].share_parameters(agents[0])
     
        
-    obs = env.reset()
+    obs = env.reset(scene_type=1)  # Force scene_type=1 (square columns) to match the expected visualization
     for agent in agents:
         agent.actor.eval()
         agent.reset_hidden(batch_size=1, eval_mode=True)
@@ -104,7 +104,8 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     
     # Plot obstacle
     print(f"Total simulated obstacles: {len(env.obstacles)}")
-    for ob in env.obstacles:
+    # Skip the last 6 obstacles as they are the arena boundary walls
+    for ob in env.obstacles[:-6]:
         if ob.type == 'sphere':
             ob_pos = ob.position
             ob_rad = ob.size[0]
@@ -116,7 +117,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             y = ob_rad * np.outer(np.sin(u), np.sin(v)) + ob_pos[1]
             z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
             
-            ax.plot_wireframe(x, y, z, color='gray', alpha=0.3)
+            ax.plot_surface(x, y, z, color='gray', alpha=0.6, shade=True)
             
         elif ob.type == 'box':
             ob_pos = ob.position
@@ -127,11 +128,11 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             z = [ob_pos[2]-hl[2], ob_pos[2]+hl[2]]
             
             xx, yy = np.meshgrid(x, y)
-            for zz in z: ax.plot_wireframe(xx, yy, np.full_like(xx, zz), color='gray', alpha=0.3)
+            for zz in z: ax.plot_surface(xx, yy, np.full_like(xx, zz), color='gray', alpha=0.6, shade=True)
             xx, zz = np.meshgrid(x, z)
-            for yy in y: ax.plot_wireframe(xx, np.full_like(xx, yy), zz, color='gray', alpha=0.3)
+            for yy in y: ax.plot_surface(xx, np.full_like(xx, yy), zz, color='gray', alpha=0.6, shade=True)
             yy, zz = np.meshgrid(y, z)
-            for xx in x: ax.plot_wireframe(np.full_like(yy, xx), yy, zz, color='gray', alpha=0.3)
+            for xx in x: ax.plot_surface(np.full_like(yy, xx), yy, zz, color='gray', alpha=0.6, shade=True)
             
         elif ob.type == 'cylinder':
             ob_pos = ob.position
@@ -144,7 +145,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             theta_grid, z_grid = np.meshgrid(thetaC, zC)
             x_grid = ob_pos[0] + ob_rad * np.cos(theta_grid)
             y_grid = ob_pos[1] + ob_rad * np.sin(theta_grid)
-            ax.plot_wireframe(x_grid, y_grid, z_grid, color='gray', alpha=0.3)
+            ax.plot_surface(x_grid, y_grid, z_grid, color='gray', alpha=0.6, shade=True)
         
     for i in range(n_agents):
         c = colors[i % len(colors)]
