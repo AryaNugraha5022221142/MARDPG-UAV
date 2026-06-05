@@ -40,12 +40,18 @@ class SceneGenerator:
 
         # 2. Generate Dynamic Spheres
         n_dynamic = stage_cfg.get('dynamic_obs', 0)
-        if n_dynamic > 0:
+        
+        has_dynamic = False
+        if isinstance(n_dynamic, tuple):
+            has_dynamic = True
+            actual_dyn = self.rng.randint(n_dynamic[0], n_dynamic[1] + 1)
+        elif n_dynamic > 0:
+            has_dynamic = True
+            actual_dyn = n_dynamic
+
+        if has_dynamic:
             r = stage_cfg['dynamic_radius']
             v_range = stage_cfg['dynamic_speed']
-            
-            # Decide actual count if range is given (e.g., 1-3)
-            actual_dyn = self.rng.randint(n_dynamic[0], n_dynamic[1] + 1) if isinstance(n_dynamic, tuple) else n_dynamic
             
             for _ in range(actual_dyn):
                 pos = self.rng.uniform([r, r, r], self.env_size - r)
