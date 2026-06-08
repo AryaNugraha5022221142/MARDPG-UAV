@@ -1,129 +1,86 @@
 """
-Episode-based replay buffer for BPTT.
-Reference: Section 7.1 and 7.2 of blueprint.
+Replay buffer faithful to Algorithm 1 of Xue & Chen (2024).
+Stores full episodes; samples random length-T windows for BPTT.
+Buffer capacity expressed in transitions (10^5).
 """
-import random
-import numpy as np
-import torch
-from collections import deque
-from typing import Dict, List, Tuple
+import numpy as np, torch
 
+class SequenceReplayBuffer:
+    """
+    Stores complete episodes. Samples contiguous windows of length seq_len
+    for BPTT, constructing histories h_{i,t} as in Algorithm 1.
+    """
+    def __init__(self, capacity: int = 100_000, seq_len: int = 80,
+                 n_agents: int = 5, obs_dim: int = 30, action_dim: int = 2):
+        self.capacity   = capacity
+        self.seq_len    = seq_len
+        self.n_agents   = n_agents
+        self.obs_dim    = obs_dim
+        self.action_dim = action_dim
 
-class Episode:
-    def __init__(self):
-        self.observations = []
-        self.actions = []
-        self.rewards = []
-        self.agent_dones = []   # List of np.ndarray shape [n_agents] — was bool
+        # Circular buffer over transitions
+        self.obs     = np.zeros((capacity, n_agents, obs_dim),    dtype=np.float32)
+        self.actions = np.zeros((capacity, n_agents, action_dim), dtype=np.float32)
+        self.rewards = np.zeros((capacity, n_agents),             dtype=np.float32)
+        self.dones   = np.ones ((capacity, n_agents),             dtype=bool)
+        self.ep_ids  = np.zeros( capacity,                        dtype=np.int32)
 
-    def append(self, obs, actions, rewards, agent_dones):
-        self.observations.append(obs)
-        self.actions.append(actions)
-        self.rewards.append(rewards)
-        self.agent_dones.append(agent_dones.copy())  # [n_agents] bool array
+        self.ptr       = 0
+        self.size      = 0
+        self._ep_count = 0
 
-    def length(self):
-        return len(self.agent_dones)
-
-
-class EpisodeReplayBuffer:
-    def __init__(self, capacity: int = 1000, seq_len: int = 80, max_steps: int = 250):
-        self.capacity = capacity
-        self.seq_len = seq_len
-        self.max_ep_len = max(max_steps, seq_len) + 1
-        
-        self.obs_buffer = None
-        self.act_buffer = None
-        self.rew_buffer = None
-        self.done_buffer = None
-        self.ep_lens = np.zeros(capacity, dtype=np.int32)
-        self.ep_true_lens = np.zeros(capacity, dtype=np.int32)
-        
-        self.ptr = 0
-        self.size = 0
-        
-    def add_episode(self, episode: Episode):
-        T = episode.length()
-        if T == 0:
-            return
-            
-        if self.obs_buffer is None:
-            n_agents = len(episode.agent_dones[0])
-            obs_shape = episode.observations[0].shape
-            act_shape = episode.actions[0].shape
-            
-            self.obs_buffer = np.zeros((self.capacity, self.max_ep_len) + obs_shape, dtype=np.float32)
-            self.act_buffer = np.zeros((self.capacity, self.max_ep_len) + act_shape, dtype=np.float32)
-            self.rew_buffer = np.zeros((self.capacity, self.max_ep_len, n_agents), dtype=np.float32)
-            self.done_buffer = np.ones((self.capacity, self.max_ep_len, n_agents), dtype=bool)
-            
+    def add_transition(self, obs, actions, rewards, dones):
         idx = self.ptr
-        
-        obs = np.stack(episode.observations)
-        act = np.stack(episode.actions)
-        rew = np.stack(episode.rewards)
-        dones = np.stack(episode.agent_dones)
-        
-        pad_len = max(0, self.seq_len + 1 - T)
-        
-        self.ep_lens[idx] = T + pad_len
-        self.ep_true_lens[idx] = T
-        
-        self.obs_buffer[idx, :T] = obs
-        self.act_buffer[idx, :T] = act
-        self.rew_buffer[idx, :T] = rew
-        self.done_buffer[idx, :T] = dones
-        
-        if pad_len > 0:
-            # fill neutral obs
-            neutral_obs = np.zeros_like(obs[0])
-            if neutral_obs.ndim == 2:
-                neutral_obs[:, 6:31] = 1.0
-            
-            self.obs_buffer[idx, T:T+pad_len] = neutral_obs
-            self.act_buffer[idx, T:T+pad_len] = 0.0
-            self.rew_buffer[idx, T:T+pad_len] = 0.0
-            self.done_buffer[idx, T:T+pad_len] = True
-            
-        self.ptr = (self.ptr + 1) % self.capacity
+        self.obs[idx]     = obs
+        self.actions[idx] = actions
+        self.rewards[idx] = rewards
+        self.dones[idx]   = dones
+        self.ep_ids[idx]  = self._ep_count
+        self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
-    
-    def sample(self, batch_size: int) -> Tuple[torch.Tensor, ...]:
-        if self.size == 0:
-            return None
-            
-        batch_idxs = np.random.randint(0, self.size, size=batch_size)
-        
-        batch_obs = np.zeros((batch_size, self.seq_len) + self.obs_buffer.shape[2:], dtype=np.float32)
-        batch_obs_next = np.zeros((batch_size, self.seq_len) + self.obs_buffer.shape[2:], dtype=np.float32)
-        batch_actions = np.zeros((batch_size, self.seq_len) + self.act_buffer.shape[2:], dtype=np.float32)
-        batch_rewards = np.zeros((batch_size, self.seq_len) + self.rew_buffer.shape[2:], dtype=np.float32)
-        batch_dones = np.zeros((batch_size, self.seq_len) + self.done_buffer.shape[2:], dtype=bool)
-        
-        for i, idx in enumerate(batch_idxs):
-            T = self.ep_true_lens[idx]
-            if T < 2:
-                # Fallback to start = 0
-                start = 0
-            elif T <= self.seq_len:
-                start = 0
-            else:
-                start = np.random.randint(0, T - self.seq_len)
+
+    def end_episode(self):
+        self._ep_count += 1
+
+    def sample(self, batch_size: int):
+        """
+        Sample batch_size windows of length seq_len from the same episode.
+        Returns arrays shaped (batch_size, seq_len, ...).
+        """
+        valid   = []
+        ep_ids  = self.ep_ids[:self.size]
+        indices = np.arange(self.size)
+
+        # Collect all valid start indices (window stays within one episode)
+        for start in range(self.size - self.seq_len):
             end = start + self.seq_len
-            
-            batch_obs[i] = self.obs_buffer[idx, start:end]
-            batch_obs_next[i] = self.obs_buffer[idx, start+1:end+1]
-            batch_actions[i] = self.act_buffer[idx, start:end]
-            batch_rewards[i] = self.rew_buffer[idx, start:end]
-            batch_dones[i] = self.done_buffer[idx, start:end]
-            
-        return (
-            torch.tensor(batch_obs),
-            torch.tensor(batch_obs_next),
-            torch.tensor(batch_actions),
-            torch.tensor(batch_rewards),
-            torch.tensor(batch_dones)
-        )
-    
+            if np.all(ep_ids[start:end] == ep_ids[start]):
+                valid.append(start)
+
+        if len(valid) < batch_size:
+            return None
+
+        starts = np.random.choice(valid, size=batch_size, replace=False)
+        idx_t  = np.stack([np.arange(s, s + self.seq_len) for s in starts])   # (B, T)
+
+        def gather(buf):
+            return buf[idx_t]
+
+        batch_obs     = gather(self.obs)       # (B, T, N, obs_dim)
+        batch_act     = gather(self.actions)   # (B, T, N, act_dim)
+        batch_rew     = gather(self.rewards)   # (B, T, N)
+        batch_done    = gather(self.dones)     # (B, T, N)
+
+        # Next obs: clamp to episode boundary
+        next_idx = np.minimum(idx_t + 1, self.size - 1)
+        batch_obs_next = self.obs[next_idx]
+
+        to_t = lambda a: torch.FloatTensor(a)
+        to_b = lambda a: torch.BoolTensor(a)
+
+        return (to_t(batch_obs),      to_t(batch_obs_next),
+                to_t(batch_act),      to_t(batch_rew),
+                to_b(batch_done))
+
     def __len__(self):
         return self.size

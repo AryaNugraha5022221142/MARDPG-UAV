@@ -1,31 +1,15 @@
-"""
-Gaussian exploration noise with sigmoid annealing.
-Reference: Section 11.1 of blueprint.
-"""
 import numpy as np
 
 class GaussianNoise:
-    """Gaussian exploration noise representing physical sensor/actuator uncertainty with sigmoid decay."""
-    def __init__(self, n_agents, action_dim=3,
-                 sigma0=0.25, sigma_inf=0.05, anneal_steps=3_000_000):
+    """Uncorrelated Gaussian exploration noise."""
+    def __init__(self, n_agents: int, action_dim: int = 2, sigma: float = 0.1):
         self.n = n_agents
         self.dim = action_dim
-        self.sigma0 = sigma0
-        self.sigma_inf = sigma_inf
-        self.anneal_steps = anneal_steps
-        self.total_steps = 0
-        self.current_sigma = sigma0
+        self.sigma = sigma
 
     def reset(self):
-        pass # Pure Gaussian requires no episode-boundary resets
-        
-    def get_sigma(self):
-        return self.current_sigma
+        pass
 
-    def sample(self):
-        decay = 1.0 / (1.0 + np.exp((self.total_steps - self.anneal_steps / 2) / (self.anneal_steps / 10.0)))
-        sigma_t = self.sigma_inf + (self.sigma0 - self.sigma_inf) * decay
-        self.current_sigma = sigma_t
-        self.total_steps += 1
-        
-        return np.random.normal(0, sigma_t, size=(self.n, self.dim)).astype(np.float32)
+    def sample(self) -> np.ndarray:
+        return np.random.normal(0, self.sigma, size=(self.n, self.dim)).astype(np.float32)
+

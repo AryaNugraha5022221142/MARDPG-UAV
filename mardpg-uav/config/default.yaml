@@ -1,67 +1,51 @@
 environment:
   n_agents: 5
-  v_max: 3.0              # m/s — replaces uav_speed semantics
-  tau_v: 0.3              # velocity tracking time constant (s)
-  dt: 0.1                     # s (10Hz control frequency)
-  max_altitude: 60.0          # meters
+  v: 1.0                      # constant speed m/s (paper: fixed v)
+  dt: 0.1
+  max_altitude: 60.0
   min_altitude: 0.0
-  sensor_range: 10.0          # meters
-  collision_radius: 0.5       # R (inferred)
+  sensor_range: 10.0
+  collision_radius: 0.5       # R
   inter_uav_min_dist: 1.0     # 2R
-  action_bounds: [-3.0, 3.0]  # m/s
-  
+  max_delta_angle: 0.5236     # pi/6 radians
+  env_size: [100.0, 100.0, 60.0]
+  max_steps_per_episode: 1500
+  goal_threshold: 1.0
+
   # Obstacle generation
   scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
-  env_size: [100.0, 100.0, 60.0]  # x, y, z bounds
-  
-  # Episode settings
-  max_steps_per_episode: 1500
-  goal_threshold: 2.0         # meters to count as "reached"
   
   # Reward parameters (Eq 4)
   reward:
-    alpha: 3.0
-    lambda_col: 2.0       # Reduced from 5.0 to prevent severe trapping penalties
-    sigma_col: 1.0
-    lambda_sep: 1.0       # Reduced from 2.0 
-    sigma_sep: 5.0
-    r_free: 0.1
-    r_step: -0.4
-    delta: [0.40, 0.30, 0.10, 0.10, 0.10]
-    r_goal: 30.0          
-    r_col: 25.0           # CRITICAL fix
+    alpha:    3.0
+    lambda_col: 5.0
+    sigma_col: 15.0            # RESTORED from paper
+    r_free:  0.1
+    r_step: -0.6
+    delta: [0.45, 0.30, 0.15, 0.10]
+    # NO r_goal, NO r_col hard penalty, NO r_sep
 
 algorithm:
   device: cuda
-  gamma: 0.99
-  tau: 0.01
-  lr_actor: 0.0001
-  lr_critic: 0.0003
-  batch_size: 128
-  seq_len: 25
-  burn_in: 12
-  replay_capacity: 2000
-  update_freq: 50           # FIX (Bug 4): Update every 50 steps, not 10 episodes
-  grad_steps_per_update: 4  # FIX (Bug 4): Multiple gradient steps per update
-  warmup_episodes: 300
+  gamma:        0.99
+  tau:          0.01
+  lr_actor:     0.01           # paper: Adam lr=0.01
+  lr_critic:    0.01
+  batch_size:   128
+  seq_len:      80             # paper: LSTM time step = 80
+  burn_in:      10
+  replay_capacity: 100000      # paper: buffer size 10^5
+  update_freq:  100            # paper: sampled every 100 steps
+  warmup_steps: 2000
   gradient_clip: 1.0
-  n_episodes: 15000
-  policy_noise: 0.10      # m/s (10% of v_max)
-  noise_clip: 0.15        # m/s
-
-  exploration:
-    noise_std_start: 0.20  # 25% of v_max
-    noise_std_end: 0.05  # 2% of v_max
-    noise_anneal_steps: 3000000
+  n_episodes:   20000
+  noise_std:    0.1
+  noise_theta: 0.15
+  noise_sigma: 0.20
 
 network:
-  shared:
-    conv_filters: 32
-    conv_kernel: 2
-    fc_angle_units: 16
-    fc_goal_units: 8
-  actor:
-    lstm_hidden: 128
-  critic:
-    fc1_units: 256
-    lstm_hidden: 64
+  conv_filters:    32
+  fc_angle_units:  8
+  fc_goal_units:   8
+  actor_lstm_hidden: 128
+  critic_lstm_hidden: 128

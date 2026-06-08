@@ -4,24 +4,21 @@ from typing import List, Tuple
 
 class RewardFunction:
     def __init__(self, alpha: float = 3.0, lambda_col: float = 5.0,
-                 sigma_col: float = 1.0, lambda_sep: float = 2.0,
-                 sigma_sep: float = 5.0, r_free: float = 0.1,
-                 r_step: float = -0.4,
-                 delta: Tuple[float, float, float, float, float] = (0.40, 0.30, 0.10, 0.10, 0.10),
+                 sigma_col: float = 15.0,
+                 r_free: float = 0.1, r_step: float = -0.6,
+                 delta: Tuple[float, float, float, float] = (0.45, 0.30, 0.15, 0.10),
                  collision_radius: float = 0.5,
-                 inter_uav_min: float = 1.0):
+                 inter_uav_min: float = 1.0,
+                 range_max: float = 10.0):
         self.alpha = alpha
         self.lambda_col = lambda_col
         self.sigma_col = sigma_col
-        self.lambda_sep = lambda_sep
-        self.sigma_sep = sigma_sep
         self.r_free = r_free
         self.r_step = r_step
         self.delta = delta
         self.collision_radius = collision_radius
         self.inter_uav_min = inter_uav_min
-        
-        # Store previous distances for transfer reward
+        self.range_max = range_max
         self.prev_distances = {}
 
     def reset(self, agent_ids: List[int], distances: dict):
@@ -32,44 +29,39 @@ class RewardFunction:
                 other_positions: List[np.ndarray], obstacles: List,
                 obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> float:
         """
-        Eq (4): r = δ1*r_trans + δ2*r_col + δ3*r_sep + δ4*r_free + δ5*r_step
+        Eq. (4): r = delta1*r_trans + delta2*r_col + delta3*r_free + delta4*r_step
         """
-        # Eq (2): Transfer reward
+        # --- Eq. (2): Transfer reward ---
         current_dist = np.linalg.norm(position - goal)
-        prev_dist = self.prev_distances.get(agent_id, current_dist)
-        r_trans = self.alpha * (prev_dist - current_dist)
+        prev_dist    = self.prev_distances.get(agent_id, current_dist)
+        r_trans      = self.alpha * (prev_dist - current_dist)
         self.prev_distances[agent_id] = current_dist
 
-        # Unified d_all_min — Eq.40: min(obstacle_surface_dist, inter_agent_dist) - Rc
-        d_obs_surface = self._min_obstacle_surface_distance(position, obstacles, obs_centers, obs_max_sizes)
-        d_agent_center = min(
-            (np.linalg.norm(position - other) for other in other_positions),
+        # --- Eq. (3): Collision penalty ---
+        # d_min = min distance to ANY obstacle (static) or UAV (dynamic)
+        d_obs = self._min_obstacle_surface_distance(position, obstacles, obs_centers, obs_max_sizes)
+        d_uav = min(
+            (np.linalg.norm(position - p) for p in other_positions),
             default=float('inf')
         )
+        # Paper: R for obstacle, 2R for UAV
+        d_min = min(d_obs - self.collision_radius,
+                    d_uav - self.inter_uav_min)
+        d_min = max(0.0, d_min)
+        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_min)
 
-        # Clamp to [0, ∞): penalty is maximised at contact, not inside
-        # PDF §9.4 range analysis assumes d_all_min >= 0
-        d_obs_surface_adj = d_obs_surface - self.collision_radius
-        d_agent_surface = d_agent_center - self.inter_uav_min
-        d_all_min = max(0.0, min(d_obs_surface_adj, d_agent_surface))
-        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_all_min)       # Eq.41
+        # --- Free space reward ---
+        # Fires when first-perspective beam (forward) detects no obstacle
+        # Use beam index 12 (centre of 5x5 grid, facing forward)
+        r_free = self.r_free if rangefinder_raw.flatten()[12] >= self.range_max else 0.0
 
-        # Clamp d_sep similarly — PDF Eq.44
-        d_sep = max(0.0, d_agent_center - self.inter_uav_min)
-        r_sep = -self.lambda_sep * np.exp(-self.sigma_sep * d_sep)           # Eq.44
-
-        # Free space reward
-        # r_free fires when average of beams clear 75% of max range
-        r_free = self.r_free if float(np.mean(rangefinder_norm)) >= 0.75 else 0.0
-
-        # Step penalty
+        # --- Step penalty ---
         r_step = self.r_step
 
         return (self.delta[0] * r_trans +
-                self.delta[1] * r_col +
-                self.delta[2] * r_sep +
-                self.delta[3] * r_free +
-                self.delta[4] * r_step)
+                self.delta[1] * r_col   +
+                self.delta[2] * r_free  +
+                self.delta[3] * r_step)
 
     def _surface_distance(self, position, obs):
         p = position

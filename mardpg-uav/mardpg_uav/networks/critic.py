@@ -1,52 +1,47 @@
 """
-Centralized critic network.
-Input: all agents' LSTM hidden states + all agents' actions.
-Reference: Section 6.2 and 5.1 of blueprint.
+Centralised recurrent critic — faithful to Section V.B and Fig. 4.
+Input : concatenation of all agents' observations and actions.
+        [o_1, ..., o_N, a_1, ..., a_N]  at each time step
+Output: single Q value for agent i.
 """
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
+import torch, torch.nn as nn
 
-class AttentionCritic(nn.Module):
-    def __init__(self, n_agents=5, lstm_hidden=128, action_dim=3, d_model=128, d_ff=256, n_heads=4):
+class RecurrentCritic(nn.Module):
+    def __init__(self, n_agents: int, obs_dim: int, action_dim: int,
+                 fc_hidden: int = 128, lstm_hidden: int = 128):
         super().__init__()
-        self.d_model = d_model
-        
-        # Shared Encoder & MHA
-        self.encoder = nn.Linear(lstm_hidden + action_dim, d_model)
-        self.mha = nn.MultiheadAttention(d_model, n_heads, batch_first=True, dropout=0.0)
-        self.ln1 = nn.LayerNorm(d_model)
-        
-        # Twin Q-networks (TD3 style to prevent overestimation)
-        self.ffn1 = nn.Sequential(
-            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.0), nn.Linear(d_ff, d_model))
-        self.ln2_1 = nn.LayerNorm(d_model)
-        self.readout1 = nn.Sequential(nn.Linear(d_model, 64), nn.ReLU(), nn.Linear(64, 1))
-        
-        self.ffn2 = nn.Sequential(
-            nn.Linear(d_model, d_ff), nn.ReLU(), nn.Dropout(0.0), nn.Linear(d_ff, d_model))
-        self.ln2_2 = nn.LayerNorm(d_model)
-        self.readout2 = nn.Sequential(nn.Linear(d_model, 64), nn.ReLU(), nn.Linear(64, 1))
+        # Total input = N * (obs_dim + action_dim)
+        input_dim = n_agents * (obs_dim + action_dim)
 
-    def forward(self, hidden_all, act_all, agent_idx):
-        x = torch.relu(self.encoder(torch.cat([hidden_all, act_all], dim=-1)))
-        attn_out, _ = self.mha(x, x, x)
-        x = self.ln1(x + attn_out)
-        
-        # Q1
-        x1 = self.ln2_1(x + self.ffn1(x))
-        q1 = self.readout1(x1[:, agent_idx, :]).squeeze(-1)
-        
-        # Q2
-        x2 = self.ln2_2(x + self.ffn2(x))
-        q2 = self.readout2(x2[:, agent_idx, :]).squeeze(-1)
-        
-        return q1, q2
+        # FC layers before LSTM (paper: "using the fully-connected layer
+        #   of all agents as input to the hidden LSTM layer")
+        self.fc1  = nn.Linear(input_dim, fc_hidden)
+        self.fc2  = nn.Linear(fc_hidden, fc_hidden)
+        self.lstm = nn.LSTM(fc_hidden, lstm_hidden, batch_first=True)
+        self.fc_q = nn.Linear(lstm_hidden, 1)
 
-    def Q1(self, hidden_all, act_all, agent_idx):
-        """Used for actor policy gradient"""
-        x = torch.relu(self.encoder(torch.cat([hidden_all, act_all], dim=-1)))
-        attn_out, _ = self.mha(x, x, x)
-        x = self.ln1(x + attn_out)
-        x1 = self.ln2_1(x + self.ffn1(x))
-        return self.readout1(x1[:, agent_idx, :]).squeeze(-1)
+    def forward(self, obs_all, act_all, hidden=None, seq_len=None):
+        """
+        obs_all : (batch*seq, n_agents, obs_dim)
+        act_all : (batch*seq, n_agents, action_dim)
+        seq_len : required to reshape for LSTM correctly. If not provided, assumes batch=1 and seq=batch*seq
+        returns : q (batch*seq,), hidden
+        """
+        BS_total = obs_all.shape[0]
+        x  = torch.cat([obs_all.view(BS_total, -1),
+                         act_all.view(BS_total, -1)], dim=-1)
+        x  = torch.relu(self.fc1(x))
+        x  = torch.relu(self.fc2(x))          # (BS_total, fc_hidden)
+        
+        if seq_len is None:
+            # Assume single sequence if not provided
+            seq_len = BS_total
+            batch_size = 1
+        else:
+            batch_size = BS_total // seq_len
+            
+        x = x.view(batch_size, seq_len, -1)
+        lstm_out, hidden = self.lstm(x, hidden)
+        
+        q = self.fc_q(lstm_out).squeeze(-1)   # (batch_size, seq_len)
+        return q.view(BS_total), hidden

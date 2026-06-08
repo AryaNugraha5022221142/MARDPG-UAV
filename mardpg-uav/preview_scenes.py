@@ -52,8 +52,7 @@ def main():
     with open("config/default.yaml", "r") as f:
         cfg = yaml.safe_load(f)
     
-    cfg['env']['obstacle_density'] = 0.1  # Make sure we use a clear density
-    env = MultiUAVEnv(cfg['env'], n_agents=1)
+    env = MultiUAVEnv(cfg['environment'])
     
     fig = plt.figure(figsize=(15, 12))
     scenes = [
@@ -63,9 +62,16 @@ def main():
         (4, "Scene 4: Circular Rings")
     ]
     
+    stage_cfgs = {
+        1: {'env_size': [100., 100., 60.], 'static_obs': 4,  'min_sep': 20., 'max_steps': 500},
+        2: {'env_size': [100., 100., 60.], 'static_obs': 8,  'min_sep': 30., 'max_steps': 500},
+        3: {'env_size': [100., 100., 60.], 'static_obs': 12, 'min_sep': 40., 'max_steps': 500},
+        4: {'env_size': [100., 100., 60.], 'static_obs': 16, 'min_sep': 40., 'max_steps': 500},
+    }
+    
     for i, (scene_type, title) in enumerate(scenes):
         ax = fig.add_subplot(2, 2, i+1, projection='3d')
-        env.reset(scene_type=scene_type)
+        env.reset(stage_cfgs[scene_type])
         plot_scene(ax, env, title)
         
     plt.tight_layout()

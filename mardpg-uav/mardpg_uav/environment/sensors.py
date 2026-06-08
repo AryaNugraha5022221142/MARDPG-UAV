@@ -28,10 +28,26 @@ class Rangefinder:
             np.sin(pitch_grid)
         ], axis=-1).astype(np.float32)   # shape (25, 3)
 
-    def scan(self, position: np.ndarray, obstacles: List[Obstacle], sigma_l: float = 0.02,
+    def scan(self, position: np.ndarray, theta: float, phi: float, obstacles: List[Obstacle], sigma_l: float = 0.02,
              obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
-        """No heading parameters — world-frame fixed beams."""
-        min_dists = np.full(self._dir_vecs.shape[0], self.range_max, dtype=np.float32)
+        """
+        Rotate the fixed beam directions by the UAV's current heading (theta, phi).
+        theta: yaw in world frame
+        phi:   pitch in world frame
+        """
+        # Rotation matrix: yaw then pitch
+        cy, sy = np.cos(theta), np.sin(theta)
+        cp, sp = np.cos(phi),   np.sin(phi)
+        # Rz(theta) * Ry(-phi)
+        R = np.array([
+            [ cy*cp, -sy,  cy*sp],
+            [ sy*cp,  cy,  sy*sp],
+            [-sp,     0.0, cp   ],
+        ], dtype=np.float32)   # (3,3)
+
+        rotated_dirs = (R @ self._dir_vecs.T).T   # (25, 3)
+
+        min_dists = np.full(rotated_dirs.shape[0], self.range_max, dtype=np.float32)
 
         if obs_centers is not None and obs_max_sizes is not None:
             dists_to_centers = np.linalg.norm(obs_centers - position, axis=1)
@@ -46,7 +62,7 @@ class Rangefinder:
         if boxes:
             c = np.array([b.position for b in boxes], dtype=np.float32)[:, None, :]  # (M, 1, 3)
             s = np.array([b.size for b in boxes], dtype=np.float32)[:, None, :]      # (M, 1, 3)
-            d = self._dir_vecs[None, :, :]                                           # (1, 25, 3)
+            d = rotated_dirs[None, :, :]                                           # (1, 25, 3)
             o = position[None, None, :]                                              # (1, 1, 3)
 
             with np.errstate(divide='ignore', invalid='ignore'):
@@ -72,9 +88,9 @@ class Rangefinder:
         other_obs = [obs for obs in close_obstacles if obs.type != 'box']
         for obs in other_obs:
             if obs.type == 'sphere':
-                dist = self._ray_sphere_vec(position, self._dir_vecs, obs.position, obs.size[0])
+                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size[0])
             elif obs.type == 'cylinder':
-                dist = self._ray_cylinder_vec(position, self._dir_vecs, obs.position, obs.size[0], obs.size[1])
+                dist = self._ray_cylinder_vec(position, rotated_dirs, obs.position, obs.size[0], obs.size[1])
             else:
                 continue
             

@@ -1,50 +1,49 @@
 """
-UAV Kinematics.
-Implements QuadcopterDynamics.
+UAV Kinematics — faithful to Eq. (1) of Xue & Chen (2024).
+State : [x, y, z, theta, phi]   (3 position + 2 directional angles)
+Action: [rho, tau]               (angle increments, clipped to ±pi/6)
 """
 import numpy as np
 
 class QuadcopterDynamics:
-    def __init__(self, v_max=3.0, dt=0.1, tau_v=0.3,
-                 env_size=(50.0, 50.0, 60.0),
-                 max_altitude=60.0, min_altitude=0.0,
-                 action_bounds=(-3.0, 3.0)):
-        self.v_max = v_max
-        self.dt = dt
-        self.alpha = dt / tau_v          # smoothing coefficient ∈ (0,1)
-        assert 0 < self.alpha < 1, "tau_v must satisfy tau_v > dt"
-        self.env_size = np.asarray(env_size, dtype=np.float32)
-        self.max_altitude = max_altitude
-        self.min_altitude = min_altitude
-        self.action_bounds = action_bounds  # (v_min, v_max) m/s
+    def __init__(self, v: float = 1.0, dt: float = 0.1,
+                 env_size=(100.0, 100.0, 60.0),
+                 max_altitude: float = 60.0,
+                 min_altitude: float = 0.0,
+                 max_delta_angle: float = np.pi / 6):
+        self.v              = v                         # constant speed (m/s)
+        self.dt             = dt
+        self.env_size       = np.asarray(env_size, dtype=np.float32)
+        self.max_altitude   = max_altitude
+        self.min_altitude   = min_altitude
+        self.max_delta      = max_delta_angle           # pi/6
 
-    def step(self, state: np.ndarray, v_cmd: np.ndarray,
-             _unused_prev_applied: np.ndarray) -> tuple:
+    def step(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
         """
-        state:   [x, y, z, vx, vy, vz]
-        v_cmd:   [vx_cmd, vy_cmd, vz_cmd] in [action_bounds]
-        Returns: (next_state, v_applied)
+        state  : [x, y, z, theta, phi]
+        action : [rho, tau]  in [-pi/6, pi/6]
+        returns: next_state  [x, y, z, theta, phi]
         """
-        v_cmd_clipped = np.clip(v_cmd,
-                                self.action_bounds[0],
-                                self.action_bounds[1])
+        x, y, z, theta, phi = state
 
-        v_actual = state[3:6]
-        v_next = v_actual + self.alpha * (v_cmd_clipped - v_actual)
+        rho = np.clip(action[0], -self.max_delta, self.max_delta)
+        tau = np.clip(action[1], -self.max_delta, self.max_delta)
 
-        pos = state[:3]
-        pos_next = pos + v_next * self.dt
+        # Eq. (1)
+        theta_new = theta + rho
+        phi_new   = phi   + tau
 
-        # Boundary clamping — also zero the velocity component at wall
-        for axis in range(3):
-            lo = (self.min_altitude if axis == 2 else 0.0)
-            hi = (self.max_altitude if axis == 2 else self.env_size[axis])
-            if pos_next[axis] < lo:
-                pos_next[axis] = lo
-                v_next[axis] = 0.0      # absorbing wall
-            elif pos_next[axis] > hi:
-                pos_next[axis] = hi
-                v_next[axis] = 0.0
+        # Keep angles in [-pi, pi]
+        theta_new = (theta_new + np.pi) % (2 * np.pi) - np.pi
+        phi_new   = np.clip(phi_new, -np.pi / 2, np.pi / 2)   # physical elevation limit
 
-        next_state = np.concatenate([pos_next, v_next]).astype(np.float32)
-        return next_state, v_next   # v_next is the "applied" action
+        x_new = x + self.v * self.dt * np.cos(theta_new) * np.cos(phi_new)
+        y_new = y + self.v * self.dt * np.sin(theta_new) * np.cos(phi_new)
+        z_new = z + self.v * self.dt * np.sin(phi_new)
+
+        # Boundary absorption
+        x_new = np.clip(x_new, 0.0, self.env_size[0])
+        y_new = np.clip(y_new, 0.0, self.env_size[1])
+        z_new = np.clip(z_new, self.min_altitude, self.max_altitude)
+
+        return np.array([x_new, y_new, z_new, theta_new, phi_new], dtype=np.float32)

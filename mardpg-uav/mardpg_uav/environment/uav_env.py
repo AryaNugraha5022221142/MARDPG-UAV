@@ -22,13 +22,12 @@ class MultiUAVEnv(gym.Env):
         
         # Subsystems
         self.dynamics = QuadcopterDynamics(
-            v_max=config.get('v_max', 3.0),
-            tau_v=config.get('tau_v', 0.3),
+            v=config.get('v', 1.0),
             dt=config['dt'],
             env_size=config['env_size'],
             max_altitude=config['max_altitude'],
             min_altitude=config.get('min_altitude', 0.0),
-            action_bounds=tuple(config.get('action_bounds', [-3.0, 3.0]))
+            max_delta_angle=config.get('max_delta_angle', np.pi / 6)
         )
         self.scene_gen = SceneGenerator(
             seed=config.get('seed', None)
@@ -40,30 +39,30 @@ class MultiUAVEnv(gym.Env):
             alpha=config['reward']['alpha'],
             lambda_col=config['reward']['lambda_col'],
             sigma_col=config['reward']['sigma_col'],
-            lambda_sep=config['reward']['lambda_sep'],
-            sigma_sep=config['reward']['sigma_sep'],
             r_free=config['reward']['r_free'],
             r_step=config['reward']['r_step'],
             delta=tuple(config['reward']['delta']),
             collision_radius=config['collision_radius'],
-            inter_uav_min=config['inter_uav_min_dist']
+            inter_uav_min=config['inter_uav_min_dist'],
+            range_max=config['sensor_range']
         )
         
         # Spaces
-        self.obs_dim = 46  # 3 (vel) + 3 (prev_act) + 25 (lidar) + 3 (goal) + 12 (neighbors)
-        self.action_dim = 3  # vx, vy, vz
+        self.obs_dim = 30  # [theta(1), phi(1), lidar(25), d5(1), varpi(1), varpi_z(1)]
+        self.action_dim = 2  # [rho, tau]
         
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf,
             shape=(self.n_agents, self.obs_dim), dtype=np.float32
         )
         self.action_space = gym.spaces.Box(
-            low=self.dynamics.action_bounds[0], high=self.dynamics.action_bounds[1],
+            low=-self.cfg.get('max_delta_angle', np.pi/6), 
+            high=self.cfg.get('max_delta_angle', np.pi/6),
             shape=(self.n_agents, self.action_dim), dtype=np.float32
         )
         
         # State
-        self.agents_state = None  # [n_agents, 6] (x, y, z, vx, vy, vz)
+        self.agents_state = None  # [n_agents, 5] (x, y, z, theta, phi)
         self.goals = None       # [n_agents, 3]
         self.obstacles: List[Obstacle] = []
         self.steps = 0
@@ -104,7 +103,7 @@ class MultiUAVEnv(gym.Env):
 
         # Sample start/goal positions with min_point_separation
         min_sep = stage_cfg.get('min_sep', 20.0)
-        self.agents_state = np.zeros((self.n_agents, 6), dtype=np.float32)
+        self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
         
         positions = []
@@ -112,6 +111,9 @@ class MultiUAVEnv(gym.Env):
             pos = self._sample_free_position()
             positions.append(pos)
             self.agents_state[i, :3] = pos
+            # Random initial heading
+            self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
+            self.agents_state[i, 4] = self.scene_gen.rng.uniform(-np.pi/6, np.pi/6)  # phi
             
             for _ in range(100):
                 goal = self._sample_free_position()
@@ -155,7 +157,9 @@ class MultiUAVEnv(gym.Env):
             done: bool (episode terminates if any agent collides or all reach goals)
             info: dict
         """
-        actions = np.array(actions, dtype=np.float32)
+        actions = np.clip(np.array(actions, dtype=np.float32),
+                          -self.cfg.get('max_delta_angle', np.pi/6),
+                           self.cfg.get('max_delta_angle', np.pi/6))
         rewards = np.zeros(self.n_agents, dtype=np.float32)
         collisions = np.zeros(self.n_agents, dtype=bool)
         reached = np.zeros(self.n_agents, dtype=bool)
@@ -165,10 +169,8 @@ class MultiUAVEnv(gym.Env):
             if self.agent_done[i]:
                 continue
                 
-            next_state, applied = self.dynamics.step(
-                self.agents_state[i], actions[i], self.prev_applied_actions[i])
+            next_state = self.dynamics.step(self.agents_state[i], actions[i])
             self.agents_state[i] = next_state
-            self.prev_applied_actions[i] = applied
             
         # --- NEW: UPDATE DYNAMIC OBSTACLES ---
         if hasattr(self, 'dynamic_obstacles') and len(self.dynamic_obstacles) > 0:
@@ -239,26 +241,24 @@ class MultiUAVEnv(gym.Env):
                 
                 # FIX: Prevent suicide exploit by punishing collided agents until episode ends
                 if self.agent_collided[i]:
-                    rewards[i] = self.reward_fn.delta[4] * self.cfg['reward']['r_step']
+                    rewards[i] = self.reward_fn.delta[3] * self.cfg['reward']['r_step']
                 else:
                     rewards[i] = 0.0
                 continue
                 
             pos = self.agents_state[i, :3]
             
+            theta = self.agents_state[i, 3]
+            phi   = self.agents_state[i, 4]
             # Sensing
             rangefinder_raw, rangefinder_norm = self.rangefinder.scan(
-                pos, self.obstacles,
+                pos, theta, phi, self.obstacles,
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
             )
-            goal_disp = self.goal_sensor.compute(pos, self.goals[i])
-
-            vel = self.agents_state[i, 3:6]
-            v_norm = vel / self.dynamics.v_max
-            prev_cmd_norm = self.prev_applied_actions[i] / self.dynamics.v_max
             
-            obs = np.concatenate([v_norm, prev_cmd_norm, rangefinder_norm.flatten(), goal_disp, self._neighbor_feat(i)])
-            obs = obs.astype(np.float32)
+            # Observe we don't save goal_disp here anymore since observation logic moved to _get_single_observation.
+            
+            obs = self._get_single_observation(i)
             self._cached_obs[i] = obs
             obs_list.append(obs)
             
@@ -270,13 +270,8 @@ class MultiUAVEnv(gym.Env):
             )
             
             # Apply pre-calculated penalties
-            if collisions[i]:
-                rewards[i] -= self.cfg['reward']['r_col']  # penalty
-                
-            # FIX: Change to `elif`. An agent cannot succeed if it crashed!
-            elif np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
+            if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
-                rewards[i] += self.cfg['reward']['r_goal']
         
         self.steps += 1
         
@@ -309,41 +304,32 @@ class MultiUAVEnv(gym.Env):
         
         return np.array(obs_list), rewards, episode_done, info
 
-    def _neighbor_feat(self, i: int, k: int = 2) -> np.ndarray:
-        pos_i, vel_i = self.agents_state[i, :3], self.agents_state[i, 3:6]
-        others = [(np.linalg.norm(self.agents_state[j, :3] - pos_i), j)
-                  for j in range(self.n_agents) if j != i]
-        others.sort()
-        feats = []
-        for _, j in others[:k]:
-            rel_p = (self.agents_state[j, :3] - pos_i) / self.rangefinder.range_max
-            rel_v = (self.agents_state[j, 3:6] - vel_i) / self.dynamics.v_max
-            feats.append(np.concatenate([rel_p, rel_v]))
-        while len(feats) < k:
-            feats.append(np.zeros(6, dtype=np.float32))
-        return np.concatenate(feats).astype(np.float32)
-
     def _get_single_observation(self, i: int) -> np.ndarray:
-        # NEW: extract position and velocity from 6D state
-        pos = self.agents_state[i, :3]
-        vel = self.agents_state[i, 3:6]
+        pos   = self.agents_state[i, :3]
+        theta = self.agents_state[i, 3]
+        phi   = self.agents_state[i, 4]
 
-        # Sensors — no heading arguments
         _, lidar_norm = self.rangefinder.scan(
-            pos, self.obstacles,
-            obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
+            pos, theta, phi, self.obstacles,
+            obs_centers=self.obs_centers,
+            obs_max_sizes=self.obs_max_sizes,
         )
-        goal_disp = self.goal_sensor.compute(pos, self.goals[i])
 
-        # Normalised velocity [vx/v_max, vy/v_max, vz/v_max]
-        v_norm = vel / self.dynamics.v_max                  # shape (3,)
-        # Normalised previous command
-        prev_cmd_norm = self.prev_applied_actions[i] / self.dynamics.v_max  # shape (3,)
+        goal_vec = self.goals[i] - pos
+        d5       = np.linalg.norm(goal_vec)
+        if d5 > 1e-6:
+            # angular relationship to goal (paper: [d5, varpi, varpi_z])
+            varpi   = np.arctan2(goal_vec[1], goal_vec[0])   # horizontal angle
+            varpi_z = np.arctan2(goal_vec[2],
+                                 np.linalg.norm(goal_vec[:2]))  # elevation angle
+        else:
+            varpi = varpi_z = 0.0
 
-        # NEW obs layout: [vel(3), prev_cmd(3), lidar(25), goal(3), neighbors(12)] = 46
-        obs = np.concatenate([v_norm, prev_cmd_norm,
-                              lidar_norm.flatten(), goal_disp, self._neighbor_feat(i)])
-        assert obs.shape == (46,), f"obs_dim mismatch: {obs.shape}"
+        xi  = np.array([d5, varpi, varpi_z], dtype=np.float32)
+        obs = np.concatenate([[theta, phi],
+                              lidar_norm.flatten(),
+                              xi])
+        assert obs.shape == (30,), f"obs shape mismatch: {obs.shape}"
         return obs.astype(np.float32)
 
     def _get_observations(self) -> np.ndarray:
@@ -385,8 +371,9 @@ class MultiUAVEnv(gym.Env):
         
         # Absolute fallback: log a warning and return centre of arena
         import warnings
+        n_obs = self.current_stage_cfg.get('static_obs', 0)
         warnings.warn(f"Could not find free position after all attempts. "
-                      f"Arena may be over-saturated (density={self.cfg['obstacle_density']}).")
+                      f"Arena may be over-saturated (obstacle_count={n_obs}).")
         return self.scene_gen.rng.uniform(
             [5.0, 5.0, 5.0], env - 5.0
         ).astype(np.float32)

@@ -10,7 +10,7 @@ from mardpg_uav.algorithm.mardpg import MARDPGAgent
 from mardpg_uav.utils.metrics import MetricsTracker
 
 
-def select_actions_batch_eval(agents, obs_all, v_max, agent_done, action_dim=3):
+def select_actions_batch_eval(agents, obs_all, v_max, agent_done, action_dim=2):
     n = len(agents)
     obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
     with torch.no_grad():
@@ -29,7 +29,7 @@ def select_actions_batch_eval(agents, obs_all, v_max, agent_done, action_dim=3):
                 act = agent.actor.tanh(agent.actor.fc_out(lstm_out[:, -1, :])) * agent.actor.action_bound
                 agent.eval_actor_hidden = h_out
                 action = act[0].cpu().numpy()
-                action = np.clip(action, -v_max, v_max)
+                action = np.clip(action, -agent.action_bound, agent.action_bound)
             else:
                 action = np.zeros(action_dim, dtype=np.float32)
             actions.append(action)
@@ -50,14 +50,10 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
     for i in range(n_agents):
         agent = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
-            action_dim=env.action_dim,
-            action_bound=env_cfg.get('v_max', 3.0),
-            hidden_dim=net_cfg['actor']['lstm_hidden'],
-            lr_actor=algo_cfg['lr_actor'],
-            lr_critic=algo_cfg['lr_critic'],
-            tau=algo_cfg['tau'], gamma=algo_cfg['gamma'],
-            gradient_clip=algo_cfg['gradient_clip'],
-            burn_in=algo_cfg['burn_in'],
+            obs_dim=30, action_dim=2,
+            action_bound=env_cfg.get('max_delta_angle', 0.5236),
+            lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
+            fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
             device=device
         )
         ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
@@ -83,8 +79,13 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
     
     metrics = MetricsTracker()
     
+    final_stage_cfg = {
+        'env_size': [100.0, 100.0, 60.0], 'static_obs': 20,
+        'min_sep': 40.0, 'max_steps': 1500
+    }
+    
     for ep in range(n_eval_episodes):
-        obs = env.reset()
+        obs = env.reset(final_stage_cfg)
         
         for agent in agents:
             agent.actor.eval()
@@ -116,10 +117,13 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
                 break
         
         metrics.record_episode(
-            [episode_reward], step+1, reached, per_agent_collided,
-            [path_history[0][i] for i in range(n_agents)],
-            [env.goals[i] for i in range(n_agents)],
-            path_history
+            length=step + 1,
+            info={'reached': np.array(reached), 'collisions': np.array(per_agent_collided),
+                  'dyn_collisions': np.zeros(n_agents), 'safe_inter_uav_ratio': 1.0},
+            start_pos=[path_history[0][i] for i in range(n_agents)],
+            goal_pos=[env.goals[i] for i in range(n_agents)],
+            path_history=path_history,
+            rewards=[episode_reward]
         )
     
     stats = metrics.get_stats()

@@ -14,7 +14,7 @@ import wandb
 from typing import List
 from .environment.uav_env import MultiUAVEnv
 from .algorithm.mardpg import MARDPGAgent
-from .algorithm.replay_buffer import EpisodeReplayBuffer, Episode
+from .algorithm.replay_buffer import SequenceReplayBuffer
 from .algorithm.noise import GaussianNoise
 from .utils.metrics import MetricsTracker
 from tqdm import tqdm
@@ -103,7 +103,7 @@ def load_config(path: str = "config/default.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_dim=3):
+def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_dim=2):
     # obs_all: (n_agents, obs_dim)
     n = len(agents)
     obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
@@ -127,7 +127,7 @@ def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_d
                 
                 action = act[0].cpu().numpy()
                 action += noise_val[i]
-                action = np.clip(action, -v_max, v_max)
+                action = np.clip(action, -agent.action_bound, agent.action_bound)
             else:
                 action = np.zeros(action_dim, dtype=np.float32)
             actions.append(action)
@@ -185,9 +185,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         agent = MARDPGAgent(
             agent_id=i,
             n_agents=n_agents,
-            action_dim=env.action_dim,
-            action_bound=env_cfg.get('v_max', 3.0),
-            hidden_dim=net_cfg['actor']['lstm_hidden'],
+            obs_dim=30,
+            action_dim=2,
+            action_bound=env_cfg.get('max_delta_angle', 0.5236),
+            lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
+            fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],
             tau=algo_cfg['tau'],
@@ -254,17 +256,17 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             print(f"Continuing from episode {start_episode}")
     
     # Replay buffer and noise
-    buffer = EpisodeReplayBuffer(
+    buffer = SequenceReplayBuffer(
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len'],
-        max_steps=env_cfg['max_steps_per_episode']
+        n_agents=n_agents,
+        obs_dim=30,
+        action_dim=2
     )
     noise = GaussianNoise(
         n_agents=n_agents,
-        action_dim=env.action_dim,
-        sigma0=algo_cfg['exploration']['noise_std_start'],
-        sigma_inf=algo_cfg['exploration']['noise_std_end'],
-        anneal_steps=algo_cfg['exploration']['noise_anneal_steps']
+        action_dim=2,
+        sigma=algo_cfg.get('noise_std', 0.1)
     )
     
     metrics = MetricsTracker()
@@ -278,13 +280,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
             if 'global_step' in shared_ckpt:
                 global_step = shared_ckpt['global_step']
-            if 'noise_steps' in shared_ckpt:
-                noise.total_steps = shared_ckpt['noise_steps']
-                # Fast-forward the noise sigma calculation to match the restored step
-                noise.sample() 
-            print(f"Restored global_step: {global_step}, noise_steps: {noise.total_steps}")
+                # Fast-forwarding noise state not needed for constant GaussianNoise
+            print(f"Restored global_step: {global_step}")
         except Exception as e:
-            print(f"Warning: Could not load global_step/noise_steps from checkpoint: {e}")
+            print(f"Warning: Could not load global_step from checkpoint: {e}")
 
     print("=" * 60)
     print("MARDPG-NAV Training")
@@ -309,33 +308,28 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             
             noise.reset()
             
-            episode_data = Episode()
             episode_reward = 0
+            ep_len = 0
             path_history = [env.agents_state[:, :3].copy()]
             
             for step in range(stage_cfg['max_steps']):
-                # Decentralized execution with exploration (Algorithm 1, line 8-9)
                 noise_val = noise.sample()
-                
+                # Gaussian noise is constant so no need to log its changing sigma to W&B
                 v_max = env_cfg.get('v_max', 3.0)
                 actions = select_actions_batch(agents, obs, noise_val, v_max, env.agent_done, env.action_dim)
                 
-                # Execute joint action
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
-                if global_step % 50 == 0:
-                    wandb.log({"noise_sigma": noise.get_sigma()}, step=global_step)
                 
-                # FIX (Bug 10): Store applied actions, not raw commanded actions
-                episode_data.append(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
+                buffer.add_transition(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
-                
+                ep_len += 1
                 obs = next_obs
                 
                 if done:
                     # Append terminal state to allow BPTT sampling of the final transition
-                    episode_data.append(
+                    buffer.add_transition(
                         obs.copy(), 
                         np.zeros_like(actions), 
                         np.zeros_like(rewards), 
@@ -343,33 +337,30 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     )
                     break
             
-            # Store episode
-            buffer.add_episode(episode_data)
+            buffer.end_episode()
             
             # Record to metrics
             metrics.record_episode(
-                length=episode_data.length() - 1, 
+                length=ep_len, 
                 info=info, 
                 start_pos=[path_history[0][i] for i in range(n_agents)],
                 goal_pos=[env.goals[i] for i in range(n_agents)], 
                 path_history=path_history,
-                rewards=[sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]
+                rewards=[episode_reward]
             )
             
             # Evaluate Promotion
             stats = metrics.get_window_stats(100)
             promoted = cl_manager.evaluate_promotion(stats)
-            if promoted:
-                # Inject a small amount of noise back into the policy to unfreeze it for the new difficulty
-                noise.total_steps = max(0, noise.total_steps - 50000) 
+            # GaussianNoise doesn't use scheduled annealing like the old version, so we just continue
             
             stats = metrics.get_stats()
             
             # FIX FOR BUG 9: Log both raw and smoothed metrics to match CSV exactly
             wandb.log({
                 "episode": episode,
-                "ep_reward_raw": sum([sum(episode_data.rewards[t]) for t in range(episode_data.length() - 1)]),
-                "ep_length_raw": episode_data.length() - 1,
+                "ep_reward_raw": float(episode_reward),
+                "ep_length_raw": ep_len,
                 "success_rate_raw": np.mean(info['reached']),
                 "collision_rate_raw": np.mean(info['collisions']),
                 "dyn_collision_rate_raw": np.mean(info.get('dyn_collisions', [])),
@@ -429,23 +420,21 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             # 1. Get raw unconstrained target action
                             next_act_raw = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
                             
-                            # 2. Apply environment velocity bounds (no artificial acceleration delta needed for kinematic model)
-                            next_act_constrained = torch.clamp(next_act_raw, -v_max, v_max)
-                            
-                            # 3. Add clipped exploration noise (TD3 smoothing)
-                            target_noise = torch.randn_like(next_act_constrained) * algo_cfg['policy_noise']
+                            # 2. Add clipped exploration noise (TD3 smoothing)
+                            target_noise = torch.randn_like(next_act_raw) * algo_cfg['policy_noise']
                             target_noise = torch.clamp(target_noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
-                            final_next_act = torch.clamp(next_act_constrained + target_noise, -v_max, v_max)
+                            bnd = agent.actor_target.action_bound
+                            final_next_act = torch.clamp(next_act_raw + target_noise, -bnd, bnd)
                             
                             target_actions.append(final_next_act)
 
-                    # 2. Prepare Critic Tensors (DETACHED to fix Bug 2)
-                    detached_hidden_all = torch.stack([h.detach().reshape(batch_size*seq_len, -1) for h in agent_hiddens], dim=1)
-                    next_hidden_all = torch.stack([h.reshape(batch_size*seq_len, -1) for h in next_agent_hiddens], dim=1)
+                    # 2. Prepare Critic Tensors (Now passing observations directly)
+                    obs_all = batch_obs.reshape(batch_size * seq_len, n_agents, -1)
+                    next_obs_all = batch_obs_next.reshape(batch_size * seq_len, n_agents, -1)
                     next_act_all = torch.stack([a.reshape(batch_size*seq_len, -1) for a in target_actions], dim=1)
                     act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
 
-                    # FIX (Bug 9): Explicit padding mask to prevent zero-state leak
+                    # Explicit padding mask to prevent zero-state leak
                     burn_mask = torch.arange(seq_len, device=device).view(1, -1, 1) >= algo_cfg['burn_in']
                     
                     done_mask = ~torch.cat([
@@ -458,14 +447,14 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     
                     agent_mask = burn_mask & done_mask
 
-                    # 3. Update Critics (Independent graph)
+                    # 3. Update Critics
                     c_losses = []
                     q_vals = []
                     c_grad_norms = []
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
                         # Capture criticize loss
-                        c_loss, q_val, c_grad = agent.update_critic(detached_hidden_all, act_all, next_hidden_all, next_act_all, 
+                        c_loss, q_val, c_grad = agent.update_critic(obs_all, act_all, next_obs_all, next_act_all, 
                                             batch_rewards, batch_dones, seq_len, mask_i)
                         c_losses.append(c_loss)
                         q_vals.append(q_val)
@@ -486,9 +475,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             actor_actions.append(a_j.view(batch_size * seq_len, -1))
                         
                         actor_act_all = torch.stack(actor_actions, dim=1)
-                        # FIX: Delete 'hidden_all_with_grad' entirely. 
-                        # Re-use 'detached_hidden_all' created in Phase 2!
-                        actor_losses.append(agent.compute_actor_loss(detached_hidden_all, actor_act_all, mask_i))
+                        # Pass obs_all directly to actor_loss
+                        actor_losses.append(agent.compute_actor_loss(obs_all, actor_act_all, mask_i))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents
@@ -523,7 +511,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # Logging
             if episode % 100 == 0 and episode > 0:
                 stats = metrics.get_stats()
-                current_noise = noise.get_sigma()
+                current_noise = noise.sigma
                 print(f"Episode {episode:5d} | "
                       f"AvgReward: {stats['avg_reward']:7.2f} | "
                       f"Success: {stats['success_rate']:.2%} | "
@@ -538,8 +526,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 torch.save({
                     'shared_actor': agents[0].shared_extractor.state_dict(),
                     'shared_opt': shared_optimizer.state_dict(),
-                    'global_step': global_step,
-                    'noise_steps': noise.total_steps
+                    'global_step': global_step
                 }, f"{save_dir}/shared_actor.pt")
                 for i, agent in enumerate(agents):
                     private = {k: v for k, v in agent.actor.state_dict().items()
@@ -569,8 +556,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         torch.save({
             'shared_actor': agents[0].shared_extractor.state_dict(),
             'shared_opt': shared_optimizer.state_dict(),
-            'global_step': global_step,
-            'noise_steps': noise.total_steps
+            'global_step': global_step
         }, f"{save_dir}/shared_actor.pt")
         for i, agent in enumerate(agents):
             private = {k: v for k, v in agent.actor.state_dict().items()

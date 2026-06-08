@@ -51,7 +51,9 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         agents[i].share_parameters(agents[0])
     
        
-    obs = env.reset(scene_type=1)  # Force scene_type=1 (square columns) to match the expected visualization
+    stage_cfg = {'env_size': [100.0, 100.0, 60.0], 'static_obs': 8,
+                 'min_sep': 30.0, 'max_steps': 1500}
+    obs = env.reset(stage_cfg)
     for agent in agents:
         agent.actor.eval()
         agent.reset_hidden(batch_size=1, eval_mode=True)
