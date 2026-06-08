@@ -27,32 +27,32 @@ CURRICULUM = [
     },
     { # Stage 1
         'name': 'Sparse Familiarisation', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 500,
-        'static_obs': 1, 'min_sep': 30.0,
+        'static_obs': 0, 'min_sep': 30.0,
         'criteria': {'success_rate': 0.90, 'collision_rate': 0.02, 'path_efficiency': 0.85, 'operator': 'less_col'}
     },
     { # Stage 2
         'name': 'Coordination Under Pressure', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
-        'static_obs': 2, 'min_sep': 40.0,
+        'static_obs': 3, 'min_sep': 40.0,
         'criteria': {'success_rate': 0.85, 'collision_rate': 0.05, 'inter_uav_safe': 0.95, 'operator': 'less_col_greater_safe'}
     },
     { # Stage 3
         'name': 'First Full-Scale Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
-        'static_obs': 3, 'min_sep': 40.0,
+        'static_obs': 7, 'min_sep': 40.0,
         'criteria': {'success_rate': 0.80, 'trapped_rate': 0.05, 'path_efficiency': 0.80, 'operator': 'less_trap'}
     },
     { # Stage 4
         'name': 'Saturated Navigation', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
-        'static_obs': 4, 'min_sep': 40.0,
+        'static_obs': 12, 'min_sep': 40.0,
         'criteria': {'success_rate': 0.75, 'collision_rate': 0.10, 'path_efficiency': 0.75, 'operator': 'less_col'}
     },
     { # Stage 5
         'name': 'Max Density Stress Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
-        'static_obs': 5, 'min_sep': 40.0,
+        'static_obs': 16, 'min_sep': 40.0,
         'criteria': {'success_rate': 0.70, 'path_efficiency': 0.70}
     },
     { # Stage 6
         'name': 'Dynamic Threats', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
-        'static_obs': 5, 'min_sep': 40.0,
+        'static_obs': 16, 'min_sep': 40.0,
         'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
         'criteria': {'success_rate': 0.70, 'dyn_collision_rate': 0.05, 'path_efficiency': 0.70, 'operator': 'less_dyn'}
     }
