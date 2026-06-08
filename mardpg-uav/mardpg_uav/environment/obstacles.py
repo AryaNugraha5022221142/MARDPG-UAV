@@ -35,13 +35,11 @@ class SceneGenerator:
             for idx in indices:
                 gx, gy = grid_points[idx]
                 
-                w = self.rng.uniform(2.0, 4.0)
-                l = self.rng.uniform(2.0, 4.0)
-                
-                h = self.rng.uniform(15.0, 50.0)
+                r = self.rng.uniform(2.0, 8.0)
+                h = self.rng.uniform(10.0, 60.0)
                 
                 pos = np.array([gx, gy, h / 2])
-                obstacles.append(Obstacle('box', pos, np.array([w/2, l/2, h/2])))
+                obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
 
         # 2. Generate Dynamic Spheres
         n_dynamic = stage_cfg.get('dynamic_obs', 0)
