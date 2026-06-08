@@ -35,7 +35,7 @@ class SceneGenerator:
             for idx in indices:
                 gx, gy = grid_points[idx]
                 
-                r = self.rng.uniform(2.0, 8.0)
+                r = self.rng.uniform(6.0, 14.0)
                 h = self.rng.uniform(10.0, 60.0)
                 
                 pos = np.array([gx, gy, h / 2])
