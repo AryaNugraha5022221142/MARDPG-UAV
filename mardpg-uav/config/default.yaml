@@ -12,7 +12,7 @@ environment:
   
   # Obstacle generation
   scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
-  env_size: [50.0, 50.0, 60.0]  # x, y, z bounds
+  env_size: [100.0, 100.0, 60.0]  # x, y, z bounds
   
   # Episode settings
   max_steps_per_episode: 1500

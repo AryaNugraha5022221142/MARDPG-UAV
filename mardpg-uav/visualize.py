@@ -128,11 +128,11 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             z = [ob_pos[2]-hl[2], ob_pos[2]+hl[2]]
             
             xx, yy = np.meshgrid(x, y)
-            for zz in z: ax.plot_surface(xx, yy, np.full_like(xx, zz), color='gray', alpha=0.6, shade=True)
+            for zz in z: ax.plot_surface(xx, yy, np.full_like(xx, zz), color='#555555', alpha=1.0, shade=True)
             xx, zz = np.meshgrid(x, z)
-            for yy in y: ax.plot_surface(xx, np.full_like(xx, yy), zz, color='gray', alpha=0.6, shade=True)
+            for yy in y: ax.plot_surface(xx, np.full_like(xx, yy), zz, color='#555555', alpha=1.0, shade=True)
             yy, zz = np.meshgrid(y, z)
-            for xx in x: ax.plot_surface(np.full_like(yy, xx), yy, zz, color='gray', alpha=0.6, shade=True)
+            for xx in x: ax.plot_surface(np.full_like(yy, xx), yy, zz, color='#555555', alpha=1.0, shade=True)
             
         elif ob.type == 'cylinder':
             ob_pos = ob.position

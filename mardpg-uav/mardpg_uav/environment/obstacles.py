@@ -12,30 +12,35 @@ class Obstacle:
 class SceneGenerator:
     def __init__(self, seed: int = None):
         self.rng = np.random.RandomState(seed)
-        self.env_size = np.array([50.0, 50.0, 60.0]) # Will be updated dynamically
+        self.env_size = np.array([100.0, 100.0, 60.0]) # Will be updated dynamically
 
     def generate_stage(self, stage_cfg: dict) -> List[Obstacle]:
         """Generates exactly the obstacles defined in the CL stage."""
         obstacles = []
         
-        # 1. Generate Static Buildings (Boxes)
-        n_static = stage_cfg['static_obs']
+        # 1. Generate Static Buildings (Boxes) on a Manhattan Grid
+        n_static = stage_cfg.get('static_obs', 0)
         if n_static > 0:
-            foot_w = stage_cfg['footprint'][0] # (min, max) width
-            foot_l = stage_cfg['footprint'][1] # (min, max) length
-            h_dist = stage_cfg['height_dist']  # (mean, sigma, clip_min, clip_max)
+            # Create a Manhattan grid with 15m clearance
+            grid_step = 15.0
+            margin = 20.0
+            xs = np.arange(margin, self.env_size[0] - margin + 1e-3, grid_step)
+            ys = np.arange(margin, self.env_size[1] - margin + 1e-3, grid_step)
+            grid_points = [(x, y) for x in xs for y in ys]
+
+            n_static = min(n_static, len(grid_points))
             
-            for _ in range(n_static):
-                w = self.rng.uniform(foot_w[0], foot_w[1])
-                l = self.rng.uniform(foot_l[0], foot_l[1])
+            indices = self.rng.choice(len(grid_points), size=n_static, replace=False)
+            
+            for idx in indices:
+                gx, gy = grid_points[idx]
                 
-                # LogNormal Height
-                h = self.rng.lognormal(mean=h_dist[0], sigma=h_dist[1])
-                h = np.clip(h, h_dist[2], h_dist[3])
+                w = self.rng.uniform(2.0, 4.0)
+                l = self.rng.uniform(2.0, 4.0)
                 
-                pos = self.rng.uniform([0, 0, 0], self.env_size)
-                pos[2] = h / 2  # Ground it
+                h = self.rng.uniform(15.0, 50.0)
                 
+                pos = np.array([gx, gy, h / 2])
                 obstacles.append(Obstacle('box', pos, np.array([w/2, l/2, h/2])))
 
         # 2. Generate Dynamic Spheres
