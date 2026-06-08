@@ -1,16 +1,5 @@
 import pandas as pd
 import matplotlib.pyplot as plt
-
-# Enable strict LaTeX rendering
-plt.rcParams.update({
-    "text.usetex": True,
-    "font.family": "serif",
-    "font.serif": ["Computer Modern Roman"],
-    "font.size": 12,
-    "axes.titlesize": 14,
-    "axes.labelsize": 12,
-    "legend.fontsize": 10,
-})
 import os
 import glob
 import argparse
