@@ -72,28 +72,30 @@ def plot_all_stages(save_path="stages_preview.png"):
                 
                 ax.plot_surface(x, y, z, color='#E67E22', alpha=0.8, shade=True, label='Dynamic Threat')
 
+        uav_colors = ['#2980B9', '#27AE60', '#8E44AD', '#D35400', '#C0392B']
         # Plot Goals and optional Trajectory
         for j in range(env.n_agents):
             goal = env.goals[j]
             start = env.agents_state[j, :3]
+            color = uav_colors[j % len(uav_colors)]
             
             # The red objects previously seen were goals. Let's make them red stars to avoid blocky spheres.
             # or fine high-resolution spheres
-            u = np.linspace(0, 2 * np.pi, 30)
-            v = np.linspace(0, np.pi, 30)
+            u = np.linspace(0, 2 * np.pi, 20)
+            v = np.linspace(0, np.pi, 20)
             gr = 3.0 # slightly smaller goal radius
             gx = gr * np.outer(np.cos(u), np.sin(v)) + goal[0]
             gy = gr * np.outer(np.sin(u), np.sin(v)) + goal[1]
             gz = gr * np.outer(np.ones(np.size(u)), np.cos(v)) + goal[2]
             
             # Semi-transparent red sphere for the spatial boundary
-            surf = ax.plot_surface(gx, gy, gz, color='#E74C3C', alpha=0.4, shade=True)
+            surf = ax.plot_surface(gx, gy, gz, color=color, alpha=0.3, shade=True)
             # Add an explicitly defined legend proxy
             surf._edgecolors2d = surf._edgecolor3d
             surf._facecolors2d = surf._facecolor3d
             
             # And a star in the middle!
-            ax.scatter(goal[0], goal[1], goal[2], color='#C0392B', s=150, marker='*', label='Goal' if j == 0 else "")
+            ax.scatter(goal[0], goal[1], goal[2], color=color, s=150, marker='*', label=f'UAV {j} Goal')
             
             # Trajectory
             n_waypoints = 15
@@ -106,7 +108,7 @@ def plot_all_stages(save_path="stages_preview.png"):
             way_y = start[1] + (goal[1] - start[1]) * t + curve_y
             way_z = start[2] + (goal[2] - start[2]) * t + curve_z
             
-            ax.plot(way_x, way_y, way_z, 'k--', marker='.', markersize=8, alpha=0.8, linewidth=1.5, label='UAV Trajectory' if j == 0 else "")
+            ax.plot(way_x, way_y, way_z, color=color, linestyle='-', linewidth=2.0, label=f'UAV {j} Trajectory')
 
         # Environment styling
         ax.set_xlim([0, stage_cfg['env_size'][0]])
