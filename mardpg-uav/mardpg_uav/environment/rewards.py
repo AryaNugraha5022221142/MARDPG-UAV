@@ -51,9 +51,22 @@ class RewardFunction:
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_min)
 
         # --- Free space reward ---
-        # Fires when first-perspective beam (forward) detects no obstacle
-        # Use beam index 12 (centre of 5x5 grid, facing forward)
-        r_free = self.r_free if rangefinder_raw.flatten()[12] >= self.range_max else 0.0
+        # The rangefinder is a 5x5 grid. Indices:
+        # 00 01 02 03 04
+        # 05 06 07 08 09
+        # 10 11 12 13 14  <-- Center row
+        # 15 16 17 18 19
+        # 20 21 22 23 24
+        
+        # Define the forward-facing safety cone (middle 3x3 grid)
+        forward_cone_indices = [6, 7, 8, 11, 12, 13, 16, 17, 18]
+        
+        # Extract the distances for these specific beams
+        cone_distances = rangefinder_raw.flatten()[forward_cone_indices]
+        
+        # Reward is given ONLY if the entire forward cone is free of obstacles
+        is_free_space = np.all(cone_distances >= self.range_max)
+        r_free = self.r_free if is_free_space else 0.0
 
         # --- Step penalty ---
         r_step = self.r_step

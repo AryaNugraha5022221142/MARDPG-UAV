@@ -258,7 +258,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Replay buffer and noise
     buffer = SequenceReplayBuffer(
         capacity=algo_cfg['replay_capacity'],
-        seq_len=algo_cfg['seq_len'],
+        seq_len=algo_cfg['seq_len'] + algo_cfg.get('burn_in', 10),
         n_agents=n_agents,
         obs_dim=30,
         action_dim=2
@@ -467,16 +467,8 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     actor_losses = []
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
-                        # Construct joint actions where only current agent retains local gradient
-                        actor_actions = []
-                        for j, other_agent in enumerate(agents):
-                            a_j = other_agent.actor.tanh(other_agent.actor.fc_out(agent_hiddens[j])) * other_agent.actor.action_bound
-                            if i != j: a_j = a_j.detach() 
-                            actor_actions.append(a_j.view(batch_size * seq_len, -1))
-                        
-                        actor_act_all = torch.stack(actor_actions, dim=1)
-                        # Pass obs_all directly to actor_loss
-                        actor_losses.append(agent.compute_actor_loss(obs_all, actor_act_all, mask_i))
+                        # Pass obs_all and raw act_all directly to actor_loss
+                        actor_losses.append(agent.compute_actor_loss(obs_all, act_all, mask_i))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents

@@ -82,7 +82,7 @@ class MARDPGAgent:
 
     def update_critic(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor,
                       next_obs_all_seq: torch.Tensor, next_act_all_seq: torch.Tensor,
-                      rewards: torch.Tensor, dones: torch.Tensor, seq_len: int, mask: torch.Tensor):
+                      rewards: torch.Tensor, dones: torch.Tensor, total_seq_len: int, mask: torch.Tensor):
         """
         obs_all_seq : (batch*seq, n_agents, obs_dim)
         act_all_seq : (batch*seq, n_agents, action_dim)
@@ -91,38 +91,72 @@ class MARDPGAgent:
 
         # Current Q
         self.critic.train()
-        q_flat, _  = self.critic(obs_all_seq, act_all_seq, seq_len=seq_len)     # (batch*seq,)
-        q_cur   = q_flat.view(batch_size, seq_len)
+        q_flat, _  = self.critic(obs_all_seq, act_all_seq, seq_len=total_seq_len)     # (batch*seq,)
+        q_full   = q_flat.view(batch_size, total_seq_len)
 
         with torch.no_grad():
             self.critic_target.eval()
-            q_next_flat, _ = self.critic_target(next_obs_all_seq, next_act_all_seq, seq_len=seq_len)
-            q_next      = q_next_flat.view(batch_size, seq_len)
+            q_next_flat, _ = self.critic_target(next_obs_all_seq, next_act_all_seq, seq_len=total_seq_len)
+            q_next_full      = q_next_flat.view(batch_size, total_seq_len)
 
             r     = rewards[:, :, self.agent_id]
             d     = dones[:, :, self.agent_id]
-            y     = r + self.gamma * q_next * (~d)
+            y_full     = r + self.gamma * q_next_full * (~d)
+
+        learn_start = self.burn_in
+        q_cur_learn = q_full[:, learn_start:]
+        y_learn = y_full[:, learn_start:]
+        mask_learn = mask[:, learn_start:]
 
         eps         = 1e-8
-        critic_loss = (((q_cur - y.detach()) ** 2) * mask).sum() / (mask.sum() + eps)
+        critic_loss = (((q_cur_learn - y_learn.detach()) ** 2) * mask_learn).sum() / (mask_learn.sum() + eps)
 
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
         torch.nn.utils.clip_grad_norm_(self.critic.parameters(), self.gradient_clip)
         self.critic_optimizer.step()
 
-        return critic_loss.item(), q_cur.detach().mean().item(), 0.0
+        return critic_loss.item(), q_cur_learn.detach().mean().item(), 0.0
 
-    def compute_actor_loss(self, obs_all_seq: torch.Tensor, actor_act_all_seq: torch.Tensor, mask: torch.Tensor):
+    def compute_actor_loss(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor, mask: torch.Tensor):
         """
-        Uses obs_all_seq (not hidden states) for critic input.
+        Computes the deterministic policy gradient.
+        obs_all_seq: (batch*seq, n_agents, obs_dim)
+        act_all_seq: (batch*seq, n_agents, action_dim) -> Raw actions from replay buffer
         """
-        batch_size, seq_len = mask.shape
+        batch_size, total_seq_len = mask.shape
+        
+        # 1. Clone the joint actions from the replay buffer and detach them 
+        # so gradients ONLY flow through this specific agent's actor network.
+        joint_actions = act_all_seq.clone().detach()
+        
+        # 2. Extract observations for THIS agent and reshape for the LSTM
+        my_obs_flat = obs_all_seq[:, self.agent_id, :]
+        my_obs_seq = my_obs_flat.view(batch_size, total_seq_len, -1)
+        
+        # 3. Compute new actions using the current policy (gradients ENABLED)
+        # Note: In a strict recurrent setup, you'd pass the hidden state from burn-in here.
+        my_actions_seq, _ = self.actor(my_obs_seq, hidden=None)
+        
+        # 4. Replace this agent's past actions with the newly differentiable actions
+        action_dim = my_actions_seq.shape[-1]
+        joint_actions[:, self.agent_id, :] = my_actions_seq.reshape(-1, action_dim)
+        
+        # 5. Evaluate the centralized critic
         self.critic.eval()
-        q_flat, _ = self.critic(obs_all_seq, actor_act_all_seq, seq_len=seq_len)  # (batch*seq,)
-        q      = q_flat.view(batch_size, seq_len)
-        eps    = 1e-8
-        return -(q * mask).sum() / (mask.sum() + eps)
+        q_flat, _ = self.critic(obs_all_seq, joint_actions, seq_len=total_seq_len) 
+        q_full = q_flat.view(batch_size, total_seq_len)
+        
+        # 6. Slice off the burn_in
+        learn_start = self.burn_in
+        q_learn = q_full[:, learn_start:]
+        mask_learn = mask[:, learn_start:]
+        
+        # 7. Compute objective (maximize Q -> minimize -Q)
+        eps = 1e-8
+        actor_loss = -(q_learn * mask_learn).sum() / (mask_learn.sum() + eps)
+        
+        return actor_loss
 
     def _soft_update(self, target: nn.Module, source: nn.Module):
         for target_param, param in zip(target.parameters(), source.parameters()):

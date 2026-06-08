@@ -318,10 +318,17 @@ class MultiUAVEnv(gym.Env):
         goal_vec = self.goals[i] - pos
         d5       = np.linalg.norm(goal_vec)
         if d5 > 1e-6:
-            # angular relationship to goal (paper: [d5, varpi, varpi_z])
-            varpi   = np.arctan2(goal_vec[1], goal_vec[0])   # horizontal angle
-            varpi_z = np.arctan2(goal_vec[2],
-                                 np.linalg.norm(goal_vec[:2]))  # elevation angle
+            # 1. Calculate absolute angles
+            abs_varpi = np.arctan2(goal_vec[1], goal_vec[0]) 
+            abs_varpi_z = np.arctan2(goal_vec[2], np.linalg.norm(goal_vec[:2])) 
+            
+            # 2. Convert to Relative Angles (Subtract UAV heading)
+            varpi = abs_varpi - theta
+            varpi_z = abs_varpi_z - phi
+            
+            # 3. Normalize to [-pi, pi] to prevent continuous rotation buildup
+            varpi = (varpi + np.pi) % (2 * np.pi) - np.pi
+            varpi_z = (varpi_z + np.pi) % (2 * np.pi) - np.pi
         else:
             varpi = varpi_z = 0.0
 
