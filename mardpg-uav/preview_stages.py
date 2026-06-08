@@ -13,15 +13,16 @@ def plot_all_stages(save_path="stages_preview.png"):
     env = MultiUAVEnv(cfg['environment'])
     
     stages_to_plot = list(range(len(CURRICULUM)))
-    # 7 stages: we can plot in a 4x2 grid
-    fig = plt.figure(figsize=(24, 32))
+    # 6 stages: we can plot in a 3x2 grid
+    fig = plt.figure(figsize=(24, 28))
     fig.patch.set_facecolor('#FAFAFA')
     
-    cmap = cm.viridis
     max_z = 60.0 # Most stages have max height around 60m
 
+    all_handles, all_labels = [], []
+
     for i, stage_idx in enumerate(stages_to_plot):
-        ax = fig.add_subplot(4, 2, i + 1, projection='3d')
+        ax = fig.add_subplot(3, 2, i + 1, projection='3d')
         ax.set_facecolor('#FAFAFA')
         
         stage_cfg = CURRICULUM[stage_idx].copy()
@@ -42,12 +43,8 @@ def plot_all_stages(save_path="stages_preview.png"):
                 x_grid = ob_pos[0] + ob_rad * np.cos(theta_grid)
                 y_grid = ob_pos[1] + ob_rad * np.sin(theta_grid)
                 
-                # Map Z to color (Height-Based)
-                Z_norm = z_grid / max_z
-                colors = cmap(Z_norm)
-                
                 # Side faces
-                ax.plot_surface(x_grid, y_grid, z_grid, facecolors=colors, shade=True, alpha=0.9, linewidth=0)
+                ax.plot_surface(x_grid, y_grid, z_grid, color='#CCCCCC', shade=True, alpha=0.4, linewidth=0)
                 
                 # Top face (cap)
                 rC = np.linspace(0, ob_rad, 5)
@@ -57,8 +54,7 @@ def plot_all_stages(save_path="stages_preview.png"):
                 y_top = ob_pos[1] + r_grid_top * np.sin(th_grid_top)
                 z_top = np.full_like(x_top, ob_pos[2] + ob_h/2)
                 
-                top_color = cmap((ob_pos[2] + ob_h/2) / max_z)
-                ax.plot_surface(x_top, y_top, z_top, color=top_color, shade=True, alpha=0.9, linewidth=0)
+                ax.plot_surface(x_top, y_top, z_top, color='#CCCCCC', shade=True, alpha=0.4, linewidth=0)
                 
             elif ob.type == 'sphere':
                 # Dynamic threats
@@ -70,7 +66,12 @@ def plot_all_stages(save_path="stages_preview.png"):
                 y = ob_rad * np.outer(np.sin(u), np.sin(v)) + ob_pos[1]
                 z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
                 
-                ax.plot_surface(x, y, z, color='#E67E22', alpha=0.8, shade=True, label='Dynamic Threat')
+                surf = ax.plot_surface(x, y, z, color='#E74C3C', alpha=0.8, shade=True)
+                if 'Dynamic Threat' not in all_labels:
+                    surf._edgecolors2d = surf._edgecolor3d
+                    surf._facecolors2d = surf._facecolor3d
+                    all_handles.append(surf)
+                    all_labels.append('Dynamic Threat')
 
         uav_colors = ['#2980B9', '#27AE60', '#8E44AD', '#D35400', '#C0392B']
         # Plot Goals and optional Trajectory
@@ -79,8 +80,6 @@ def plot_all_stages(save_path="stages_preview.png"):
             start = env.agents_state[j, :3]
             color = uav_colors[j % len(uav_colors)]
             
-            # The red objects previously seen were goals. Let's make them red stars to avoid blocky spheres.
-            # or fine high-resolution spheres
             u = np.linspace(0, 2 * np.pi, 20)
             v = np.linspace(0, np.pi, 20)
             gr = 3.0 # slightly smaller goal radius
@@ -89,13 +88,13 @@ def plot_all_stages(save_path="stages_preview.png"):
             gz = gr * np.outer(np.ones(np.size(u)), np.cos(v)) + goal[2]
             
             # Semi-transparent red sphere for the spatial boundary
-            surf = ax.plot_surface(gx, gy, gz, color=color, alpha=0.3, shade=True)
-            # Add an explicitly defined legend proxy
-            surf._edgecolors2d = surf._edgecolor3d
-            surf._facecolors2d = surf._facecolor3d
+            ax.plot_surface(gx, gy, gz, color=color, alpha=0.3, shade=True)
             
             # And a star in the middle!
-            ax.scatter(goal[0], goal[1], goal[2], color=color, s=150, marker='*', label=f'UAV {j} Goal')
+            scatter = ax.scatter(goal[0], goal[1], goal[2], color=color, s=150, marker='*')
+            if f'UAV {j+1} Goal' not in all_labels:
+                all_handles.append(scatter)
+                all_labels.append(f'UAV {j+1} Goal')
             
             # Trajectory
             n_waypoints = 15
@@ -108,7 +107,13 @@ def plot_all_stages(save_path="stages_preview.png"):
             way_y = start[1] + (goal[1] - start[1]) * t + curve_y
             way_z = start[2] + (goal[2] - start[2]) * t + curve_z
             
-            ax.plot(way_x, way_y, way_z, color=color, linestyle='-', linewidth=2.0, label=f'UAV {j} Trajectory')
+            line, = ax.plot(way_x, way_y, way_z, color=color, linestyle='-', linewidth=2.5)
+            if f'UAV {j+1} Trajectory' not in all_labels:
+                all_handles.append(line)
+                all_labels.append(f'UAV {j+1} Trajectory')
+            
+            # Shadow projection on the floor
+            ax.plot(way_x, way_y, np.zeros_like(way_z), color=color, linestyle=':', alpha=0.5, linewidth=1.5)
 
         # Environment styling
         ax.set_xlim([0, stage_cfg['env_size'][0]])
@@ -120,27 +125,14 @@ def plot_all_stages(save_path="stages_preview.png"):
         ax.set_zlabel('Z (m)', labelpad=15, fontweight='bold')
         
         ax.view_init(elev=25, azim=-60)
-        ax.set_title(f"Stage {stage_idx}: {stage_cfg['name']}", fontweight='bold', fontsize=18, pad=20)
+        ax.set_title(f"Stage {stage_idx+1}: {stage_cfg['name']}", fontweight='bold', fontsize=18, pad=20)
         
         # Grid customization
         ax.grid(True, linestyle='--', alpha=0.5, color='#CCCCCC')
-        
-        # Legend (only set up proxies correctly to avoid errors)
-        handles, labels = ax.get_legend_handles_labels()
-        by_label = dict(zip(labels, handles))
-        if by_label:
-            ax.legend(by_label.values(), by_label.keys(), loc='upper right')
 
-    # Colorbar on the side of the whole figure
-    fig.subplots_adjust(right=0.9)
-    cbar_ax = fig.add_axes([0.92, 0.15, 0.02, 0.7])
-    m = cm.ScalarMappable(cmap=cmap)
-    m.set_array([0, max_z])
-    cbar = fig.colorbar(m, cax=cbar_ax)
-    cbar.set_label("Obstacle Height (m)", rotation=270, labelpad=25, fontweight='bold', fontsize=16)
+    fig.legend(all_handles, all_labels, loc='lower center', ncol=3, bbox_to_anchor=(0.5, 0.05), fontsize=14)
 
-    # Instead of plt.tight_layout(), we use subplots_adjust to preserve the right space for cbar
-    plt.subplots_adjust(wspace=0.2, hspace=0.3, right=0.88)
+    plt.subplots_adjust(wspace=0.2, hspace=0.3, bottom=0.15)
     
     plt.savefig(save_path, dpi=200, bbox_inches='tight')
     print(f"Saved all stages preview to {save_path}")

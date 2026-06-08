@@ -102,7 +102,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
     
-    colors = ['b', 'g', 'r', 'c', 'm', 'y', 'k']
+    colors = ['#2980B9', '#27AE60', '#8E44AD', '#D35400', '#C0392B']
     
     # Plot obstacle
     print(f"Total simulated obstacles: {len(env.obstacles)}")
@@ -119,7 +119,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             y = ob_rad * np.outer(np.sin(u), np.sin(v)) + ob_pos[1]
             z = ob_rad * np.outer(np.ones(np.size(u)), np.cos(v)) + ob_pos[2]
             
-            ax.plot_surface(x, y, z, color='gray', alpha=0.6, shade=True)
+            ax.plot_surface(x, y, z, color='#E74C3C', alpha=0.8, shade=True)
             
         elif ob.type == 'box':
             ob_pos = ob.position
@@ -130,11 +130,11 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             z = [ob_pos[2]-hl[2], ob_pos[2]+hl[2]]
             
             xx, yy = np.meshgrid(x, y)
-            for zz in z: ax.plot_surface(xx, yy, np.full_like(xx, zz), color='#555555', alpha=1.0, shade=True)
+            for zz in z: ax.plot_surface(xx, yy, np.full_like(xx, zz), color='#CCCCCC', alpha=0.4, shade=True)
             xx, zz = np.meshgrid(x, z)
-            for yy in y: ax.plot_surface(xx, np.full_like(xx, yy), zz, color='#555555', alpha=1.0, shade=True)
+            for yy in y: ax.plot_surface(xx, np.full_like(xx, yy), zz, color='#CCCCCC', alpha=0.4, shade=True)
             yy, zz = np.meshgrid(y, z)
-            for xx in x: ax.plot_surface(np.full_like(yy, xx), yy, zz, color='#555555', alpha=1.0, shade=True)
+            for xx in x: ax.plot_surface(np.full_like(yy, xx), yy, zz, color='#CCCCCC', alpha=0.4, shade=True)
             
         elif ob.type == 'cylinder':
             ob_pos = ob.position
@@ -147,7 +147,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
             theta_grid, z_grid = np.meshgrid(thetaC, zC)
             x_grid = ob_pos[0] + ob_rad * np.cos(theta_grid)
             y_grid = ob_pos[1] + ob_rad * np.sin(theta_grid)
-            ax.plot_surface(x_grid, y_grid, z_grid, color='gray', alpha=0.6, shade=True)
+            ax.plot_surface(x_grid, y_grid, z_grid, color='#CCCCCC', alpha=0.4, shade=True)
         
     for i in range(n_agents):
         c = colors[i % len(colors)]
@@ -156,15 +156,17 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         zs = path_history[:, i, 2]
         
         # Plot trajectory line
-        ax.plot(xs, ys, zs, color=c, label=f'Agent {i}')
+        ax.plot(xs, ys, zs, color=c, linewidth=2.5, label=f'Agent {i+1}')
+        # Setup shadow
+        ax.plot(xs, ys, np.zeros_like(zs), color=c, linestyle=':', alpha=0.5, linewidth=1.5)
         # Plot Start
         ax.scatter(xs[0], ys[0], zs[0], color=c, marker='o', s=50)
         # Plot Goal
-        ax.scatter(env.goals[i, 0], env.goals[i, 1], env.goals[i, 2], color=c, marker='*', s=100)
+        ax.scatter(env.goals[i, 0], env.goals[i, 1], env.goals[i, 2], color=c, marker='*', s=150)
 
-    ax.set_xlabel('X')
-    ax.set_ylabel('Y')
-    ax.set_zlabel('Z')
+    ax.set_xlabel('X (m)')
+    ax.set_ylabel('Y (m)')
+    ax.set_zlabel('Z (m)')
     ax.set_title(f'UAV Trajectories (Completed in {len(path_history)} steps)')
     ax.set_xlim(0, env_cfg['env_size'][0])
     ax.set_ylim(0, env_cfg['env_size'][1])

@@ -21,8 +21,8 @@ class SceneGenerator:
         # 1. Generate Static Buildings (Boxes) on a Manhattan Grid
         n_static = stage_cfg.get('static_obs', 0)
         if n_static > 0:
-            # Create a Manhattan grid with 15m clearance
-            grid_step = 15.0
+            # Create a Manhattan grid with 20m clearance
+            grid_step = 20.0
             margin = 20.0
             xs = np.arange(margin, self.env_size[0] - margin + 1e-3, grid_step)
             ys = np.arange(margin, self.env_size[1] - margin + 1e-3, grid_step)
@@ -35,8 +35,9 @@ class SceneGenerator:
             for idx in indices:
                 gx, gy = grid_points[idx]
                 
-                r = self.rng.uniform(3.0, 7.0)
-                h = self.rng.uniform(10.0, 60.0)
+                r = self.rng.uniform(2.0, 4.0)
+                max_h = stage_cfg.get('max_h', 50.0)
+                h = self.rng.uniform(10.0, max_h)
                 
                 pos = np.array([gx, gy, h / 2])
                 obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
