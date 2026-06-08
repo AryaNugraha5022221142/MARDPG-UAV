@@ -18,10 +18,10 @@ class SceneGenerator:
         """Generates exactly the obstacles defined in the CL stage."""
         obstacles = []
         
-        # 1. Generate Static Buildings (Boxes) on a Manhattan Grid
+        # 1. Generate Static Buildings (Boxes and Cylinders) on a Manhattan Grid
         n_static = stage_cfg.get('static_obs', 0)
         if n_static > 0:
-            # Create a Manhattan grid with 20m clearance
+            # INCREASED to 20.0m to prevent geometric choking and ensure solvable paths
             grid_step = 20.0
             margin = 20.0
             xs = np.arange(margin, self.env_size[0] - margin + 1e-3, grid_step)
@@ -35,12 +35,26 @@ class SceneGenerator:
             for idx in indices:
                 gx, gy = grid_points[idx]
                 
-                r = self.rng.uniform(2.0, 4.0)
+                # Fetch max_h from stage config to allow curriculum height scaling (Default: 50.0)
                 max_h = stage_cfg.get('max_h', 50.0)
                 h = self.rng.uniform(10.0, max_h)
                 
-                pos = np.array([gx, gy, h / 2])
-                obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
+                # Randomly mix boxes and cylinders to create a diverse urban environment
+                obs_type = self.rng.choice(['box', 'cylinder'])
+                
+                if obs_type == 'cylinder':
+                    # REDUCED radius to 2.0m - 4.0m to guarantee wide enough gaps
+                    r = self.rng.uniform(2.0, 4.0)
+                    pos = np.array([gx, gy, h / 2])
+                    obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
+                    
+                elif obs_type == 'box':
+                    # Boxes are defined by their "half-extents" (half-width, half-depth, half-height)
+                    hx = self.rng.uniform(2.0, 4.0)
+                    hy = self.rng.uniform(2.0, 4.0)
+                    hz = h / 2.0
+                    pos = np.array([gx, gy, hz])
+                    obstacles.append(Obstacle('box', pos, np.array([hx, hy, hz])))
 
         # 2. Generate Dynamic Spheres
         n_dynamic = stage_cfg.get('dynamic_obs', 0)
