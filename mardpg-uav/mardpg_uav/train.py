@@ -417,14 +417,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             h_next, _ = agent.actor_target.lstm(feat_next, None)
                             next_agent_hiddens.append(h_next)
                             
-                            # 1. Get raw unconstrained target action
-                            next_act_raw = agent.actor_target.tanh(agent.actor_target.fc_out(h_next)) * agent.actor_target.action_bound
-                            
-                            # 2. Add clipped exploration noise (TD3 smoothing)
-                            target_noise = torch.randn_like(next_act_raw) * algo_cfg['policy_noise']
-                            target_noise = torch.clamp(target_noise, -algo_cfg['noise_clip'], algo_cfg['noise_clip'])
-                            bnd = agent.actor_target.action_bound
-                            final_next_act = torch.clamp(next_act_raw + target_noise, -bnd, bnd)
+                            final_next_act = agent.actor_target.tanh(
+                                agent.actor_target.fc_out(h_next)
+                            ) * agent.actor_target.action_bound
                             
                             target_actions.append(final_next_act)
 
@@ -479,7 +474,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     
                     actor_grad_norms = []
                     for agent in agents:
-                        a_grad = torch.nn.utils.clip_grad_norm_(agent.private_actor_params, algo_cfg['gradient_clip'])
+                        a_grad = torch.nn.utils.clip_grad_norm_(agent.actor_private_params, algo_cfg['gradient_clip'])
                         actor_grad_norms.append(a_grad.item())
                         agent.actor_optimizer.step()
 
