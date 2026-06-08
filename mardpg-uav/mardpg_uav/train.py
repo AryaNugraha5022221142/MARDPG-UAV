@@ -275,7 +275,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     # Restore global step and noise scheduling if resuming
     if resume_dir:
-        algo_cfg['warmup_episodes'] = max(algo_cfg['warmup_episodes'], start_episode + 50)
+        algo_cfg['warmup_episodes'] = max(algo_cfg.get('warmup_episodes', 50), start_episode + 50)
         try:
             shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
             if 'global_step' in shared_ckpt:
@@ -373,7 +373,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
-            if episode < algo_cfg['warmup_episodes'] or len(buffer) < algo_cfg['batch_size']:
+            if episode < algo_cfg.get('warmup_episodes', 50) or len(buffer) < algo_cfg['batch_size']:
                 last_update_step = global_step
             else:
                 updates_to_do = (global_step - last_update_step) // algo_cfg['update_freq']
