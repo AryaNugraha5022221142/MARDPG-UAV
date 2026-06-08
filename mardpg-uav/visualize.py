@@ -2,6 +2,17 @@ import yaml
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
+
+# Enable strict LaTeX rendering
+plt.rcParams.update({
+    "text.usetex": True,
+    "font.family": "serif",
+    "font.serif": ["Computer Modern Roman"],
+    "font.size": 12,
+    "axes.titlesize": 14,
+    "axes.labelsize": 12,
+    "legend.fontsize": 10,
+})
 from mpl_toolkits.mplot3d import Axes3D
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
