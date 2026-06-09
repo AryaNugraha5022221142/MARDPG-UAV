@@ -7,7 +7,7 @@ with open(os.path.join(os.path.dirname(__file__), '../config/default.yaml'), 'r'
     cfg = yaml.safe_load(f)
 
 def test_obs_shape():
-    env = MultiUAVEnv(cfg)
-    obs = env.reset()
+    env = MultiUAVEnv(cfg['environment'])
+    obs = env.reset(cfg['environment'])
     assert obs.shape == (env.n_agents, env.obs_dim), f"Got {obs.shape}"
     assert env.obs_dim == 32
