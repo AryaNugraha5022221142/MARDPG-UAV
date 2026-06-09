@@ -56,17 +56,18 @@ class MARDPGAgent:
         self.actor_hidden      = None
         self.eval_actor_hidden = None
 
-    def select_action(self, obs: np.ndarray, evaluate: bool = False) -> np.ndarray:
+    def select_action(self, obs: np.ndarray, prev_action: np.ndarray, evaluate: bool = False) -> np.ndarray:
         with torch.no_grad():
             obs_tensor = torch.FloatTensor(obs).unsqueeze(0).unsqueeze(0).to(self.device)
+            prev_act_tensor = torch.FloatTensor(prev_action).unsqueeze(0).unsqueeze(0).to(self.device)
             if evaluate:
                 if self.eval_actor_hidden is None:
                     self.eval_actor_hidden = self._init_hidden(1)
-                action, self.eval_actor_hidden = self.actor(obs_tensor, self.eval_actor_hidden)
+                action, self.eval_actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.eval_actor_hidden)
             else:
                 if self.actor_hidden is None:
                     self.actor_hidden = self._init_hidden(1)
-                action, self.actor_hidden = self.actor(obs_tensor, self.actor_hidden)
+                action, self.actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.actor_hidden)
             return action[0].cpu().numpy()
 
     def reset_hidden(self, batch_size: int = 1, eval_mode: bool = False):
@@ -118,11 +119,12 @@ class MARDPGAgent:
 
         return critic_loss.item(), q_cur_learn.detach().mean().item(), 0.0
 
-    def compute_actor_loss(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor, mask: torch.Tensor):
+    def compute_actor_loss(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor, prev_act_all_seq: torch.Tensor, mask: torch.Tensor):
         """
         Computes the deterministic policy gradient.
         obs_all_seq: (batch*seq, n_agents, obs_dim)
         act_all_seq: (batch*seq, n_agents, action_dim) -> Raw actions from replay buffer
+        prev_act_all_seq: (batch*seq, n_agents, action_dim) 
         """
         batch_size, total_seq_len = mask.shape
         
@@ -133,10 +135,11 @@ class MARDPGAgent:
         # 2. Extract observations for THIS agent and reshape for the LSTM
         my_obs_flat = obs_all_seq[:, self.agent_id, :]
         my_obs_seq = my_obs_flat.view(batch_size, total_seq_len, -1)
+        my_prev_act_seq = prev_act_all_seq[:, self.agent_id, :].view(batch_size, total_seq_len, -1)
         
         # 3. Compute new actions using the current policy (gradients ENABLED)
         # Note: In a strict recurrent setup, you'd pass the hidden state from burn-in here.
-        my_actions_seq, _ = self.actor(my_obs_seq, hidden=None)
+        my_actions_seq, _ = self.actor(my_obs_seq, my_prev_act_seq, hidden=None)
         
         # 4. Replace this agent's past actions with the newly differentiable actions
         action_dim = my_actions_seq.shape[-1]

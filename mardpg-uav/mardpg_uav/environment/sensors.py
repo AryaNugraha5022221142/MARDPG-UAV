@@ -38,11 +38,12 @@ class Rangefinder:
         # Rotation matrix: yaw then pitch
         cy, sy = np.cos(theta), np.sin(theta)
         cp, sp = np.cos(phi),   np.sin(phi)
-        # Rz(theta) * Ry(-phi)
+        
+        # Inverted pitch matrix
         R = np.array([
-            [ cy*cp, -sy,  cy*sp],
-            [ sy*cp,  cy,  sy*sp],
-            [-sp,     0.0, cp   ],
+            [ cy*cp, -sy, -cy*sp],
+            [ sy*cp,  cy, -sy*sp],
+            [ sp,     0.0, cp   ],
         ], dtype=np.float32)   # (3,3)
 
         rotated_dirs = (R @ self._dir_vecs.T).T   # (25, 3)

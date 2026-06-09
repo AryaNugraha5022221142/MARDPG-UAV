@@ -10,4 +10,4 @@ def test_obs_shape():
     env = MultiUAVEnv(cfg)
     obs = env.reset()
     assert obs.shape == (env.n_agents, env.obs_dim), f"Got {obs.shape}"
-    assert env.obs_dim == 30
+    assert env.obs_dim == 32

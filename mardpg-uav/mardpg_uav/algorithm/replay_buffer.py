@@ -19,23 +19,25 @@ class SequenceReplayBuffer:
         self.action_dim = action_dim
 
         # Circular buffer over transitions
-        self.obs     = np.zeros((capacity, n_agents, obs_dim),    dtype=np.float32)
-        self.actions = np.zeros((capacity, n_agents, action_dim), dtype=np.float32)
-        self.rewards = np.zeros((capacity, n_agents),             dtype=np.float32)
-        self.dones   = np.ones ((capacity, n_agents),             dtype=bool)
-        self.ep_ids  = np.zeros( capacity,                        dtype=np.int32)
+        self.obs          = np.zeros((capacity, n_agents, obs_dim),    dtype=np.float32)
+        self.prev_actions = np.zeros((capacity, n_agents, action_dim), dtype=np.float32)
+        self.actions      = np.zeros((capacity, n_agents, action_dim), dtype=np.float32)
+        self.rewards      = np.zeros((capacity, n_agents),             dtype=np.float32)
+        self.dones        = np.ones ((capacity, n_agents),             dtype=bool)
+        self.ep_ids       = np.zeros( capacity,                        dtype=np.int32)
 
         self.ptr       = 0
         self.size      = 0
         self._ep_count = 0
 
-    def add_transition(self, obs, actions, rewards, dones):
+    def add_transition(self, obs, prev_actions, actions, rewards, dones):
         idx = self.ptr
-        self.obs[idx]     = obs
-        self.actions[idx] = actions
-        self.rewards[idx] = rewards
-        self.dones[idx]   = dones
-        self.ep_ids[idx]  = self._ep_count
+        self.obs[idx]          = obs
+        self.prev_actions[idx] = prev_actions
+        self.actions[idx]      = actions
+        self.rewards[idx]      = rewards
+        self.dones[idx]        = dones
+        self.ep_ids[idx]       = self._ep_count
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -67,6 +69,7 @@ class SequenceReplayBuffer:
             return buf[idx_t]
 
         batch_obs     = gather(self.obs)       # (B, T, N, obs_dim)
+        batch_prev_act= gather(self.prev_actions) # (B, T, N, act_dim)
         batch_act     = gather(self.actions)   # (B, T, N, act_dim)
         batch_rew     = gather(self.rewards)   # (B, T, N)
         batch_done    = gather(self.dones)     # (B, T, N)
@@ -79,8 +82,8 @@ class SequenceReplayBuffer:
         to_b = lambda a: torch.BoolTensor(a)
 
         return (to_t(batch_obs),      to_t(batch_obs_next),
-                to_t(batch_act),      to_t(batch_rew),
-                to_b(batch_done))
+                to_t(batch_prev_act), to_t(batch_act),
+                to_t(batch_rew),      to_b(batch_done))
 
     def __len__(self):
         return self.size

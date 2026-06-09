@@ -59,38 +59,25 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         agent.reset_hidden(batch_size=1, eval_mode=True)
     
     # Simpan histori [step, agent, koordinat]
-    path_history = [env.agents_state[:, :3].copy()]
-    
     # Batch function
-    def select_actions_batch_eval(agents, obs_all, v_max, agent_done, action_dim=3):
-        n = len(agents)
-        obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
-        with torch.no_grad():
-            flat = obs_tensor.view(n, -1)
-            shared_feat = agents[0].actor.shared(flat)
-            shared_feat = shared_feat.unsqueeze(1)
-            actions = []
-            for i, agent in enumerate(agents):
-                if not agent_done[i]:
-                    feat_i = shared_feat[i:i+1]
-                    h_in = agent.eval_actor_hidden if agent.eval_actor_hidden is not None else (
-                        torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device),
-                        torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device)
-                    )
-                    lstm_out, h_out = agent.actor.lstm(feat_i, h_in)
-                    act = agent.actor.tanh(agent.actor.fc_out(lstm_out[:, -1, :])) * agent.actor.action_bound
-                    agent.eval_actor_hidden = h_out
-                    action = act[0].cpu().numpy()
-                    action = np.clip(action, -v_max, v_max)
-                else:
-                    action = np.zeros(action_dim, dtype=np.float32)
+    def select_actions_batch_eval(agents, obs_all, v_max, agent_done, prev_actions, action_dim=2):
+        actions = []
+        for i, agent in enumerate(agents):
+            if agent_done[i]:
+                actions.append(np.zeros(action_dim))
+            else:
+                action = agent.select_action(obs_all[i], prev_actions[i], evaluate=True)
+                action = np.clip(action, -agent.actor.action_bound, agent.actor.action_bound)
                 actions.append(action)
-        return np.array(actions)
+        return actions
         
+    prev_actions = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
     for step in range(env_cfg['max_steps_per_episode']):
-        actions = select_actions_batch_eval(agents, obs, env_cfg.get('v_max', 3.0), env.agent_done, env.action_dim)
+        actions = select_actions_batch_eval(agents, obs, env_cfg.get('v_max', 3.0), env.agent_done, prev_actions, env.action_dim)
         
         obs, rewards, done, info = env.step(actions)
+        prev_actions = actions.copy()
+        
         path_history.append(env.agents_state[:, :3].copy())
         
         if done:

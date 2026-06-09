@@ -160,7 +160,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     wandb.init(
         project="mardpg-uav",
-        entity="aryanugraha0412-institut-teknologi-sepuluh-nopember",
         name=f"run_{run_id}_seed_{seed}",
         config=cfg
     )
@@ -270,7 +269,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     
     # Restore global step and noise scheduling if resuming
     if resume_dir:
-        algo_cfg['warmup_episodes'] = max(algo_cfg.get('warmup_episodes', 50), start_episode + 50)
+        algo_cfg['warmup_steps'] = max(algo_cfg.get('warmup_steps', 2000), global_step + 2000)
         try:
             shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
             if 'global_step' in shared_ckpt:
@@ -307,25 +306,47 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             ep_len = 0
             path_history = [env.agents_state[:, :3].copy()]
             
+            prev_actions = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
+            
             for step in range(stage_cfg['max_steps']):
                 noise_val = noise.sample()
-                # Gaussian noise is constant so no need to log its changing sigma to W&B
                 v_max = env_cfg.get('v_max', 3.0)
-                actions = select_actions_batch(agents, obs, noise_val, v_max, env.agent_done, env.action_dim)
+                
+                if global_step < algo_cfg.get('warmup_steps', 2000):
+                    actions = []
+                    for i in range(n_agents):
+                        if env.agent_done[i]:
+                            actions.append(np.zeros(env.action_dim, dtype=np.float32))
+                        else:
+                            actions.append(env.action_space.sample()[i])
+                    actions = np.array(actions)
+                else:
+                    actions = []
+                    for i, agent in enumerate(agents):
+                        if env.agent_done[i]:
+                            actions.append(np.zeros(env.action_dim, dtype=np.float32))
+                        else:
+                            act = agent.select_action(obs[i], prev_actions[i], evaluate=False)
+                            act += noise_val[i]
+                            act = np.clip(act, -agent.actor.action_bound, agent.actor.action_bound)
+                            actions.append(act)
+                    actions = np.array(actions)
                 
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
                 
-                buffer.add_transition(obs.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
+                buffer.add_transition(obs.copy(), prev_actions.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
                 ep_len += 1
                 obs = next_obs
+                prev_actions = actions.copy()
                 
                 if done:
                     # Append terminal state to allow BPTT sampling of the final transition
                     buffer.add_transition(
                         obs.copy(), 
+                        prev_actions.copy(),
                         np.zeros_like(actions), 
                         np.zeros_like(rewards), 
                         np.ones_like(info['agent_done'], dtype=bool)
@@ -368,7 +389,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
-            if episode < algo_cfg.get('warmup_episodes', 50) or len(buffer) < algo_cfg['batch_size']:
+            if global_step < algo_cfg.get('warmup_steps', 2000) or len(buffer) < algo_cfg['batch_size']:
                 last_update_step = global_step
             else:
                 updates_to_do = (global_step - last_update_step) // algo_cfg['update_freq']
@@ -384,7 +405,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 for _ in range(total_grad_steps):
                     batch = buffer.sample(algo_cfg['batch_size'])
                     if batch is None: break
-                    batch_obs, batch_obs_next, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
+                    batch_obs, batch_obs_next, batch_prev_actions, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
                     batch_size, seq_len, _, obs_dim = batch_obs.shape
                     
                     # Define environment limit (matches dynamics.py)
@@ -404,12 +425,16 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
 
                     for i, agent in enumerate(agents):
                         feat = all_feats[:, i, :, :]
-                        h_out, _ = agent.actor.lstm(feat, None)
+                        prev_act = batch_prev_actions[:, :, i, :]
+                        x = torch.cat([feat, prev_act], dim=-1)
+                        h_out, _ = agent.actor.lstm(x, None)
                         agent_hiddens.append(h_out)
                         
                         with torch.no_grad():
                             feat_next = all_feats_next[:, i, :, :]
-                            h_next, _ = agent.actor_target.lstm(feat_next, None)
+                            prev_act_next = batch_actions[:, :, i, :]
+                            x_next = torch.cat([feat_next, prev_act_next], dim=-1)
+                            h_next, _ = agent.actor_target.lstm(x_next, None)
                             next_agent_hiddens.append(h_next)
                             
                             final_next_act = agent.actor_target.tanh(
@@ -457,8 +482,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     actor_losses = []
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
+                        prev_act_all = batch_prev_actions.reshape(batch_size * seq_len, n_agents, -1)
                         # Pass obs_all and raw act_all directly to actor_loss
-                        actor_losses.append(agent.compute_actor_loss(obs_all, act_all, mask_i))
+                        actor_losses.append(agent.compute_actor_loss(obs_all, act_all, prev_act_all, mask_i))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents

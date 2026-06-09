@@ -48,7 +48,7 @@ class MultiUAVEnv(gym.Env):
         )
         
         # Spaces
-        self.obs_dim = 30  # [theta(1), phi(1), lidar(25), d5(1), varpi(1), varpi_z(1)]
+        self.obs_dim = 32  # [sin, cos (theta, phi) (4), lidar(25), xi(3)]
         self.action_dim = 2  # [rho, tau]
         
         self.observation_space = gym.spaces.Box(
@@ -333,10 +333,12 @@ class MultiUAVEnv(gym.Env):
             varpi = varpi_z = 0.0
 
         xi  = np.array([d5, varpi, varpi_z], dtype=np.float32)
-        obs = np.concatenate([[theta, phi],
-                              lidar_norm.flatten(),
-                              xi])
-        assert obs.shape == (30,), f"obs shape mismatch: {obs.shape}"
+        obs = np.concatenate([
+            [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],
+            lidar_norm.flatten(),
+            xi
+        ])
+        assert obs.shape == (32,), f"obs shape mismatch: {obs.shape}"
         return obs.astype(np.float32)
 
     def _get_observations(self) -> np.ndarray:
