@@ -11,7 +11,7 @@ class SequenceReplayBuffer:
     for BPTT, constructing histories h_{i,t} as in Algorithm 1.
     """
     def __init__(self, capacity: int = 100_000, seq_len: int = 80,
-                 n_agents: int = 5, obs_dim: int = 30, action_dim: int = 2):
+                 n_agents: int = 5, obs_dim: int = 32, action_dim: int = 2):
         self.capacity   = capacity
         self.seq_len    = seq_len
         self.n_agents   = n_agents

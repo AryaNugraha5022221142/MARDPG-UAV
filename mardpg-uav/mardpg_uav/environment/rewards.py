@@ -38,22 +38,33 @@ class RewardFunction:
         self.prev_distances[agent_id] = current_dist
 
         # --- Eq. (3): Collision penalty ---
-        sigma = 15.0
-        safe_dist = 2.0  # Start penalizing when obstacles are within 2 meters
-        crash_dist = 0.2 # Minimum distance before registering a physical crash
-        
-        # Sensors return normalized distances [0, 1]. Multiply by max_range to get meters.
-        sensors_flat = rangefinder_norm.flatten()
-        min_sensor_reading = np.min(sensors_flat)
-        d_min = min_sensor_reading * self.range_max 
-        
+        # Smooth, monotonic penalty that ramps up inside `safe_dist` and saturates at a
+        # crash. Unlike the forward-cone sensor reading, d_min here is the TRUE shortest
+        # clearance to ANY hazard in ANY direction, and it includes other UAVs. The reward
+        # is computed in the environment, so using ground-truth geometry is legitimate
+        # (the policy still only sees noisy forward-cone sensors). This restores the
+        # cooperative inter-UAV avoidance signal central to the paper.
+        sigma = self.lambda_col          # penalty magnitude (paper lambda)
+        safe_dist = 2.0                  # start penalizing within 2 m of a surface
+        crash_dist = 0.2                 # treat as a physical crash at/under 0.2 m
+        k = 3.0                          # steepness of the exponential ramp
+
+        # Surface clearance to nearest static/dynamic obstacle (in metres).
+        d_obs = self._min_obstacle_surface_distance(position, obstacles,
+                                                    obs_centers, obs_max_sizes)
+        # Clearance to nearest other UAV beyond its 2R safety bubble (inter_uav_min = 2R).
+        d_uav = min((np.linalg.norm(position - p) for p in other_positions),
+                    default=float('inf'))
+        d_min = min(d_obs, d_uav - self.inter_uav_min)
+        d_min = max(0.0, d_min)
+
         r_col = 0.0
         if d_min < safe_dist:
             if d_min <= crash_dist:
-                r_col = -sigma # Max penalty for actual crash
+                r_col = -sigma  # max penalty for an actual crash
             else:
-                k = 3.0 # Tuning parameter for steepness
                 r_col = -sigma * np.exp(-k * (d_min - crash_dist))
+                # Offset so the penalty is continuous and reaches 0 exactly at safe_dist.
                 boundary_offset = np.exp(-k * (safe_dist - crash_dist))
                 r_col = r_col - (-sigma * boundary_offset)
 
@@ -111,5 +122,3 @@ class RewardFunction:
         if not close_obstacles:
             return float('inf')
         return min(self._surface_distance(position, obs) for obs in close_obstacles)
-
-

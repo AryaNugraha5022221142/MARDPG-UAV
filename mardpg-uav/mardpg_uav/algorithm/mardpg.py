@@ -13,7 +13,7 @@ from ..networks.critic import RecurrentCritic
 
 class MARDPGAgent:
     def __init__(self, agent_id: int, n_agents: int,
-                 obs_dim: int = 30, action_dim: int = 2,
+                 obs_dim: int = 32, action_dim: int = 2,
                  action_bound: float = 0.5236,   # pi/6
                  lstm_hidden: int = 128, fc_hidden: int = 128,
                  lr_actor: float = 0.01, lr_critic: float = 0.01,
@@ -36,16 +36,24 @@ class MARDPGAgent:
                                       max_delta_angle=action_bound).to(self.device)
         self.actor_target     = copy.deepcopy(self.actor).to(self.device)
 
-        # Single Q critic (paper does not use twin Q)
-        feature_dim = self.shared_extractor.feature_dim
-        self.critic         = RecurrentCritic(n_agents, feature_dim, action_dim,
+        # Single Q critic (paper does not use twin Q).
+        # The centralized critic consumes the RAW observations of all agents (paper
+        # §V.B: "the fully-connected layer of all agents as input"), NOT the actor's
+        # learned features. This gives the value function full-state access and lets the
+        # critic loss shape its own representation, decoupled from the policy encoder.
+        self.critic         = RecurrentCritic(n_agents, obs_dim, action_dim,
                                                fc_hidden, lstm_hidden).to(self.device)
         self.critic_target  = copy.deepcopy(self.critic).to(self.device)
 
-        self.actor_optimizer  = optim.Adam(
-            list(self.actor.parameters()) + list(self.shared_extractor.parameters()),
-            lr=lr_actor
-        )
+        # The actor optimizer owns ONLY this agent's private params (LSTM + output head).
+        # The shared feature extractor is partially shared across agents (paper §V.C) and
+        # is therefore optimized EXACTLY ONCE by a single dedicated optimizer created in
+        # train.py. Including it here would update it N times per step (once per agent),
+        # and listing actor.parameters() (which already contains the shared submodule)
+        # together with shared_extractor.parameters() would also double-count it.
+        self.actor_private_params = (list(self.actor.lstm.parameters()) +
+                                     list(self.actor.fc_out.parameters()))
+        self.actor_optimizer  = optim.Adam(self.actor_private_params, lr=lr_actor)
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
 
         self._hard_update(self.actor_target, self.actor)
@@ -121,13 +129,12 @@ class MARDPGAgent:
 
         return critic_loss.item(), q_cur_learn.detach().mean().item(), 0.0
 
-    def compute_actor_loss(self, obs_all_seq: torch.Tensor, feats_all_seq: torch.Tensor, act_all_seq: torch.Tensor, prev_act_all_seq: torch.Tensor, mask: torch.Tensor):
+    def compute_actor_loss(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor, prev_act_all_seq: torch.Tensor, mask: torch.Tensor):
         """
-        Computes the deterministic policy gradient.
-        obs_all_seq: (batch*seq, n_agents, obs_dim) -> To get raw obs for actor
-        feats_all_seq: (batch*seq, n_agents, feature_dim) -> To get features for critic
-        act_all_seq: (batch*seq, n_agents, action_dim) -> Raw actions from replay buffer
-        prev_act_all_seq: (batch*seq, n_agents, action_dim) 
+        Computes the deterministic policy gradient (paper Eq. 11).
+        obs_all_seq      : (batch*seq, n_agents, obs_dim) -> raw obs for actor AND critic
+        act_all_seq      : (batch*seq, n_agents, action_dim) -> raw joint actions from buffer
+        prev_act_all_seq : (batch*seq, n_agents, action_dim)
         """
         batch_size, total_seq_len = mask.shape
         
@@ -152,9 +159,9 @@ class MARDPGAgent:
         action_dim = my_actions_seq.shape[-1]
         joint_actions[:, self.agent_id, :] = my_actions_seq.reshape(-1, action_dim)
         
-        # 5. Evaluate the centralized critic
+        # 5. Evaluate the centralized critic on RAW observations of all agents.
         self.critic.eval()
-        q_flat, _ = self.critic(feats_all_seq, joint_actions, seq_len=total_seq_len) 
+        q_flat, _ = self.critic(obs_all_seq, joint_actions, seq_len=total_seq_len) 
         q_full = q_flat.view(batch_size, total_seq_len)
         
         # 6. Slice off the burn_in
@@ -186,10 +193,6 @@ class MARDPGAgent:
         self.actor_target.shared = other_agent.actor_target.shared
         if hasattr(self, 'target_shared_extractor'):
             delattr(self, 'target_shared_extractor')
-            
-        # Recreate optimizer to include the new shared parameters
-        lr_actor = self.actor_optimizer.param_groups[0]['lr']
-        self.actor_optimizer = optim.Adam(
-            list(self.actor.parameters()) + list(self.shared_extractor.parameters()),
-            lr=lr_actor
-        )
+        # NOTE: the private params (LSTM + output head) are unaffected by sharing, so the
+        # actor optimizer does NOT need to be rebuilt. The now-shared feature extractor is
+        # optimized by the single shared optimizer created in train.py.
