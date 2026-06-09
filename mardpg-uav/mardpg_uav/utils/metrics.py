@@ -45,7 +45,9 @@ class MetricsTracker:
                 actual = sum(np.linalg.norm(path_history[t][i] - path_history[t-1][i]) for t in range(1, len(path_history)))
                 straight = np.linalg.norm(goal_pos[i] - start_pos[i])
                 if actual > 1e-8:
-                    efficiencies.append(straight / actual)
+                    # Cap at 1.0: an agent that barely moved before colliding has
+                    # actual << straight, yielding ratio >> 1 — meaningless as efficiency.
+                    efficiencies.append(min(straight / actual, 1.0))
         self.path_efficiencies.append(np.mean(efficiencies) if efficiencies else 0.0)
 
     def get_stats(self) -> Dict[str, float]:

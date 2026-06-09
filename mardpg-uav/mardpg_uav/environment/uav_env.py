@@ -107,19 +107,25 @@ class MultiUAVEnv(gym.Env):
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
         
         positions = []
+        min_start_sep = self.cfg.get('inter_uav_min_dist', 1.0) * 4  # keep starts well apart
         for i in range(self.n_agents):
-            pos = self._sample_free_position()
+            for _ in range(200):
+                pos = self._sample_free_position()
+                # Ensure minimum separation from all already-placed start positions
+                if all(np.linalg.norm(pos - p) >= min_start_sep for p in positions):
+                    break
             positions.append(pos)
             self.agents_state[i, :3] = pos
             # Random initial heading
             self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
             self.agents_state[i, 4] = self.scene_gen.rng.uniform(-np.pi/6, np.pi/6)  # phi
             
-            for _ in range(100):
+            for _ in range(200):
                 goal = self._sample_free_position()
-                # Check min point separation and goal interference
-                if np.linalg.norm(goal - pos) >= min_sep and \
-                   all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist'] for g in self.goals[:i]):
+                # Check min separation from own start, other goals, and other starts
+                if (np.linalg.norm(goal - pos) >= min_sep and
+                        all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist'] for g in self.goals[:i]) and
+                        all(np.linalg.norm(goal - p) >= min_start_sep for p in positions)):
                     break
             self.goals[i] = goal
 
@@ -233,8 +239,17 @@ class MultiUAVEnv(gym.Env):
                             collisions[i] = True
                             break
 
-        # Check inter-uav safety for metrics
-        if np.all(dist_matrix >= 1.0):
+        # Check inter-uav safety for metrics, counting only active (non-done) agents.
+        # Done agents are frozen in place; including them would permanently penalise the
+        # metric for the rest of the episode after any collision.
+        active = ~self.agent_done
+        n_active = active.sum()
+        if n_active >= 2:
+            active_dists = dist_matrix[np.ix_(active, active)]
+            if np.all(active_dists >= 1.0):
+                self.safe_inter_uav_steps += 1
+        elif n_active <= 1:
+            # Fewer than 2 active agents — no inter-UAV risk; count as safe
             self.safe_inter_uav_steps += 1
 
         for i in range(self.n_agents):

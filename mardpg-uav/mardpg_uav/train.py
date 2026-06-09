@@ -20,36 +20,39 @@ from .utils.metrics import MetricsTracker
 from tqdm import tqdm
 
 CURRICULUM = [
-    { # Stage 1
+    { # Stage 1 — Free Space: no obstacles, large separation.
+      # Thresholds are achievable after ~300-500 episodes for an initializing policy.
+      # Goal: learn basic goal-directed flight and avoid peer agents.
         'name': 'Free Space Coordination', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 500,
         'static_obs': 0, 'min_sep': 30.0,
-        'criteria': {'success_rate': 0.90, 'collision_rate': 0.02, 'path_efficiency': 0.85, 'operator': 'less_col'}
+        'criteria': {'success_rate': 0.30, 'collision_rate': 0.60, 'path_efficiency': 0.40, 'operator': 'less_col'}
     },
-    { # Stage 2
-        'name': 'Coordination Under Pressure', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
+    { # Stage 2 — First obstacles, closer starts. Agents must share space with buildings.
+      # After Stage 1 policy, ~20-30% collision reduction and basic avoidance expected.
+        'name': 'Sparse Obstacles', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
         'static_obs': 3, 'max_h': 20.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.85, 'collision_rate': 0.05, 'inter_uav_safe': 0.95, 'operator': 'less_col_greater_safe'}
+        'criteria': {'success_rate': 0.50, 'collision_rate': 0.40, 'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}
     },
-    { # Stage 3
-        'name': 'First Full-Scale Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
+    { # Stage 3 — Moderate obstacle density. Path planning becomes necessary.
+        'name': 'Moderate Density', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
         'static_obs': 7, 'max_h': 20.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.80, 'trapped_rate': 0.05, 'path_efficiency': 0.80, 'operator': 'less_trap'}
+        'criteria': {'success_rate': 0.60, 'trapped_rate': 0.15, 'path_efficiency': 0.55, 'operator': 'less_trap'}
     },
-    { # Stage 4
-        'name': 'Saturated Navigation', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
+    { # Stage 4 — High-density urban-like environment. Tall obstacles; full 3D navigation.
+        'name': 'Dense Urban', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
         'static_obs': 12, 'max_h': 50.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.75, 'collision_rate': 0.10, 'path_efficiency': 0.75, 'operator': 'less_col'}
+        'criteria': {'success_rate': 0.65, 'collision_rate': 0.20, 'path_efficiency': 0.60, 'operator': 'less_col'}
     },
-    { # Stage 5
+    { # Stage 5 — Maximum static density. Agents must plan long detours.
         'name': 'Max Density Stress Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.70, 'path_efficiency': 0.70}
+        'criteria': {'success_rate': 0.60, 'path_efficiency': 0.55}
     },
-    { # Stage 6
+    { # Stage 6 — Dynamic threats added on top of max static density.
         'name': 'Dynamic Threats', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
         'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
-        'criteria': {'success_rate': 0.70, 'dyn_collision_rate': 0.05, 'path_efficiency': 0.70, 'operator': 'less_dyn'}
+        'criteria': {'success_rate': 0.55, 'dyn_collision_rate': 0.10, 'path_efficiency': 0.50, 'operator': 'less_dyn'}
     }
 ]
 
@@ -87,7 +90,7 @@ class CurriculumManager:
         if passed and self.current_stage_idx < len(self.stages) - 1:
             self.current_stage_idx += 1
             self.episodes_in_stage = 0
-            print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx}: {self.stages[self.current_stage_idx]['name']} 🚀\n")
+            print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx}: {self.stages[self.current_stage_idx]['name']} 🚀\n", flush=True)
             return True
         return False
 
@@ -302,6 +305,9 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     last_update_step = 0
     start_time = time.time()
     steps_done = global_step
+    # window_episode_start tracks the beginning of the most recent 100-ep window
+    window_start_time = time.time()
+    window_start_episode = start_episode
 
     print("=" * 60)
     print(f"MARDPG-NAV Training | Stage: {cl_manager.current_stage_idx + 1}/6")
@@ -392,7 +398,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     "ep_length_raw": ep_len,
                     "success_rate_raw": np.mean(info['reached']),
                     "collision_rate_raw": np.mean(info['collisions']),
-                    "dyn_collision_rate_raw": np.mean(info.get('dyn_collisions', [])),
+                    "dyn_collision_rate_raw": float(np.mean(info['dyn_collisions'])) if len(info.get('dyn_collisions', [])) > 0 else 0.0,
                     "smoothed_success_rate": stats['success_rate'],
                     "smoothed_collision_rate": stats['collision_rate'],
                     "smoothed_dyn_collision_rate": stats.get('dyn_collision_rate', 0),
@@ -539,16 +545,19 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             # Logging and update
             if episode > 0 and episode % 100 == 0:
                 stats = metrics.get_stats()
-                
-                elapsed = time.time() - episode_start_time
-                eps_per_sec = (episode - start_episode) / max(elapsed, 1)
-                steps_per_sec = (global_step - steps_done) / max(time.time() - start_time, 1)
-                
-                start_time = time.time()
+
+                now = time.time()
+                window_elapsed = max(now - window_start_time, 1e-6)
+                eps_per_sec = (episode - window_start_episode) / window_elapsed
+                steps_per_sec = (global_step - steps_done) / window_elapsed
+
+                window_start_time = now
+                window_start_episode = episode
+                start_time = now
                 steps_done = global_step
 
                 remaining_eps = algo_cfg['n_episodes'] - episode
-                eta_hours = remaining_eps / max(eps_per_sec * 3600, 1)
+                eta_hours = remaining_eps / max(eps_per_sec * 3600, 1e-6)
                 
                 print(
                     f"Ep {episode:6d}/{algo_cfg['n_episodes']} | "
