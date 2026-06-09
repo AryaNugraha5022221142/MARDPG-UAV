@@ -7,6 +7,11 @@ from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
 
 def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
+    import os
+    if not os.path.exists(config_path):
+        fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_path)
+        if os.path.exists(fallback):
+            config_path = fallback
     cfg = yaml.safe_load(open(config_path))
     env_cfg = cfg['environment']
     net_cfg = cfg['network']
@@ -19,9 +24,13 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
     agents = []
     for i in range(n_agents):
         agent = MARDPGAgent(
-            agent_id=i, n_agents=n_agents,
+            agent_id=i, 
+            n_agents=n_agents,
+            obs_dim=32,
             action_dim=env.action_dim,
-            hidden_dim=net_cfg['actor']['lstm_hidden'],
+            action_bound=env_cfg.get('max_delta_angle', 0.5236),
+            lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
+            fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
             lr_actor=algo_cfg['lr_actor'],
             lr_critic=algo_cfg['lr_critic'],
             tau=algo_cfg['tau'], gamma=algo_cfg['gamma'],
@@ -72,6 +81,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         return actions
         
     prev_actions = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
+    path_history = [env.agents_state[:, :3].copy()]
     for step in range(env_cfg['max_steps_per_episode']):
         actions = select_actions_batch_eval(agents, obs, env_cfg.get('v_max', 3.0), env.agent_done, prev_actions, env.action_dim)
         

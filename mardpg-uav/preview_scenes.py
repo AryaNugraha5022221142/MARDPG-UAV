@@ -49,7 +49,9 @@ def plot_scene(ax, env, title):
     ax.set_zlabel('Z')
 
 def main():
-    with open("config/default.yaml", "r") as f:
+    import os
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "default.yaml")
+    with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
     
     env = MultiUAVEnv(cfg['environment'])

@@ -1,6 +1,6 @@
 environment:
   n_agents: 5
-  v: 1.0                      # constant speed m/s (paper: fixed v)
+  v: 3.0                      # constant speed m/s (paper: fixed v)
   dt: 0.1
   max_altitude: 60.0
   min_altitude: 0.0

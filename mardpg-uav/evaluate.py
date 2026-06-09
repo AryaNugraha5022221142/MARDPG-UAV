@@ -23,6 +23,11 @@ def select_actions_batch_eval(agents, obs_all, v_max, agent_done, prev_actions, 
 
 def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
              n_eval_episodes: int = 250, device: str = 'cpu'):
+    import os
+    if not os.path.exists(config_path):
+        fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_path)
+        if os.path.exists(fallback):
+            config_path = fallback
     cfg = yaml.safe_load(open(config_path))
     env_cfg = cfg['environment']
     net_cfg = cfg['network']

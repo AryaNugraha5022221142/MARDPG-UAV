@@ -23,8 +23,8 @@ CURRICULUM = [
     { # Stage 1 — Free Space: no obstacles, large separation.
       # Thresholds are achievable after ~300-500 episodes for an initializing policy.
       # Goal: learn basic goal-directed flight and avoid peer agents.
-        'name': 'Free Space Coordination', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 500,
-        'static_obs': 0, 'min_sep': 30.0,
+        'name': 'Free Space Coordination', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
+        'static_obs': 0, 'min_sep': 15.0, 'min_start_sep': 12.0,
         'criteria': {'success_rate': 0.30, 'collision_rate': 0.60, 'path_efficiency': 0.40, 'operator': 'less_col'}
     },
     { # Stage 2 — First obstacles, closer starts. Agents must share space with buildings.
@@ -97,6 +97,10 @@ class CurriculumManager:
 
 
 def load_config(path: str = "config/default.yaml") -> dict:
+    if not os.path.exists(path):
+        fallback = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
+        if os.path.exists(fallback):
+            path = fallback
     with open(path, 'r') as f:
         return yaml.safe_load(f)
 
@@ -599,10 +603,18 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 os.makedirs("checkpoints", exist_ok=True)
                 log_file = f"checkpoints/training_log_{run_id}.csv"
                 is_new = not os.path.exists(log_file)
+                
+                gm_vals = {'actor_loss': 0.0, 'critic_loss': 0.0, 'q_vals': 0.0, 'critic_grad_norm': 0.0, 'shared_grad_norm': 0.0, 'actor_grad_norm': 0.0}
+                if 'grad_metrics' in locals() and grad_metrics.get('actor_loss'):
+                    gm_vals = {k: (float(np.mean(v)) if v else 0.0) for k, v in grad_metrics.items()}
+                
                 with open(log_file, 'a') as f:
                     if is_new:
-                        f.write("episode,avg_reward,success_rate,collision_rate,trapped_rate,avg_episode_length\n")
-                    f.write(f"{episode},{stats['avg_reward']},{stats['success_rate']},{stats['collision_rate']},{stats.get('trapped_rate', 0)},{stats['avg_episode_length']}\n")
+                        f.write("episode,avg_reward,success_rate,collision_rate,trapped_rate,avg_episode_length,actor_loss,critic_loss,q_mean,critic_grad,shared_grad,actor_grad\n")
+                    f.write(f"{episode},{stats['avg_reward']},{stats['success_rate']},{stats['collision_rate']},"
+                            f"{stats.get('trapped_rate',0)},{stats['avg_episode_length']},{gm_vals['actor_loss']},"
+                            f"{gm_vals['critic_loss']},{gm_vals['q_vals']},{gm_vals['critic_grad_norm']},"
+                            f"{gm_vals['shared_grad_norm']},{gm_vals['actor_grad_norm']}\n")
                     
     except KeyboardInterrupt:
         print("\n[KEYBOARD INTERRUPT] Training forcefully stopped by user.")

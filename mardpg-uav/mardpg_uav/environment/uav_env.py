@@ -107,7 +107,7 @@ class MultiUAVEnv(gym.Env):
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
         
         positions = []
-        min_start_sep = self.cfg.get('inter_uav_min_dist', 1.0) * 4  # keep starts well apart
+        min_start_sep = stage_cfg.get('min_start_sep', max(self.cfg.get('inter_uav_min_dist', 1.0) * 8, 10.0))
         for i in range(self.n_agents):
             for _ in range(200):
                 pos = self._sample_free_position()

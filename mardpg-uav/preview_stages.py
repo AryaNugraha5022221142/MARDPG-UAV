@@ -7,7 +7,9 @@ from mardpg_uav.train import CURRICULUM
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 
 def plot_all_stages(save_path="stages_preview.png"):
-    with open("config/default.yaml", "r") as f:
+    import os
+    config_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config", "default.yaml")
+    with open(config_path, "r") as f:
         cfg = yaml.safe_load(f)
     
     env = MultiUAVEnv(cfg['environment'])
