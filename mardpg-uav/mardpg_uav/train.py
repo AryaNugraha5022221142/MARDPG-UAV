@@ -20,35 +20,37 @@ from .utils.metrics import MetricsTracker
 from tqdm import tqdm
 
 CURRICULUM = [
-    { # Stage 1 — Free Space: no obstacles, large separation.
-      # Thresholds are achievable after ~300-500 episodes for an initializing policy.
-      # Goal: learn basic goal-directed flight and avoid peer agents.
-        'name': 'Free Space Coordination', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
+    {   # 1 — Free space, NEAR goals. Learn goal-seeking + peer avoidance only.
+        'name': 'Free Space (near)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
         'static_obs': 0, 'min_sep': 15.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.30, 'collision_rate': 0.60, 'path_efficiency': 0.40, 'operator': 'less_col'}
+        'criteria': {'success_rate': 0.35, 'collision_rate': 0.55, 'path_efficiency': 0.40, 'operator': 'less_col'}
     },
-    { # Stage 2 — First obstacles, closer starts. Agents must share space with buildings.
-      # After Stage 1 policy, ~20-30% collision reduction and basic avoidance expected.
-        'name': 'Sparse Obstacles', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
-        'static_obs': 3, 'max_h': 20.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.50, 'collision_rate': 0.40, 'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}
+    {   # 2 — Free space, FAR goals. Extend horizon BEFORE adding obstacles.
+        'name': 'Free Space (far)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 600,
+        'static_obs': 0, 'min_sep': 30.0, 'min_start_sep': 12.0,
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.45, 'path_efficiency': 0.45, 'operator': 'less_col'}
     },
-    { # Stage 3 — Moderate obstacle density. Path planning becomes necessary.
+    {   # 3 — A FEW obstacles at the SHORTER distance. Introduce obstacles ALONE.
+        'name': 'Sparse Obstacles (near)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
+        'static_obs': 3, 'max_h': 20.0, 'min_sep': 30.0, 'min_start_sep': 12.0,
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.40, 'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}
+    },
+    {   # 4 — Moderate density + longer goals.
         'name': 'Moderate Density', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
         'static_obs': 7, 'max_h': 20.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.60, 'trapped_rate': 0.15, 'path_efficiency': 0.55, 'operator': 'less_trap'}
+        'criteria': {'success_rate': 0.55, 'trapped_rate': 0.15, 'path_efficiency': 0.55, 'operator': 'less_trap'}
     },
-    { # Stage 4 — High-density urban-like environment. Tall obstacles; full 3D navigation.
+    {   # 5 — Dense urban, tall obstacles, full 3D.
         'name': 'Dense Urban', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
         'static_obs': 12, 'max_h': 50.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.65, 'collision_rate': 0.20, 'path_efficiency': 0.60, 'operator': 'less_col'}
+        'criteria': {'success_rate': 0.60, 'collision_rate': 0.20, 'path_efficiency': 0.60, 'operator': 'less_col'}
     },
-    { # Stage 5 — Maximum static density. Agents must plan long detours.
+    {   # 6 — Max static density.
         'name': 'Max Density Stress Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
         'criteria': {'success_rate': 0.60, 'path_efficiency': 0.55}
     },
-    { # Stage 6 — Dynamic threats added on top of max static density.
+    {   # 7 — Dynamic threats on top of max static density.
         'name': 'Dynamic Threats', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
         'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
@@ -314,7 +316,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     window_start_episode = start_episode
 
     print("=" * 60)
-    print(f"MARDPG-NAV Training | Stage: {cl_manager.current_stage_idx + 1}/6")
+    print(f"MARDPG-NAV Training | Stage: {cl_manager.current_stage_idx + 1}/{len(CURRICULUM)}")
     print("=" * 60, flush=True)
 
     episode_start_time = time.time()
@@ -430,41 +432,23 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     if batch is None: break
                     batch_obs, batch_obs_next, batch_prev_actions, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
                     batch_size, seq_len, _, obs_dim = batch_obs.shape
-                    
-                    # Define environment limit (matches dynamics.py)
-                    tau_v = env_cfg.get('tau_v', 0.3)
-                    v_max  = env_cfg.get('v_max', 3.0)
 
-                    # 1. Forward passes for all agents (Online and Target)
-                    agent_hiddens, next_agent_hiddens, target_actions = [], [], []
-
-                    # Batched shared feature extraction (Bug 2 Fix)
-                    all_obs_flat = batch_obs.permute(0, 2, 1, 3).reshape(batch_size * n_agents * seq_len, obs_dim)
-                    all_feats = agents[0].actor.shared(all_obs_flat).view(batch_size, n_agents, seq_len, -1)
-
+                    # Target next-actions only. The previous online actor forward here was
+                    # dead code (built a graph that was discarded; the real actor forward is
+                    # in compute_actor_loss). Compute targets under no_grad.
+                    target_actions = []
                     with torch.no_grad():
-                        all_obs_next_flat = batch_obs_next.permute(0, 2, 1, 3).reshape(batch_size * n_agents * seq_len, obs_dim)
-                        all_feats_next = agents[0].actor_target.shared(all_obs_next_flat).view(batch_size, n_agents, seq_len, -1)
-
-                    for i, agent in enumerate(agents):
-                        feat = all_feats[:, i, :, :]
-                        prev_act = batch_prev_actions[:, :, i, :]
-                        x = torch.cat([feat, prev_act], dim=-1)
-                        h_out, _ = agent.actor.lstm(x, None)
-                        agent_hiddens.append(h_out)
-                        
-                        with torch.no_grad():
-                            feat_next = all_feats_next[:, i, :, :]
-                            prev_act_next = batch_actions[:, :, i, :]
-                            x_next = torch.cat([feat_next, prev_act_next], dim=-1)
+                        all_obs_next_flat = batch_obs_next.permute(0, 2, 1, 3).reshape(
+                            batch_size * n_agents * seq_len, obs_dim)
+                        all_feats_next = agents[0].actor_target.shared(all_obs_next_flat).view(
+                            batch_size, n_agents, seq_len, -1)
+                        for i, agent in enumerate(agents):
+                            x_next = torch.cat([all_feats_next[:, i, :, :],
+                                                batch_actions[:, :, i, :]], dim=-1)
                             h_next, _ = agent.actor_target.lstm(x_next, None)
-                            next_agent_hiddens.append(h_next)
-                            
-                            final_next_act = agent.actor_target.tanh(
-                                agent.actor_target.fc_out(h_next)
-                            ) * agent.actor_target.action_bound
-                            
-                            target_actions.append(final_next_act)
+                            target_actions.append(
+                                agent.actor_target.tanh(agent.actor_target.fc_out(h_next))
+                                * agent.actor_target.action_bound)
 
                     # 2. Prepare critic tensors. The centralized critic consumes RAW
                     #    observations of all agents (paper §V.B), so no feature tensors here.
@@ -501,6 +485,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
 
                     # 4. Update actors and the shared extractor.
                     #    zero_grad the single shared optimizer AND every actor optimizer.
+                    # Freeze critics for the whole actor backward.
+                    for ag in agents:
+                        for p in ag.critic.parameters():
+                            p.requires_grad = False
+
                     shared_optimizer.zero_grad()
                     for agent in agents:
                         agent.actor_optimizer.zero_grad()
@@ -528,6 +517,11 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             agent.actor_private_params, algo_cfg['gradient_clip'])
                         actor_grad_norms.append(a_grad.item())
                         agent.actor_optimizer.step()
+
+                    # Unfreeze for the next critic update.
+                    for ag in agents:
+                        for p in ag.critic.parameters():
+                            p.requires_grad = True
 
                     # 5. Soft Updates
                     agents[0]._soft_update(agents[0].actor_target.shared, agents[0].actor.shared)

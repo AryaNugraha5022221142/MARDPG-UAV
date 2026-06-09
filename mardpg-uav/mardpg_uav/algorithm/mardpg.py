@@ -146,10 +146,6 @@ class MARDPGAgent:
         my_obs_flat = obs_all_seq[:, self.agent_id, :]
         my_obs_seq = my_obs_flat.view(batch_size, total_seq_len, -1)
         my_prev_act_seq = prev_act_all_seq[:, self.agent_id, :].view(batch_size, total_seq_len, -1)
-        
-        # Freeze critic during actor update
-        for p in self.critic.parameters():
-            p.requires_grad = False
             
         # 3. Compute new actions using the current policy (gradients ENABLED)
         # Note: In a strict recurrent setup, you'd pass the hidden state from burn-in here.
@@ -172,10 +168,6 @@ class MARDPGAgent:
         # 7. Compute objective (maximize Q -> minimize -Q)
         eps = 1e-8
         actor_loss = -(q_learn * mask_learn).sum() / (mask_learn.sum() + eps)
-        
-        # Unfreeze critic
-        for p in self.critic.parameters():
-            p.requires_grad = True
             
         return actor_loss
 

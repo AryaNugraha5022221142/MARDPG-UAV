@@ -44,7 +44,13 @@ class RewardFunction:
         # Clearance to nearest other UAV beyond its 2R safety bubble (inter_uav_min = 2R).
         d_uav = min((np.linalg.norm(position - p) for p in other_positions),
                     default=float('inf'))
-        d_min = min(d_obs, d_uav - self.inter_uav_min)
+        # Measure obstacle clearance from the UAV body edge (radius R) so the penalty band
+        # aligns with the collision-termination radius instead of sitting entirely inside it.
+        # The UAV term already references the 2R bubble (d_uav - inter_uav_min); this makes
+        # the obstacle term consistent. Without it, sigma=15 leaves the obstacle penalty ~0
+        # at the 0.5 m termination distance — almost no shaping for walls/static obstacles.
+        d_obs_clear = d_obs - self.collision_radius
+        d_min = min(d_obs_clear, d_uav - self.inter_uav_min)
         d_min = max(0.0, d_min)
 
         r_col = -self.lambda_col * np.exp(-self.sigma_col * d_min)   # paper Eq.(3)

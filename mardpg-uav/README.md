@@ -7,8 +7,8 @@
 This repository implements a **decentralised multi‑agent path planning system** for fixed‑wing‑style UAVs operating in a partially observable 3D environment with static obstacles. The framework uses **Multi‑Agent Recurrent Deterministic Policy Gradient (MARDPG)** under the Centralised Training with Decentralised Execution (CTDE) paradigm, featuring:
 
 - Per‑agent LSTM belief approximation
-- Centralised attention critic with multi‑head self‑attention
-- Gaussian exploration with sigmoid annealing
+- Recurrent FC->LSTM centralized critic
+- Uncorrelated Gaussian noise (constant σ)
 - Per‑agent episode termination (no global collision truncation)
 - Sin/cos attitude encoding (wrap‑free)
 - Action rate limiting for smooth trajectories
@@ -39,9 +39,9 @@ All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathe
 Key sections:
 
 - **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
-- **Observation space** (34‑dim: quaternion attitude (4), previous action (2), 25‑beam lidar, goal vector (3))
+- **Observation space** (32‑dim: sin/cos attitude (4) + 25‑beam lidar + goal vector (3))
 - **Reward function** (progress + collision penalty + separation penalty + free‑space bonus)
-- **Centralised attention critic** (permutation‑invariant Q‑function)
+- **Centralised critic** (permutation‑invariant Q‑function)
 - **Per‑agent termination & validity masking** (for BPTT)
 
 ---
@@ -52,12 +52,12 @@ Key sections:
 |---------|----------------|
 | Multi‑agent RL | MARDPG (deterministic policy gradient, CTDE) |
 | Partial observability | LSTM (hidden size 128) as belief state |
-| Coordination | Centralised critic with scaled dot‑product attention |
-| Exploration | Ornstein‑Uhlenbeck process (`κ=0.15`, annealed `σ`) |
+| Coordination | Recurrent FC->LSTM centralized critic |
+| Exploration | Uncorrelated Gaussian noise (constant σ) |
 | Termination | Per‑agent flags, episode ends only when all agents are done |
-| Observation encoding | Sin/cos for yaw/pitch, previous action feedback |
-| Rate limiting | `δ_max = 0.175 rad/step` for smooth commands |
-| Replay buffer | Episode‑based, FIFO (2000 episodes), BPTT length 50 |
+| Observation encoding | Sin/cos for yaw/pitch |
+| Rate limiting | `δ_max = 0.5236 rad/step` for smooth commands |
+| Replay buffer | Episode‑based, FIFO (10^5 transitions), BPTT length 80 (+10 burn-in) |
 
 ---
 

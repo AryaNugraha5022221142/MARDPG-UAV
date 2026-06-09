@@ -40,11 +40,10 @@ algorithm:
   gradient_clip: 1.0
   n_episodes:   20000
   noise_std:    0.1
-  noise_theta: 0.15
-  noise_sigma: 0.20
+  # noise_theta/sigma unused, we use uncorrelated Gaussian noise
+  # conv_filters unused, hardcoded in shared.py
 
 network:
-  conv_filters:    32
   fc_angle_units:  8
   fc_goal_units:   8
   actor_lstm_hidden: 128
