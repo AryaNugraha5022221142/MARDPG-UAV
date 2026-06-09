@@ -130,6 +130,8 @@ class MultiUAVEnv(gym.Env):
         self.agent_dyn_collided = np.zeros(self.n_agents, dtype=bool)
         self._cached_obs = [None] * self.n_agents
         
+        self.agent_progress_history = [[] for _ in range(self.n_agents)]
+        
         dists = {i: np.linalg.norm(self.agents_state[i, :3] - self.goals[i]) for i in range(self.n_agents)}
         self.reward_fn.reset(list(range(self.n_agents)), dists)
         self.steps = 0
@@ -236,6 +238,10 @@ class MultiUAVEnv(gym.Env):
             self.safe_inter_uav_steps += 1
 
         for i in range(self.n_agents):
+            if not self.agent_done[i]:
+                dist = np.linalg.norm(self.agents_state[i, :3] - self.goals[i])
+                self.agent_progress_history[i].append(dist)
+                
             if self.agent_done[i]:
                 obs_list.append(self._cached_obs[i])
                 
@@ -258,7 +264,7 @@ class MultiUAVEnv(gym.Env):
             
             # Observe we don't save goal_disp here anymore since observation logic moved to _get_single_observation.
             
-            obs = self._get_single_observation(i)
+            obs = self._get_single_observation(i, lidar_norm=rangefinder_norm)
             self._cached_obs[i] = obs
             obs_list.append(obs)
             
@@ -289,6 +295,8 @@ class MultiUAVEnv(gym.Env):
         
         dyn_collisions_copy = self.agent_dyn_collided.copy() if hasattr(self, 'agent_dyn_collided') else np.zeros(self.n_agents, dtype=bool)
 
+        trapped_agents = self.get_trapped_agents() if episode_done else np.zeros(self.n_agents, dtype=bool)
+
         info = {
             'collisions': self.agent_collided.copy(),
             'dyn_collisions': dyn_collisions_copy,
@@ -296,6 +304,7 @@ class MultiUAVEnv(gym.Env):
             'safe_inter_uav_ratio': self.safe_inter_uav_steps / max(1, self.steps),
             'step_collisions': collisions.copy(),
             'step_reached': reached.copy(),
+            'trapped': trapped_agents,
             'timeout': timeout,
             'steps': self.steps,
             'agent_done': self.agent_done.copy(),
@@ -304,16 +313,43 @@ class MultiUAVEnv(gym.Env):
         
         return np.array(obs_list), rewards, episode_done, info
 
-    def _get_single_observation(self, i: int) -> np.ndarray:
+    def get_trapped_agents(self, progress_window: int = 50, progress_threshold: float = 0.5) -> np.ndarray:
+        """
+        Returns boolean array: True if agent is trapped.
+        Trapped = not reached, not collided, and failed to reduce
+        distance to goal by > progress_threshold over the last
+        progress_window steps.
+        
+        Args:
+            progress_window: number of steps to look back
+            progress_threshold: minimum distance reduction (meters) to avoid
+                                being classified as trapped
+        """
+        trapped = np.zeros(self.n_agents, dtype=bool)
+        for i in range(self.n_agents):
+            if self.agent_reached[i] or self.agent_collided[i]:
+                continue  # not trapped — they had a definitive outcome
+            
+            hist = self.agent_progress_history[i]
+            if len(hist) >= progress_window:
+                dist_start = hist[-progress_window]
+                dist_end   = hist[-1]
+                progress   = dist_start - dist_end  # positive = moving toward goal
+                if progress < progress_threshold:
+                    trapped[i] = True
+        return trapped
+
+    def _get_single_observation(self, i: int, lidar_norm: np.ndarray = None) -> np.ndarray:
         pos   = self.agents_state[i, :3]
         theta = self.agents_state[i, 3]
         phi   = self.agents_state[i, 4]
 
-        _, lidar_norm = self.rangefinder.scan(
-            pos, theta, phi, self.obstacles,
-            obs_centers=self.obs_centers,
-            obs_max_sizes=self.obs_max_sizes,
-        )
+        if lidar_norm is None:
+            _, lidar_norm = self.rangefinder.scan(
+                pos, theta, phi, self.obstacles,
+                obs_centers=self.obs_centers,
+                obs_max_sizes=self.obs_max_sizes,
+            )
 
         goal_vec = self.goals[i] - pos
         d5       = np.linalg.norm(goal_vec)

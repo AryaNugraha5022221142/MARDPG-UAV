@@ -98,10 +98,11 @@ def load_config(path: str = "config/default.yaml") -> dict:
         return yaml.safe_load(f)
 
 
-def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_dim=2):
+def select_actions_batch(agents, obs_all, prev_actions, noise_val, v_max, agent_done, action_dim=2):
     # obs_all: (n_agents, obs_dim)
     n = len(agents)
     obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
+    prev_act_tensor = torch.FloatTensor(np.array(prev_actions)).unsqueeze(1).to(agents[0].device)
     
     with torch.no_grad():
         flat = obs_tensor.view(n, -1)
@@ -112,11 +113,14 @@ def select_actions_batch(agents, obs_all, noise_val, v_max, agent_done, action_d
         for i, agent in enumerate(agents):
             if not agent_done[i]:
                 feat_i = shared_feat[i:i+1]
+                prev_act_i = prev_act_tensor[i:i+1]
+                x_i = torch.cat([feat_i, prev_act_i], dim=-1)
+                
                 h_in = agent.actor_hidden if agent.actor_hidden is not None else (
                     torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device),
                     torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device)
                 )
-                lstm_out, h_out = agent.actor.lstm(feat_i, h_in)
+                lstm_out, h_out = agent.actor.lstm(x_i, h_in)
                 act = agent.actor.tanh(agent.actor.fc_out(lstm_out[:, -1, :])) * agent.actor.action_bound
                 agent.actor_hidden = h_out
                 
@@ -292,9 +296,18 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     print(f"Agents: {n_agents}, Device: {device}")
     print("=" * 60)
     
+    import time
     # STORE ORIGINAL DIMENSIONS BEFORE THE LOOP
     original_env_size = list(cfg['environment']['env_size'])
     last_update_step = 0
+    start_time = time.time()
+    steps_done = global_step
+
+    print("=" * 60)
+    print(f"MARDPG-NAV Training | Stage: {cl_manager.current_stage_idx + 1}/6")
+    print("=" * 60, flush=True)
+
+    episode_start_time = time.time()
 
     try:
         for episode in range(start_episode, algo_cfg['n_episodes']):
@@ -329,16 +342,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             actions.append(env.action_space.sample()[i])
                     actions = np.array(actions)
                 else:
-                    actions = []
-                    for i, agent in enumerate(agents):
-                        if env.agent_done[i]:
-                            actions.append(np.zeros(env.action_dim, dtype=np.float32))
-                        else:
-                            act = agent.select_action(obs[i], prev_actions[i], evaluate=False)
-                            act += noise_val[i]
-                            act = np.clip(act, -agent.actor.action_bound, agent.actor.action_bound)
-                            actions.append(act)
-                    actions = np.array(actions)
+                    actions = select_actions_batch(agents, obs, prev_actions, noise_val, v_max, env.agent_done, action_dim)
                 
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
@@ -381,20 +385,21 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
             stats = metrics.get_stats()
             
             # FIX FOR BUG 9: Log both raw and smoothed metrics to match CSV exactly
-            wandb.log({
-                "episode": episode,
-                "ep_reward_raw": float(episode_reward),
-                "ep_length_raw": ep_len,
-                "success_rate_raw": np.mean(info['reached']),
-                "collision_rate_raw": np.mean(info['collisions']),
-                "dyn_collision_rate_raw": np.mean(info.get('dyn_collisions', [])),
-                "smoothed_success_rate": stats['success_rate'],
-                "smoothed_collision_rate": stats['collision_rate'],
-                "smoothed_dyn_collision_rate": stats.get('dyn_collision_rate', 0),
-                "smoothed_trapped_rate": stats['trapped_rate'],
-                "smoothed_avg_reward": stats['avg_reward'],
-                "stage": cl_manager.current_stage_idx
-            }, step=global_step)
+            if episode % 10 == 0:
+                wandb.log({
+                    "episode": episode,
+                    "ep_reward_raw": float(episode_reward),
+                    "ep_length_raw": ep_len,
+                    "success_rate_raw": np.mean(info['reached']),
+                    "collision_rate_raw": np.mean(info['collisions']),
+                    "dyn_collision_rate_raw": np.mean(info.get('dyn_collisions', [])),
+                    "smoothed_success_rate": stats['success_rate'],
+                    "smoothed_collision_rate": stats['collision_rate'],
+                    "smoothed_dyn_collision_rate": stats.get('dyn_collision_rate', 0),
+                    "smoothed_trapped_rate": stats['trapped_rate'],
+                    "smoothed_avg_reward": stats['avg_reward'],
+                    "stage": cl_manager.current_stage_idx
+                }, step=global_step)
             
             # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
             if global_step < algo_cfg.get('warmup_steps', 2000) or len(buffer) < algo_cfg['batch_size']:
@@ -531,16 +536,35 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 if total_grad_steps > 0:
                     wandb.log({k: np.mean(v) for k, v in grad_metrics.items()}, step=global_step)
             
-            # Logging
-            if episode % 100 == 0 and episode > 0:
+            # Logging and update
+            if episode > 0 and episode % 100 == 0:
                 stats = metrics.get_stats()
-                current_noise = noise.sigma
-                print(f"Episode {episode:5d} | "
-                      f"AvgReward: {stats['avg_reward']:7.2f} | "
-                      f"Success: {stats['success_rate']:.2%} | "
-                      f"Collision: {stats['collision_rate']:.2%} | "
-                      f"Length: {stats['avg_episode_length']:5.1f} | "
-                      f"Noise: {current_noise:.3f}")
+                
+                elapsed = time.time() - episode_start_time
+                eps_per_sec = (episode - start_episode) / max(elapsed, 1)
+                steps_per_sec = (global_step - steps_done) / max(time.time() - start_time, 1)
+                
+                start_time = time.time()
+                steps_done = global_step
+
+                remaining_eps = algo_cfg['n_episodes'] - episode
+                eta_hours = remaining_eps / max(eps_per_sec * 3600, 1)
+                
+                print(
+                    f"Ep {episode:6d}/{algo_cfg['n_episodes']} | "
+                    f"Stage {cl_manager.current_stage_idx + 1} ({cl_manager.episodes_in_stage:4d} eps) | "
+                    f"Reward: {stats['avg_reward']:7.2f} | "
+                    f"Success: {stats['success_rate']:.2%} | "
+                    f"Collision: {stats['collision_rate']:.2%} | "
+                    f"Trapped: {stats.get('trapped_rate', 0):.2%} | "
+                    f"Timeout: {stats.get('timeout_rate', 0):.2%} | "
+                    f"Len: {stats['avg_episode_length']:5.1f} | "
+                    f"Buf: {len(buffer):6d} | "
+                    f"Noise: {noise.sigma:.3f} | "
+                    f"{eps_per_sec:.2f} ep/s | "
+                    f"ETA: {eta_hours:.1f}h",
+                    flush=True
+                )
             
             # Save checkpoints
             if episode % 1000 == 0 and episode > 0:

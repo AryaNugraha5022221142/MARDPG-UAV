@@ -13,6 +13,7 @@ class MetricsTracker:
         self.collisions = []
         self.dyn_collisions = []
         self.trapped = []
+        self.timeouts = []
         self.path_efficiencies = []
         self.safe_inter_uav = []
         
@@ -28,8 +29,13 @@ class MetricsTracker:
         self.collisions.append(np.mean(info['collisions']))
         self.dyn_collisions.append(np.mean(info.get('dyn_collisions', np.zeros(n))))
         
-        trapped = [1 for r, c in zip(info['reached'], info['collisions']) if not r and not c]
-        self.trapped.append(sum(trapped) / n)
+        if 'trapped' in info and info['trapped'] is not None:
+            self.trapped.append(np.mean(info['trapped']))
+        else:
+            trapped_count = sum(1 for r, c in zip(info['reached'], info['collisions']) if not r and not c)
+            self.trapped.append(trapped_count / n)
+            
+        self.timeouts.append(float(info.get('timeout', False)))
         
         self.safe_inter_uav.append(info.get('safe_inter_uav_ratio', 1.0))
         
@@ -49,6 +55,7 @@ class MetricsTracker:
             'collision_rate': np.mean(self.collisions[-100:]) if self.collisions else 0.0,
             'dyn_collision_rate': np.mean(self.dyn_collisions[-100:]) if self.dyn_collisions else 0.0,
             'trapped_rate': np.mean(self.trapped[-100:]) if self.trapped else 0.0,
+            'timeout_rate': np.mean(self.timeouts[-100:]) if self.timeouts else 0.0,
             'avg_episode_length': np.mean(self.episode_lengths[-100:]) if self.episode_lengths else 0,
             'path_efficiency': np.mean(self.path_efficiencies[-100:]) if self.path_efficiencies else 0.0,
             'inter_uav_safe': np.mean(self.safe_inter_uav[-100:]) if self.safe_inter_uav else 0.0
@@ -61,6 +68,7 @@ class MetricsTracker:
             'collision_rate': np.mean(self.collisions[-window:]) if self.collisions else 0.0,
             'dyn_collision_rate': np.mean(self.dyn_collisions[-window:]) if self.dyn_collisions else 0.0,
             'trapped_rate': np.mean(self.trapped[-window:]) if self.trapped else 0.0,
+            'timeout_rate': np.mean(self.timeouts[-window:]) if self.timeouts else 0.0,
             'path_efficiency': np.mean(self.path_efficiencies[-window:]) if self.path_efficiencies else 0.0,
             'inter_uav_safe': np.mean(self.safe_inter_uav[-window:]) if self.safe_inter_uav else 0.0
         }

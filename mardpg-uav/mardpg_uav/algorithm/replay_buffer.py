@@ -30,17 +30,15 @@ class SequenceReplayBuffer:
         self.size      = 0
         self._ep_count = 0
         
-        self.valid_starts = set()
+        self.valid_mask = np.zeros(capacity, dtype=bool)
         self._current_ep_len = 0
 
     def add_transition(self, obs, prev_actions, actions, rewards, dones):
         idx = self.ptr
         
         # Invalidate sequences that use the element we are about to overwrite
-        for i in range(self.seq_len):
-            invalid_start = idx - i
-            if invalid_start in self.valid_starts:
-                self.valid_starts.remove(invalid_start)
+        start_invalid = max(0, idx - self.seq_len + 1)
+        self.valid_mask[start_invalid : idx + 1] = False
                 
         self.obs[idx]          = obs
         self.prev_actions[idx] = prev_actions
@@ -54,12 +52,10 @@ class SequenceReplayBuffer:
         if self._current_ep_len >= self.seq_len:
             start_idx = idx - self.seq_len + 1
             if start_idx >= 0:
-                self.valid_starts.add(start_idx)
+                self.valid_mask[start_idx] = True
 
         self.ptr  = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
-        if self.ptr == 0:
-            self._current_ep_len = 0
 
     def end_episode(self):
         self._ep_count += 1
@@ -70,10 +66,11 @@ class SequenceReplayBuffer:
         Sample batch_size windows of length seq_len from the same episode.
         Returns arrays shaped (batch_size, seq_len, ...).
         """
-        if len(self.valid_starts) < batch_size:
+        valid_indices = np.nonzero(self.valid_mask)[0]
+        if len(valid_indices) < batch_size:
             return None
 
-        starts = np.random.choice(list(self.valid_starts), size=batch_size, replace=False)
+        starts = np.random.choice(valid_indices, size=batch_size, replace=False)
         idx_t  = np.stack([np.arange(s, s + self.seq_len) for s in starts])   # (B, T)
 
         def gather(buf):
