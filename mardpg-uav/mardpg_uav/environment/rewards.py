@@ -38,17 +38,24 @@ class RewardFunction:
         self.prev_distances[agent_id] = current_dist
 
         # --- Eq. (3): Collision penalty ---
-        # d_min = min distance to ANY obstacle (static) or UAV (dynamic)
-        d_obs = self._min_obstacle_surface_distance(position, obstacles, obs_centers, obs_max_sizes)
-        d_uav = min(
-            (np.linalg.norm(position - p) for p in other_positions),
-            default=float('inf')
-        )
-        # Paper: R for obstacle, 2R for UAV
-        d_min = min(d_obs - self.collision_radius,
-                    d_uav - self.inter_uav_min)
-        d_min = max(0.0, d_min)
-        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_min)
+        sigma = 15.0
+        safe_dist = 2.0  # Start penalizing when obstacles are within 2 meters
+        crash_dist = 0.2 # Minimum distance before registering a physical crash
+        
+        # Sensors return normalized distances [0, 1]. Multiply by max_range to get meters.
+        sensors_flat = rangefinder_norm.flatten()
+        min_sensor_reading = np.min(sensors_flat)
+        d_min = min_sensor_reading * self.range_max 
+        
+        r_col = 0.0
+        if d_min < safe_dist:
+            if d_min <= crash_dist:
+                r_col = -sigma # Max penalty for actual crash
+            else:
+                k = 3.0 # Tuning parameter for steepness
+                r_col = -sigma * np.exp(-k * (d_min - crash_dist))
+                boundary_offset = np.exp(-k * (safe_dist - crash_dist))
+                r_col = r_col - (-sigma * boundary_offset)
 
         # --- Free space reward ---
         # The rangefinder is a 5x5 grid. Indices:
@@ -58,7 +65,7 @@ class RewardFunction:
         # 15 16 17 18 19
         # 20 21 22 23 24
         
-        r_free = self.r_free if rangefinder_raw.flatten()[10] >= self.range_max else 0.0
+        r_free = self.r_free if rangefinder_raw.flatten()[12] >= self.range_max else 0.0
 
         # --- Step penalty ---
         r_step = self.r_step

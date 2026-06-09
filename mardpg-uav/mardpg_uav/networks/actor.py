@@ -32,5 +32,5 @@ class Actor(nn.Module):
         x = torch.cat([feat, prev_action], dim=-1)
         
         lstm_out, hidden = self.lstm(x, hidden)
-        action  = self.tanh(self.fc_out(lstm_out[:, -1, :])) * self.action_bound
+        action  = self.tanh(self.fc_out(lstm_out)) * self.action_bound
         return action, hidden

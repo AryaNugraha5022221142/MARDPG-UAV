@@ -37,13 +37,15 @@ class MARDPGAgent:
         self.actor_target     = copy.deepcopy(self.actor).to(self.device)
 
         # Single Q critic (paper does not use twin Q)
-        self.critic         = RecurrentCritic(n_agents, obs_dim, action_dim,
+        feature_dim = self.shared_extractor.feature_dim
+        self.critic         = RecurrentCritic(n_agents, feature_dim, action_dim,
                                                fc_hidden, lstm_hidden).to(self.device)
         self.critic_target  = copy.deepcopy(self.critic).to(self.device)
 
-        self.actor_private_params = (list(self.actor.lstm.parameters()) +
-                                     list(self.actor.fc_out.parameters()))
-        self.actor_optimizer  = optim.Adam(self.actor_private_params, lr=lr_actor)
+        self.actor_optimizer  = optim.Adam(
+            list(self.actor.parameters()) + list(self.shared_extractor.parameters()),
+            lr=lr_actor
+        )
         self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
 
         self._hard_update(self.actor_target, self.actor)
@@ -63,12 +65,12 @@ class MARDPGAgent:
             if evaluate:
                 if self.eval_actor_hidden is None:
                     self.eval_actor_hidden = self._init_hidden(1)
-                action, self.eval_actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.eval_actor_hidden)
+                action_seq, self.eval_actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.eval_actor_hidden)
             else:
                 if self.actor_hidden is None:
                     self.actor_hidden = self._init_hidden(1)
-                action, self.actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.actor_hidden)
-            return action[0].cpu().numpy()
+                action_seq, self.actor_hidden = self.actor(obs_tensor, prev_act_tensor, self.actor_hidden)
+            return action_seq[:, -1, :][0].cpu().numpy()
 
     def reset_hidden(self, batch_size: int = 1, eval_mode: bool = False):
         h = self._init_hidden(batch_size)
@@ -119,10 +121,11 @@ class MARDPGAgent:
 
         return critic_loss.item(), q_cur_learn.detach().mean().item(), 0.0
 
-    def compute_actor_loss(self, obs_all_seq: torch.Tensor, act_all_seq: torch.Tensor, prev_act_all_seq: torch.Tensor, mask: torch.Tensor):
+    def compute_actor_loss(self, obs_all_seq: torch.Tensor, feats_all_seq: torch.Tensor, act_all_seq: torch.Tensor, prev_act_all_seq: torch.Tensor, mask: torch.Tensor):
         """
         Computes the deterministic policy gradient.
-        obs_all_seq: (batch*seq, n_agents, obs_dim)
+        obs_all_seq: (batch*seq, n_agents, obs_dim) -> To get raw obs for actor
+        feats_all_seq: (batch*seq, n_agents, feature_dim) -> To get features for critic
         act_all_seq: (batch*seq, n_agents, action_dim) -> Raw actions from replay buffer
         prev_act_all_seq: (batch*seq, n_agents, action_dim) 
         """
@@ -137,6 +140,10 @@ class MARDPGAgent:
         my_obs_seq = my_obs_flat.view(batch_size, total_seq_len, -1)
         my_prev_act_seq = prev_act_all_seq[:, self.agent_id, :].view(batch_size, total_seq_len, -1)
         
+        # Freeze critic during actor update
+        for p in self.critic.parameters():
+            p.requires_grad = False
+            
         # 3. Compute new actions using the current policy (gradients ENABLED)
         # Note: In a strict recurrent setup, you'd pass the hidden state from burn-in here.
         my_actions_seq, _ = self.actor(my_obs_seq, my_prev_act_seq, hidden=None)
@@ -147,7 +154,7 @@ class MARDPGAgent:
         
         # 5. Evaluate the centralized critic
         self.critic.eval()
-        q_flat, _ = self.critic(obs_all_seq, joint_actions, seq_len=total_seq_len) 
+        q_flat, _ = self.critic(feats_all_seq, joint_actions, seq_len=total_seq_len) 
         q_full = q_flat.view(batch_size, total_seq_len)
         
         # 6. Slice off the burn_in
@@ -159,6 +166,10 @@ class MARDPGAgent:
         eps = 1e-8
         actor_loss = -(q_learn * mask_learn).sum() / (mask_learn.sum() + eps)
         
+        # Unfreeze critic
+        for p in self.critic.parameters():
+            p.requires_grad = True
+            
         return actor_loss
 
     def _soft_update(self, target: nn.Module, source: nn.Module):
@@ -175,3 +186,10 @@ class MARDPGAgent:
         self.actor_target.shared = other_agent.actor_target.shared
         if hasattr(self, 'target_shared_extractor'):
             delattr(self, 'target_shared_extractor')
+            
+        # Recreate optimizer to include the new shared parameters
+        lr_actor = self.actor_optimizer.param_groups[0]['lr']
+        self.actor_optimizer = optim.Adam(
+            list(self.actor.parameters()) + list(self.shared_extractor.parameters()),
+            lr=lr_actor
+        )

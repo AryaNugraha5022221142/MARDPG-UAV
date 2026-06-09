@@ -7,11 +7,11 @@ Output: single Q value for agent i.
 import torch, torch.nn as nn
 
 class RecurrentCritic(nn.Module):
-    def __init__(self, n_agents: int, obs_dim: int, action_dim: int,
+    def __init__(self, n_agents: int, feature_dim: int, action_dim: int,
                  fc_hidden: int = 128, lstm_hidden: int = 128):
         super().__init__()
-        # Total input = N * (obs_dim + action_dim)
-        input_dim = n_agents * (obs_dim + action_dim)
+        # Total input = N * (feature_dim + action_dim)
+        input_dim = n_agents * (feature_dim + action_dim)
 
         # FC layers before LSTM (paper: "using the fully-connected layer
         #   of all agents as input to the hidden LSTM layer")

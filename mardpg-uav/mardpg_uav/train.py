@@ -166,6 +166,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
 
     
     env_cfg = cfg['environment']
+    env_cfg['seed'] = seed
     algo_cfg = cfg['algorithm']
     net_cfg = cfg['network']
     
@@ -173,14 +174,17 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     env = MultiUAVEnv(env_cfg)
     n_agents = env_cfg['n_agents']
     
+    obs_dim = 32
+    action_dim = env.action_dim
+    
     # Initialize agents with parameter sharing
     agents: List[MARDPGAgent] = []
     for i in range(n_agents):
         agent = MARDPGAgent(
             agent_id=i,
             n_agents=n_agents,
-            obs_dim=30,
-            action_dim=2,
+            obs_dim=obs_dim,
+            action_dim=action_dim,
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
             fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
@@ -197,8 +201,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
     # Share parameters in lower layers (Section 10.1)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
-    
-    shared_optimizer = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
         
     start_episode = 0
     if resume_dir:
@@ -223,8 +225,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     try:
                         shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
                         agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
-                        if i == 0 and 'shared_opt' in shared_ckpt:
-                            shared_optimizer.load_state_dict(shared_ckpt['shared_opt'])
                     except Exception:
                         pass
                 agent.actor.load_state_dict(checkpoint['actor_private'], strict=False)
@@ -254,12 +254,12 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len'] + algo_cfg.get('burn_in', 10),
         n_agents=n_agents,
-        obs_dim=30,
-        action_dim=2
+        obs_dim=obs_dim,
+        action_dim=action_dim
     )
     noise = GaussianNoise(
         n_agents=n_agents,
-        action_dim=2,
+        action_dim=action_dim,
         sigma=algo_cfg.get('noise_std', 0.1)
     )
     
@@ -400,7 +400,7 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                 
                 grad_metrics = {
                     "actor_loss": [], "critic_loss": [], "q_vals": [],
-                    "critic_grad_norm": [], "shared_grad_norm": [], "actor_grad_norm": []
+                    "critic_grad_norm": [], "actor_grad_norm": []
                 }
                 for _ in range(total_grad_steps):
                     batch = buffer.sample(algo_cfg['batch_size'])
@@ -443,9 +443,10 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                             
                             target_actions.append(final_next_act)
 
-                    # 2. Prepare Critic Tensors (Now passing observations directly)
+                    # 2. Prepare Tensors
                     obs_all = batch_obs.reshape(batch_size * seq_len, n_agents, -1)
-                    next_obs_all = batch_obs_next.reshape(batch_size * seq_len, n_agents, -1)
+                    feats_all = all_feats.permute(0, 2, 1, 3).reshape(batch_size * seq_len, n_agents, -1).detach()
+                    next_feats_all = all_feats_next.permute(0, 2, 1, 3).reshape(batch_size * seq_len, n_agents, -1)
                     next_act_all = torch.stack([a.reshape(batch_size*seq_len, -1) for a in target_actions], dim=1)
                     act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
 
@@ -469,33 +470,34 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
                         # Capture criticize loss
-                        c_loss, q_val, c_grad = agent.update_critic(obs_all, act_all, next_obs_all, next_act_all, 
+                        c_loss, q_val, c_grad = agent.update_critic(feats_all, act_all, next_feats_all, next_act_all, 
                                             batch_rewards, batch_dones, seq_len, mask_i)
                         c_losses.append(c_loss)
                         q_vals.append(q_val)
                         c_grad_norms.append(c_grad)
 
                     # 4. Update Actors & Shared Extractor (Fix Bug 6 - Order of zero_grad)
-                    shared_optimizer.zero_grad()
                     for agent in agents: agent.actor_optimizer.zero_grad()
                     
                     actor_losses = []
+                    feats_all_attached = all_feats.permute(0, 2, 1, 3).reshape(batch_size * seq_len, n_agents, -1)
+                    
                     for i, agent in enumerate(agents):
                         mask_i = agent_mask[:, :, i]
                         prev_act_all = batch_prev_actions.reshape(batch_size * seq_len, n_agents, -1)
-                        # Pass obs_all and raw act_all directly to actor_loss
-                        actor_losses.append(agent.compute_actor_loss(obs_all, act_all, prev_act_all, mask_i))
+                        # Pass obs_all, feats_all_attached and raw act_all directly to actor_loss
+                        actor_losses.append(agent.compute_actor_loss(obs_all, feats_all_attached, act_all, prev_act_all, mask_i))
 
                     # Aggregate actor losses and backprop ONE time through shared components
                     total_actor_loss = sum(actor_losses) / n_agents
                     total_actor_loss.backward()
                     
-                    shared_grad_norm = torch.nn.utils.clip_grad_norm_(agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
-                    shared_optimizer.step()
-                    
                     actor_grad_norms = []
                     for agent in agents:
-                        a_grad = torch.nn.utils.clip_grad_norm_(agent.actor_private_params, algo_cfg['gradient_clip'])
+                        a_grad = torch.nn.utils.clip_grad_norm_(
+                            list(agent.actor.parameters()) + list(agent.shared_extractor.parameters()), 
+                            algo_cfg['gradient_clip']
+                        )
                         actor_grad_norms.append(a_grad.item())
                         agent.actor_optimizer.step()
 
@@ -510,7 +512,6 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     grad_metrics["critic_loss"].append(np.mean(c_losses))
                     grad_metrics["q_vals"].append(np.mean(q_vals))
                     grad_metrics["critic_grad_norm"].append(np.mean(c_grad_norms))
-                    grad_metrics["shared_grad_norm"].append(shared_grad_norm.item())
                     grad_metrics["actor_grad_norm"].append(np.mean(actor_grad_norms))
                 
                 if total_grad_steps > 0:

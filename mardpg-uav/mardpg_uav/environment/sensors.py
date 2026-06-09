@@ -12,14 +12,13 @@ class Rangefinder:
         self.n_h = 5
         self.n_v = 5
 
-        # Fixed world-frame azimuths (uniform 360° coverage)
-        h_angles = np.linspace(0, 2 * np.pi, self.n_h, endpoint=False)
-        # Elevation angles: ±90° (hemispherical/spherical)
-        v_angles = np.linspace(-np.pi / 2, np.pi / 2, self.n_v)
+        yaw_angles = np.linspace(-np.pi/3, np.pi/3, self.n_h)
+        # Pitch: -30 degrees to +30 degrees (-pi/6 to pi/6)
+        pitch_angles = np.linspace(-np.pi/6, np.pi/6, self.n_v)
 
-        yaw_grid = np.broadcast_to(h_angles, (self.n_v, self.n_h)).flatten()
+        yaw_grid = np.broadcast_to(yaw_angles, (self.n_v, self.n_h)).flatten()
         pitch_grid = np.broadcast_to(
-            v_angles[:, None], (self.n_v, self.n_h)).flatten()
+            pitch_angles[:, None], (self.n_v, self.n_h)).flatten()
 
         # Pre-compute and cache unit direction vectors (25, 3) — constant
         self._dir_vecs = np.stack([

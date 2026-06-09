@@ -332,7 +332,11 @@ class MultiUAVEnv(gym.Env):
         else:
             varpi = varpi_z = 0.0
 
-        xi  = np.array([d5, varpi, varpi_z], dtype=np.float32)
+        # Normalize distance
+        arena_diag = np.sqrt(sum(s**2 for s in self.cfg['env_size']))
+        d5_norm = d5 / arena_diag 
+        
+        xi  = np.array([d5_norm, varpi, varpi_z], dtype=np.float32)
         obs = np.concatenate([
             [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],
             lidar_norm.flatten(),
