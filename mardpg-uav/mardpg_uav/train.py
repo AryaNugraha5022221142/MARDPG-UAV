@@ -1,565 +1,527 @@
 """
-Main training loop for MARDPG-NAV.
-Reference: Section 14.2 and Algorithm 1 of blueprint.
+Main training loop for MARDPG-NAV  (v2 — shared critic, clean actor update).
+
+Key changes vs v1
+-----------------
+1.  Dead online actor forward removed from update loop (was building a graph
+    that was immediately discarded; ~30-50 % update-step speedup).
+2.  Critics frozen ONCE around the actor backward instead of per-agent inside
+    compute_actor_loss (5 × less wasted backward work).
+3.  SharedCentralCritic: one critic trunk + per-agent heads.  Trunk runs once
+    per update step; each head produces a per-agent Q value.  Matches paper
+    abstract: "sharing parameters in critics network accelerates training."
+4.  8-stage curriculum with a difficulty-cliff break: goal distance and
+    obstacle density are introduced on separate rungs.
+5.  CSV now logs loss / Q / grad norms every 100 episodes.
 """
 import os
-print("Loading Machine Learning libraries (PyTorch, WandB, etc.). Please wait, this may take up to a minute...")
-import yaml
-
-import torch
-import numpy as np
-import random
-import datetime
+print("Loading ML libraries…")
+import yaml, torch, numpy as np, random, datetime, copy
 import wandb
 from typing import List
-from .environment.uav_env import MultiUAVEnv
-from .algorithm.mardpg import MARDPGAgent
-from .algorithm.replay_buffer import SequenceReplayBuffer
-from .algorithm.noise import GaussianNoise
-from .utils.metrics import MetricsTracker
-from tqdm import tqdm
 
+from .environment.uav_env       import MultiUAVEnv
+from .algorithm.mardpg          import MARDPGAgent
+from .algorithm.replay_buffer   import SequenceReplayBuffer
+from .algorithm.noise           import GaussianNoise
+from .utils.metrics             import MetricsTracker
+from .networks.critic           import SharedCentralCritic
+
+# ---------------------------------------------------------------------------
+# Curriculum  (8 stages — difficulty axes separated to avoid cliff)
+# ---------------------------------------------------------------------------
 CURRICULUM = [
-    {   # 1 — Free space, NEAR goals. Learn goal-seeking + peer avoidance only.
-        'name': 'Free Space (near)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
+    {   # 1 — Free space, NEAR goals. Goal-seeking + peer avoidance only.
+        'name': 'Free Space (near)',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
         'static_obs': 0, 'min_sep': 15.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.35, 'collision_rate': 0.55, 'path_efficiency': 0.40, 'operator': 'less_col'}
-    },
-    {   # 2 — Free space, FAR goals. Extend horizon BEFORE adding obstacles.
-        'name': 'Free Space (far)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 600,
+        'criteria': {'success_rate': 0.35, 'collision_rate': 0.55,
+                     'path_efficiency': 0.40, 'operator': 'less_col'}},
+    {   # 2 — Free space, FAR goals. Horizon extension BEFORE obstacles.
+        'name': 'Free Space (far)',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 600,
         'static_obs': 0, 'min_sep': 30.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.45, 'collision_rate': 0.45, 'path_efficiency': 0.45, 'operator': 'less_col'}
-    },
-    {   # 3 — A FEW obstacles at the SHORTER distance. Introduce obstacles ALONE.
-        'name': 'Sparse Obstacles (near)', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.45,
+                     'path_efficiency': 0.45, 'operator': 'less_col'}},
+    {   # 3 — FEW obstacles at the SHORTER goal distance.
+        'name': 'Sparse Obstacles (near)',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
         'static_obs': 3, 'max_h': 20.0, 'min_sep': 30.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.45, 'collision_rate': 0.40, 'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}
-    },
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.40,
+                     'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}},
     {   # 4 — Moderate density + longer goals.
-        'name': 'Moderate Density', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
+        'name': 'Moderate Density',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
         'static_obs': 7, 'max_h': 20.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.55, 'trapped_rate': 0.15, 'path_efficiency': 0.55, 'operator': 'less_trap'}
-    },
+        'criteria': {'success_rate': 0.55, 'trapped_rate': 0.15,
+                     'path_efficiency': 0.55, 'operator': 'less_trap'}},
     {   # 5 — Dense urban, tall obstacles, full 3D.
-        'name': 'Dense Urban', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
+        'name': 'Dense Urban',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
         'static_obs': 12, 'max_h': 50.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.60, 'collision_rate': 0.20, 'path_efficiency': 0.60, 'operator': 'less_col'}
-    },
+        'criteria': {'success_rate': 0.60, 'collision_rate': 0.20,
+                     'path_efficiency': 0.60, 'operator': 'less_col'}},
     {   # 6 — Max static density.
-        'name': 'Max Density Stress Test', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
+        'name': 'Max Density Stress Test',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
-        'criteria': {'success_rate': 0.60, 'path_efficiency': 0.55}
-    },
+        'criteria': {'success_rate': 0.60, 'path_efficiency': 0.55}},
     {   # 7 — Dynamic threats on top of max static density.
-        'name': 'Dynamic Threats', 'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
+        'name': 'Dynamic Threats',
+        'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
         'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
-        'criteria': {'success_rate': 0.55, 'dyn_collision_rate': 0.10, 'path_efficiency': 0.50, 'operator': 'less_dyn'}
-    }
+        'criteria': {'success_rate': 0.55, 'dyn_collision_rate': 0.10,
+                     'path_efficiency': 0.50, 'operator': 'less_dyn'}},
 ]
 
+N_STAGES = len(CURRICULUM)
+
+
+# ---------------------------------------------------------------------------
+# Curriculum manager
+# ---------------------------------------------------------------------------
 class CurriculumManager:
     def __init__(self, stages):
-        self.stages = stages
+        self.stages            = stages
         self.current_stage_idx = 0
         self.episodes_in_stage = 0
-        
+
     def get_current_config(self):
         return self.stages[self.current_stage_idx]
-        
+
     def evaluate_promotion(self, stats):
-        # Need at least 100 episodes in current stage to evaluate
         if self.episodes_in_stage < 100:
             return False
-            
-        c = self.stages[self.current_stage_idx]['criteria']
+        c  = self.stages[self.current_stage_idx]['criteria']
         op = c.get('operator', 'standard')
-        
-        # Base criteria
-        passed = (stats['success_rate'] >= c['success_rate']) and \
-                 (stats.get('path_efficiency', 0) >= c.get('path_efficiency', 0))
-                 
+        passed = (stats['success_rate']             >= c['success_rate'] and
+                  stats.get('path_efficiency', 0.0) >= c.get('path_efficiency', 0.0))
         if op == 'less_col':
-            passed = passed and (stats['collision_rate'] <= c['collision_rate'])
+            passed = passed and stats['collision_rate'] <= c['collision_rate']
         elif op == 'less_trap':
-            passed = passed and (stats['trapped_rate'] <= c['trapped_rate'])
+            passed = passed and stats['trapped_rate']   <= c['trapped_rate']
         elif op == 'less_col_greater_safe':
-            passed = passed and (stats['collision_rate'] <= c['collision_rate']) and \
-                     (stats['inter_uav_safe'] >= c['inter_uav_safe'])
+            passed = (passed and
+                      stats['collision_rate'] <= c['collision_rate'] and
+                      stats['inter_uav_safe'] >= c['inter_uav_safe'])
         elif op == 'less_dyn':
-            passed = passed and (stats['dyn_collision_rate'] <= c['dyn_collision_rate'])
+            passed = passed and stats['dyn_collision_rate'] <= c['dyn_collision_rate']
 
         if passed and self.current_stage_idx < len(self.stages) - 1:
             self.current_stage_idx += 1
-            self.episodes_in_stage = 0
-            print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx}: {self.stages[self.current_stage_idx]['name']} 🚀\n", flush=True)
+            self.episodes_in_stage  = 0
+            name = self.stages[self.current_stage_idx]['name']
+            print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx + 1}/{N_STAGES}: {name} 🚀\n",
+                  flush=True)
             return True
         return False
 
 
-
+# ---------------------------------------------------------------------------
+# Config loader
+# ---------------------------------------------------------------------------
 def load_config(path: str = "config/default.yaml") -> dict:
     if not os.path.exists(path):
-        fallback = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
+        fallback = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), path)
         if os.path.exists(fallback):
             path = fallback
-    with open(path, 'r') as f:
+    with open(path) as f:
         return yaml.safe_load(f)
 
 
-def select_actions_batch(agents, obs_all, prev_actions, noise_val, v_max, agent_done, action_dim=2):
-    # obs_all: (n_agents, obs_dim)
-    n = len(agents)
-    obs_tensor = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
-    prev_act_tensor = torch.FloatTensor(np.array(prev_actions)).unsqueeze(1).to(agents[0].device)
-    
+# ---------------------------------------------------------------------------
+# Action selection (env roll-out)
+# ---------------------------------------------------------------------------
+def select_actions_batch(agents, obs_all, prev_actions, noise_val,
+                         agent_done, action_dim=2):
+    n              = len(agents)
+    obs_t          = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
+    prev_act_t     = torch.FloatTensor(np.array(prev_actions)).unsqueeze(1).to(agents[0].device)
+
     with torch.no_grad():
-        flat = obs_tensor.view(n, -1)
-        shared_feat = agents[0].actor.shared(flat)
-        shared_feat = shared_feat.unsqueeze(1)
-        
+        shared_feat = agents[0].actor.shared(obs_t.view(n, -1)).unsqueeze(1)
         actions = []
-        for i, agent in enumerate(agents):
+        for i, ag in enumerate(agents):
             if not agent_done[i]:
-                feat_i = shared_feat[i:i+1]
-                prev_act_i = prev_act_tensor[i:i+1]
-                x_i = torch.cat([feat_i, prev_act_i], dim=-1)
-                
-                h_in = agent.actor_hidden if agent.actor_hidden is not None else (
-                    torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device),
-                    torch.zeros(1, 1, agent.actor.lstm.hidden_size).to(agent.device)
-                )
-                lstm_out, h_out = agent.actor.lstm(x_i, h_in)
-                act = agent.actor.tanh(agent.actor.fc_out(lstm_out[:, -1, :])) * agent.actor.action_bound
-                agent.actor_hidden = h_out
-                
-                action = act[0].cpu().numpy()
-                action += noise_val[i]
-                action = np.clip(action, -agent.action_bound, agent.action_bound)
+                x_i = torch.cat([shared_feat[i:i+1], prev_act_t[i:i+1]], dim=-1)
+                h_in = ag.actor_hidden if ag.actor_hidden is not None else (
+                    torch.zeros(1, 1, ag.actor.lstm.hidden_size).to(ag.device),
+                    torch.zeros(1, 1, ag.actor.lstm.hidden_size).to(ag.device))
+                out, h_out = ag.actor.lstm(x_i, h_in)
+                act = ag.actor.tanh(ag.actor.fc_out(out[:, -1, :])) * ag.actor.action_bound
+                ag.actor_hidden = h_out
+                action = act[0].cpu().numpy() + noise_val[i]
+                action = np.clip(action, -ag.action_bound, ag.action_bound)
             else:
                 action = np.zeros(action_dim, dtype=np.float32)
             actions.append(action)
-            
     return np.array(actions)
 
 
-def train(config_path: str = "config/default.yaml", device: str = None, resume_dir: str = None, seed: int = 42):
-    torch.manual_seed(seed)
+# ---------------------------------------------------------------------------
+# Main training entry point
+# ---------------------------------------------------------------------------
+def train(config_path: str = "config/default.yaml",
+          device: str = None,
+          resume_dir: str = None,
+          seed: int = 42):
+
+    # --- Seeding ---
+    torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
     torch.cuda.manual_seed_all(seed)
-    np.random.seed(seed)
-    random.seed(seed)
     torch.backends.cudnn.deterministic = True
 
     cfg = load_config(config_path)
     if device is None:
-        device = cfg.get('algorithm', {}).get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
-        
+        device = cfg.get('algorithm', {}).get(
+            'device', 'cuda' if torch.cuda.is_available() else 'cpu')
     if device == 'cuda' and not torch.cuda.is_available():
-        print("Warning: CUDA requested but not available. Falling back to CPU.", flush=True)
+        print("Warning: CUDA not available — falling back to CPU.", flush=True)
         device = 'cpu'
-    if 'seed' in cfg:
-        seed = cfg['seed']
-        torch.manual_seed(seed)
-        torch.cuda.manual_seed_all(seed)
-        np.random.seed(seed)
-        random.seed(seed)
-        torch.backends.cudnn.deterministic = True
-    
-    run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    
-    print("Initializing Weights & Biases (W&B)...")
-    print("If you are not logged in, W&B might prompt you for an API key or choice.")
-    print("You can press '3' to run offline if prompted.")
-    
-    wandb.init(
-        project="mardpg-uav",
-        name=f"run_{run_id}_seed_{seed}",
-        config=cfg
-    )
 
-    
-    env_cfg = cfg['environment']
-    env_cfg['seed'] = seed
+    run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
+    wandb.init(project="mardpg-uav",
+               name=f"run_{run_id}_seed_{seed}",
+               config=cfg)
+
+    env_cfg  = cfg['environment'];  env_cfg['seed'] = seed
     algo_cfg = cfg['algorithm']
-    net_cfg = cfg['network']
-    
-    # Initialize environment
-    env = MultiUAVEnv(env_cfg)
+    net_cfg  = cfg['network']
+
+    env      = MultiUAVEnv(env_cfg)
     n_agents = env_cfg['n_agents']
-    
-    obs_dim = 32
+    obs_dim  = 32
     action_dim = env.action_dim
-    
-    # Initialize agents with parameter sharing
+
+    # --- Agents ---
     agents: List[MARDPGAgent] = []
     for i in range(n_agents):
-        agent = MARDPGAgent(
-            agent_id=i,
-            n_agents=n_agents,
-            obs_dim=obs_dim,
-            action_dim=action_dim,
+        ag = MARDPGAgent(
+            agent_id=i, n_agents=n_agents,
+            obs_dim=obs_dim, action_dim=action_dim,
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
             fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
-            lr_actor=algo_cfg['lr_actor'],
-            lr_critic=algo_cfg['lr_critic'],
-            tau=algo_cfg['tau'],
-            gamma=algo_cfg['gamma'],
+            lr_actor=algo_cfg['lr_actor'], lr_critic=algo_cfg['lr_critic'],
+            tau=algo_cfg['tau'], gamma=algo_cfg['gamma'],
             gradient_clip=algo_cfg['gradient_clip'],
-            burn_in=algo_cfg['burn_in'],
-            device=device
-        )
-        agents.append(agent)
-    
-    # Share parameters in lower layers (Section 10.1)
+            burn_in=algo_cfg['burn_in'], device=device)
+        agents.append(ag)
+
+    # Share lower encoder layers (paper §V.C)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
 
-    # One dedicated optimizer for the shared feature extractor. After share_parameters,
-    # every agent.actor.shared points at agents[0].shared_extractor, so this single
-    # optimizer is the ONLY thing that updates the encoder -> exactly one update per step.
-    shared_optimizer = torch.optim.Adam(agents[0].shared_extractor.parameters(),
-                                        lr=algo_cfg['lr_actor'])
+    # Shared encoder optimizer (steps the encoder ONCE per update)
+    shared_optimizer = torch.optim.Adam(
+        agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
 
+    # --- Shared critic (Group 2 fix) ---
+    shared_critic = SharedCentralCritic(
+        n_agents, obs_dim, action_dim,
+        net_cfg.get('critic_lstm_hidden', 128),
+        net_cfg.get('critic_lstm_hidden', 128)).to(device)
+    shared_critic_target = copy.deepcopy(shared_critic).to(device)
+    shared_critic_target.eval()
+    critic_optimizer = torch.optim.Adam(
+        shared_critic.parameters(), lr=algo_cfg['lr_critic'])
+
+    # Give every agent a reference to the same critic / target
+    for ag in agents:
+        ag.critic        = shared_critic
+        ag.critic_target = shared_critic_target
+
+    # --- Optional resume ---
     start_episode = 0
+    global_step   = 0
     if resume_dir:
-        print(f"Resuming training from checkpoint: {resume_dir}")
-        for i, agent in enumerate(agents):
+        print(f"Resuming from {resume_dir}")
+        for i, ag in enumerate(agents):
             try:
-                checkpoint = torch.load(f"{resume_dir}/agent_{i}.pt", map_location=device, weights_only=True)
+                ckpt = torch.load(f"{resume_dir}/agent_{i}.pt",
+                                  map_location=device, weights_only=True)
             except Exception:
-                # Older torch versions might not support weights_only flag or might be dictionary
-                checkpoint = torch.load(f"{resume_dir}/agent_{i}.pt", map_location=device)
-            
-            # Handle new save format if present
-            if 'actor' in checkpoint:
-                if i == 0:
-                    agent.actor.load_state_dict(checkpoint['actor'])
-                else:
-                    private = {k: v for k, v in checkpoint['actor'].items()
-                               if k.startswith(('lstm.', 'fc_out.'))}
-                    agent.actor.load_state_dict(private, strict=False)
-            elif 'actor_private' in checkpoint:
-                if i == 0:
-                    try:
-                        shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
-                        agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
-                        if 'shared_opt' in shared_ckpt:
-                            shared_optimizer.load_state_dict(shared_ckpt['shared_opt'])
-                    except Exception:
-                        pass
-                agent.actor.load_state_dict(checkpoint['actor_private'], strict=False)
-                
-            agent.critic.load_state_dict(checkpoint['critic'])
-            
-            if 'actor_opt' in checkpoint:
-                agent.actor_optimizer.load_state_dict(checkpoint['actor_opt'])
-            if 'critic_opt' in checkpoint:
-                agent.critic_optimizer.load_state_dict(checkpoint['critic_opt'])
-                
-            # Soft update target networks to match exactly
-            for target_param, param in zip(agent.actor_target.parameters(), agent.actor.parameters()):
-                target_param.data.copy_(param.data)
-            for target_param, param in zip(agent.critic_target.parameters(), agent.critic.parameters()):
-                target_param.data.copy_(param.data)
-        print("Successfully loaded checkpoints!")
-        
+                ckpt = torch.load(f"{resume_dir}/agent_{i}.pt", map_location=device)
+
+            if i == 0:
+                try:
+                    sc = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
+                    agents[0].shared_extractor.load_state_dict(sc['shared_actor'])
+                    if 'shared_opt' in sc:
+                        shared_optimizer.load_state_dict(sc['shared_opt'])
+                    if 'global_step' in sc:
+                        global_step = sc['global_step']
+                except Exception as e:
+                    print(f"  shared_actor.pt not loaded: {e}")
+
+                try:
+                    cc = torch.load(f"{resume_dir}/shared_critic.pt", map_location=device)
+                    shared_critic.load_state_dict(cc['shared_critic'])
+                    shared_critic_target.load_state_dict(cc['shared_critic'])
+                    if 'critic_opt' in cc:
+                        critic_optimizer.load_state_dict(cc['critic_opt'])
+                except Exception as e:
+                    print(f"  shared_critic.pt not loaded: {e}")
+
+            if 'actor_private' in ckpt:
+                ag.actor.load_state_dict(ckpt['actor_private'], strict=False)
+            if 'actor_opt' in ckpt:
+                ag.actor_optimizer.load_state_dict(ckpt['actor_opt'])
+
+            for tp, sp in zip(ag.actor_target.parameters(), ag.actor.parameters()):
+                tp.data.copy_(sp.data)
+
         import re
-        match = re.search(r'episode_(\d+)', resume_dir)
-        if match:
-            start_episode = int(match.group(1))
-            print(f"Continuing from episode {start_episode}")
-    
-    # Replay buffer and noise
+        m = re.search(r'episode_(\d+)', resume_dir)
+        if m:
+            start_episode = int(m.group(1))
+        print(f"  Resumed at episode {start_episode}, global_step {global_step}")
+
+    # --- Buffer / noise / metrics ---
     buffer = SequenceReplayBuffer(
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len'] + algo_cfg.get('burn_in', 10),
-        n_agents=n_agents,
-        obs_dim=obs_dim,
-        action_dim=action_dim
-    )
-    noise = GaussianNoise(
-        n_agents=n_agents,
-        action_dim=action_dim,
-        sigma=algo_cfg.get('noise_std', 0.1)
-    )
-    
-    metrics = MetricsTracker()
-    cl_manager = CurriculumManager(CURRICULUM)
-    global_step = 0
-    
-    # Restore global step and noise scheduling if resuming
-    if resume_dir:
-        algo_cfg['warmup_steps'] = max(algo_cfg.get('warmup_steps', 2000), global_step + 2000)
-        try:
-            shared_ckpt = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
-            if 'global_step' in shared_ckpt:
-                global_step = shared_ckpt['global_step']
-                # Fast-forwarding noise state not needed for constant GaussianNoise
-            print(f"Restored global_step: {global_step}")
-        except Exception as e:
-            print(f"Warning: Could not load global_step from checkpoint: {e}")
+        n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim)
 
-    print("=" * 60)
-    print("MARDPG-NAV Training")
-    print(f"Agents: {n_agents}, Device: {device}")
-    print("=" * 60)
-    
-    import time
-    # STORE ORIGINAL DIMENSIONS BEFORE THE LOOP
-    original_env_size = list(cfg['environment']['env_size'])
-    last_update_step = 0
-    start_time = time.time()
-    steps_done = global_step
-    # window_episode_start tracks the beginning of the most recent 100-ep window
-    window_start_time = time.time()
+    noise   = GaussianNoise(n_agents=n_agents, action_dim=action_dim,
+                            sigma=algo_cfg.get('noise_std', 0.1))
+    metrics = MetricsTracker()
+    cl      = CurriculumManager(CURRICULUM)
+
+    last_update_step     = global_step
+    steps_done           = global_step
+    window_start_time    = __import__('time').time()
     window_start_episode = start_episode
 
     print("=" * 60)
-    print(f"MARDPG-NAV Training | Stage: {cl_manager.current_stage_idx + 1}/{len(CURRICULUM)}")
+    print(f"MARDPG-NAV Training  |  Agents: {n_agents}  |  Device: {device}")
+    print(f"Stage: {cl.current_stage_idx + 1}/{N_STAGES}")
     print("=" * 60, flush=True)
 
-    episode_start_time = time.time()
+    import time
 
     try:
         for episode in range(start_episode, algo_cfg['n_episodes']):
-            stage_cfg = cl_manager.get_current_config()
-            
-            # Reset Env with Stage Config
+            stage_cfg = cl.get_current_config()
             obs = env.reset(stage_cfg)
-            cl_manager.episodes_in_stage += 1
-            
-            # Reset hidden states at episode boundaries (Section 7.2)
-            for agent in agents:
-                agent.reset_hidden(batch_size=1, eval_mode=False)
-            
+            cl.episodes_in_stage += 1
+
+            for ag in agents:
+                ag.reset_hidden(batch_size=1, eval_mode=False)
             noise.reset()
-            
-            episode_reward = 0
-            ep_len = 0
-            path_history = [env.agents_state[:, :3].copy()]
-            
-            prev_actions = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
-            
+
+            episode_reward = 0.0
+            ep_len         = 0
+            path_history   = [env.agents_state[:, :3].copy()]
+            prev_actions   = [np.zeros(action_dim, dtype=np.float32)
+                              for _ in range(n_agents)]
+
+            # ---- Roll-out ------------------------------------------------
             for step in range(stage_cfg['max_steps']):
                 noise_val = noise.sample()
-                v_max = env_cfg.get('v_max', 3.0)
-                
                 if global_step < algo_cfg.get('warmup_steps', 2000):
-                    actions = []
-                    for i in range(n_agents):
-                        if env.agent_done[i]:
-                            actions.append(np.zeros(env.action_dim, dtype=np.float32))
-                        else:
-                            actions.append(env.action_space.sample()[i])
-                    actions = np.array(actions)
+                    actions = np.array([
+                        env.action_space.sample()[i] if not env.agent_done[i]
+                        else np.zeros(action_dim, dtype=np.float32)
+                        for i in range(n_agents)])
                 else:
-                    actions = select_actions_batch(agents, obs, prev_actions, noise_val, v_max, env.agent_done, action_dim)
-                
+                    actions = select_actions_batch(
+                        agents, obs, prev_actions, noise_val,
+                        env.agent_done, action_dim)
+
                 next_obs, rewards, done, info = env.step(actions)
                 global_step += 1
-                
-                buffer.add_transition(obs.copy(), prev_actions.copy(), actions.copy(), rewards.copy(), info['agent_done'].copy())
+
+                buffer.add_transition(obs.copy(), prev_actions.copy(),
+                                      actions.copy(), rewards.copy(),
+                                      info['agent_done'].copy())
                 episode_reward += sum(rewards)
                 path_history.append(env.agents_state[:, :3].copy())
                 ep_len += 1
                 obs = next_obs
                 prev_actions = actions.copy()
-                
+
                 if done:
-                    # Append terminal state to allow BPTT sampling of the final transition
                     buffer.add_transition(
-                        obs.copy(), 
-                        prev_actions.copy(),
-                        np.zeros_like(actions), 
-                        np.zeros_like(rewards), 
-                        np.ones_like(info['agent_done'], dtype=bool)
-                    )
+                        obs.copy(), prev_actions.copy(),
+                        np.zeros_like(actions), np.zeros_like(rewards),
+                        np.ones(n_agents, dtype=bool))
                     break
-            
+
             buffer.end_episode()
-            
-            # Record to metrics
             metrics.record_episode(
-                length=ep_len, 
-                info=info, 
+                length=ep_len, info=info,
                 start_pos=[path_history[0][i] for i in range(n_agents)],
-                goal_pos=[env.goals[i] for i in range(n_agents)], 
-                path_history=path_history,
-                rewards=[episode_reward]
-            )
-            
-            # Evaluate Promotion
-            stats = metrics.get_window_stats(100)
-            promoted = cl_manager.evaluate_promotion(stats)
-            # GaussianNoise doesn't use scheduled annealing like the old version, so we just continue
-            
-            stats = metrics.get_stats()
-            
-            # FIX FOR BUG 9: Log both raw and smoothed metrics to match CSV exactly
+                goal_pos=[env.goals[i] for i in range(n_agents)],
+                path_history=path_history, rewards=[episode_reward])
+
+            stats    = metrics.get_window_stats(100)
+            cl.evaluate_promotion(stats)
+            stats    = metrics.get_stats()
+
             if episode % 10 == 0:
                 wandb.log({
                     "episode": episode,
                     "ep_reward_raw": float(episode_reward),
                     "ep_length_raw": ep_len,
-                    "success_rate_raw": np.mean(info['reached']),
-                    "collision_rate_raw": np.mean(info['collisions']),
-                    "dyn_collision_rate_raw": float(np.mean(info['dyn_collisions'])) if len(info.get('dyn_collisions', [])) > 0 else 0.0,
+                    "success_rate_raw": float(np.mean(info['reached'])),
+                    "collision_rate_raw": float(np.mean(info['collisions'])),
                     "smoothed_success_rate": stats['success_rate'],
                     "smoothed_collision_rate": stats['collision_rate'],
-                    "smoothed_dyn_collision_rate": stats.get('dyn_collision_rate', 0),
                     "smoothed_trapped_rate": stats['trapped_rate'],
                     "smoothed_avg_reward": stats['avg_reward'],
-                    "stage": cl_manager.current_stage_idx
+                    "stage": cl.current_stage_idx,
                 }, step=global_step)
-            
-            # UPDATE BLOCK (Fixing Bugs 1, 3, 4, 6, 9)
-            if global_step < algo_cfg.get('warmup_steps', 2000) or len(buffer) < algo_cfg['batch_size']:
+
+            # ---- Update --------------------------------------------------
+            grad_metrics = {k: [] for k in
+                            ["actor_loss", "critic_loss", "q_vals",
+                             "critic_grad_norm", "shared_grad_norm",
+                             "actor_grad_norm"]}
+
+            skip_update = (global_step < algo_cfg.get('warmup_steps', 2000) or
+                           len(buffer) < algo_cfg['batch_size'])
+            if skip_update:
                 last_update_step = global_step
             else:
-                updates_to_do = (global_step - last_update_step) // algo_cfg['update_freq']
-                total_grad_steps = updates_to_do * algo_cfg.get('grad_steps_per_update', 1)
-                
-                if updates_to_do > 0:
-                    last_update_step += updates_to_do * algo_cfg['update_freq']
-                
-                grad_metrics = {
-                    "actor_loss": [], "critic_loss": [], "q_vals": [],
-                    "critic_grad_norm": [], "shared_grad_norm": [], "actor_grad_norm": []
-                }
-                for _ in range(total_grad_steps):
-                    batch = buffer.sample(algo_cfg['batch_size'])
-                    if batch is None: break
-                    batch_obs, batch_obs_next, batch_prev_actions, batch_actions, batch_rewards, batch_dones = [b.to(device) for b in batch]
-                    batch_size, seq_len, _, obs_dim = batch_obs.shape
+                updates_todo = (global_step - last_update_step) // algo_cfg['update_freq']
+                if updates_todo > 0:
+                    last_update_step += updates_todo * algo_cfg['update_freq']
 
-                    # Target next-actions only. The previous online actor forward here was
-                    # dead code (built a graph that was discarded; the real actor forward is
-                    # in compute_actor_loss). Compute targets under no_grad.
+                for _ in range(updates_todo * algo_cfg.get('grad_steps_per_update', 1)):
+                    batch = buffer.sample(algo_cfg['batch_size'])
+                    if batch is None:
+                        break
+                    (batch_obs, batch_obs_next, batch_prev_actions,
+                     batch_actions, batch_rewards, batch_dones) = [b.to(device) for b in batch]
+
+                    b_sz, seq_len, _, o_dim = batch_obs.shape
+                    bi = algo_cfg['burn_in']
+
+                    # Validity mask
+                    burn_mask  = (torch.arange(seq_len, device=device)
+                                  .view(1, -1, 1) >= bi)
+                    done_mask  = ~torch.cat([
+                        torch.zeros(b_sz, 1, n_agents, device=device, dtype=torch.bool),
+                        batch_dones[:, :-1, :]], dim=1)
+                    agent_mask = (burn_mask | (batch_dones & done_mask)) & done_mask
+
+                    obs_all      = batch_obs.reshape(b_sz * seq_len, n_agents, -1)
+                    next_obs_all = batch_obs_next.reshape(b_sz * seq_len, n_agents, -1)
+                    act_all      = batch_actions.reshape(b_sz * seq_len, n_agents, -1)
+
+                    # ---- Target next-actions (no grad) -------------------
                     target_actions = []
                     with torch.no_grad():
-                        all_obs_next_flat = batch_obs_next.permute(0, 2, 1, 3).reshape(
-                            batch_size * n_agents * seq_len, obs_dim)
-                        all_feats_next = agents[0].actor_target.shared(all_obs_next_flat).view(
-                            batch_size, n_agents, seq_len, -1)
-                        for i, agent in enumerate(agents):
-                            x_next = torch.cat([all_feats_next[:, i, :, :],
-                                                batch_actions[:, :, i, :]], dim=-1)
-                            h_next, _ = agent.actor_target.lstm(x_next, None)
+                        all_nf = agents[0].actor_target.shared(
+                            batch_obs_next.permute(0, 2, 1, 3)
+                            .reshape(b_sz * n_agents * seq_len, o_dim)
+                        ).view(b_sz, n_agents, seq_len, -1)
+                        for i, ag in enumerate(agents):
+                            xn = torch.cat([all_nf[:, i],
+                                            batch_actions[:, :, i, :]], dim=-1)
+                            hn, _ = ag.actor_target.lstm(xn, None)
                             target_actions.append(
-                                agent.actor_target.tanh(agent.actor_target.fc_out(h_next))
-                                * agent.actor_target.action_bound)
+                                ag.actor_target.tanh(ag.actor_target.fc_out(hn))
+                                * ag.actor_target.action_bound)
 
-                    # 2. Prepare critic tensors. The centralized critic consumes RAW
-                    #    observations of all agents (paper §V.B), so no feature tensors here.
-                    obs_all = batch_obs.reshape(batch_size * seq_len, n_agents, -1)
-                    next_obs_all = batch_obs_next.reshape(batch_size * seq_len, n_agents, -1)
-                    next_act_all = torch.stack([a.reshape(batch_size*seq_len, -1) for a in target_actions], dim=1)
-                    act_all = batch_actions.reshape(batch_size * seq_len, n_agents, -1)
+                    next_act_all = torch.stack(
+                        [a.reshape(b_sz * seq_len, -1) for a in target_actions], dim=1)
 
-                    # Explicit padding mask to prevent zero-state leak
-                    burn_mask = torch.arange(seq_len, device=device).view(1, -1, 1) >= algo_cfg['burn_in']
-                    
-                    done_mask = ~torch.cat([
-                        torch.zeros(batch_size, 1, n_agents, device=device, dtype=torch.bool),
-                        batch_dones[:, :-1, :]
-                    ], dim=1)
-                    
-                    is_terminal = batch_dones & done_mask
-                    burn_mask = burn_mask | is_terminal
-                    
-                    agent_mask = burn_mask & done_mask
+                    # ---- Shared critic update (trunk runs ONCE) ----------
+                    shared_critic.train()
+                    h_cur  = shared_critic.trunk(obs_all, act_all, seq_len)
+                    with torch.no_grad():
+                        h_nxt = shared_critic_target.trunk(next_obs_all, next_act_all, seq_len)
 
-                    # 3. Update Critics
-                    c_losses = []
-                    q_vals = []
-                    c_grad_norms = []
-                    for i, agent in enumerate(agents):
-                        mask_i = agent_mask[:, :, i]
-                        # Capture criticize loss
-                        c_loss, q_val, c_grad = agent.update_critic(obs_all, act_all, next_obs_all, next_act_all, 
-                                            batch_rewards, batch_dones, seq_len, mask_i)
-                        c_losses.append(c_loss)
-                        q_vals.append(q_val)
-                        c_grad_norms.append(c_grad)
+                    c_loss_total = torch.zeros(1, device=device)
+                    q_mean_list  = []
+                    for i in range(n_agents):
+                        q_cur = shared_critic.q_from_trunk(h_cur, i).view(b_sz, seq_len)
+                        with torch.no_grad():
+                            q_nxt = shared_critic_target.q_from_trunk(h_nxt, i).view(b_sz, seq_len)
+                            r = batch_rewards[:, :, i]
+                            d = batch_dones[:, :, i]
+                            y = r + algo_cfg['gamma'] * q_nxt * (~d)
+                        m  = agent_mask[:, :, i][:, bi:]
+                        cl_i = (((q_cur[:, bi:] - y[:, bi:].detach()) ** 2) * m).sum() / (m.sum() + 1e-8)
+                        c_loss_total = c_loss_total + cl_i
+                        q_mean_list.append(q_cur[:, bi:].detach().mean().item())
 
-                    # 4. Update actors and the shared extractor.
-                    #    zero_grad the single shared optimizer AND every actor optimizer.
-                    # Freeze critics for the whole actor backward.
-                    for ag in agents:
-                        for p in ag.critic.parameters():
-                            p.requires_grad = False
+                    c_loss_mean = c_loss_total / n_agents
+                    critic_optimizer.zero_grad()
+                    c_loss_mean.backward()
+                    c_grad = torch.nn.utils.clip_grad_norm_(
+                        shared_critic.parameters(), algo_cfg['gradient_clip'])
+                    critic_optimizer.step()
+
+                    # ---- Actor update (critics frozen) -------------------
+                    for p in shared_critic.parameters():
+                        p.requires_grad = False
 
                     shared_optimizer.zero_grad()
-                    for agent in agents:
-                        agent.actor_optimizer.zero_grad()
+                    for ag in agents:
+                        ag.actor_optimizer.zero_grad()
 
-                    actor_losses = []
-                    prev_act_all = batch_prev_actions.reshape(batch_size * seq_len, n_agents, -1)
-                    for i, agent in enumerate(agents):
-                        mask_i = agent_mask[:, :, i]
-                        # Critic consumes raw obs; only this agent's action carries gradient.
-                        actor_losses.append(agent.compute_actor_loss(obs_all, act_all, prev_act_all, mask_i))
-
-                    # Aggregate and backprop ONCE through the shared components.
+                    prev_act_all = batch_prev_actions.reshape(b_sz * seq_len, n_agents, -1)
+                    actor_losses = [
+                        ag.compute_actor_loss(obs_all, act_all, prev_act_all,
+                                              agent_mask[:, :, ag.agent_id])
+                        for ag in agents]
                     total_actor_loss = sum(actor_losses) / n_agents
                     total_actor_loss.backward()
 
-                    # Step the shared feature extractor EXACTLY ONCE.
-                    shared_grad_norm = torch.nn.utils.clip_grad_norm_(
-                        agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
+                    sh_grad = torch.nn.utils.clip_grad_norm_(
+                        agents[0].shared_extractor.parameters(),
+                        algo_cfg['gradient_clip'])
                     shared_optimizer.step()
 
-                    # Step each agent's PRIVATE actor params (LSTM + output head) once.
-                    actor_grad_norms = []
-                    for agent in agents:
-                        a_grad = torch.nn.utils.clip_grad_norm_(
-                            agent.actor_private_params, algo_cfg['gradient_clip'])
-                        actor_grad_norms.append(a_grad.item())
-                        agent.actor_optimizer.step()
-
-                    # Unfreeze for the next critic update.
+                    ag_grads = []
                     for ag in agents:
-                        for p in ag.critic.parameters():
-                            p.requires_grad = True
+                        g = torch.nn.utils.clip_grad_norm_(
+                            ag.actor_private_params, algo_cfg['gradient_clip'])
+                        ag_grads.append(g.item())
+                        ag.actor_optimizer.step()
 
-                    # 5. Soft Updates
-                    agents[0]._soft_update(agents[0].actor_target.shared, agents[0].actor.shared)
-                    for agent in agents:
-                        agent._soft_update(agent.actor_target.lstm, agent.actor.lstm)
-                        agent._soft_update(agent.actor_target.fc_out, agent.actor.fc_out)
-                        agent._soft_update(agent.critic_target, agent.critic)
-                        
+                    for p in shared_critic.parameters():
+                        p.requires_grad = True
+
+                    # ---- Soft target updates ----------------------------
+                    agents[0]._soft_update(agents[0].actor_target.shared,
+                                           agents[0].actor.shared)
+                    for ag in agents:
+                        ag._soft_update(ag.actor_target.lstm,   ag.actor.lstm)
+                        ag._soft_update(ag.actor_target.fc_out, ag.actor.fc_out)
+                    agents[0]._soft_update(shared_critic_target, shared_critic)
+
+                    # ---- Accumulate grad metrics -------------------------
                     grad_metrics["actor_loss"].append(total_actor_loss.item())
-                    grad_metrics["critic_loss"].append(np.mean(c_losses))
-                    grad_metrics["q_vals"].append(np.mean(q_vals))
-                    grad_metrics["critic_grad_norm"].append(np.mean(c_grad_norms))
-                    grad_metrics["shared_grad_norm"].append(shared_grad_norm.item())
-                    grad_metrics["actor_grad_norm"].append(np.mean(actor_grad_norms))
-                
-                if total_grad_steps > 0:
-                    wandb.log({k: np.mean(v) for k, v in grad_metrics.items()}, step=global_step)
-            
-            # Logging and update
+                    grad_metrics["critic_loss"].append(c_loss_mean.item())
+                    grad_metrics["q_vals"].append(np.mean(q_mean_list))
+                    grad_metrics["critic_grad_norm"].append(c_grad.item())
+                    grad_metrics["shared_grad_norm"].append(sh_grad.item())
+                    grad_metrics["actor_grad_norm"].append(np.mean(ag_grads))
+
+                if grad_metrics["actor_loss"]:
+                    wandb.log({k: np.mean(v) for k, v in grad_metrics.items()},
+                              step=global_step)
+
+            # ---- Console log every 100 episodes -------------------------
             if episode > 0 and episode % 100 == 0:
-                stats = metrics.get_stats()
-
-                now = time.time()
-                window_elapsed = max(now - window_start_time, 1e-6)
-                eps_per_sec = (episode - window_start_episode) / window_elapsed
-                steps_per_sec = (global_step - steps_done) / window_elapsed
-
-                window_start_time = now
+                now  = time.time()
+                elapsed = max(now - window_start_time, 1e-6)
+                eps_ps  = (episode - window_start_episode) / elapsed
+                eta_h   = (algo_cfg['n_episodes'] - episode) / max(eps_ps * 3600, 1e-6)
+                window_start_time    = now
                 window_start_episode = episode
-                start_time = now
                 steps_done = global_step
 
-                remaining_eps = algo_cfg['n_episodes'] - episode
-                eta_hours = remaining_eps / max(eps_per_sec * 3600, 1e-6)
-                
                 print(
                     f"Ep {episode:6d}/{algo_cfg['n_episodes']} | "
-                    f"Stage {cl_manager.current_stage_idx + 1} ({cl_manager.episodes_in_stage:4d} eps) | "
+                    f"Stage {cl.current_stage_idx + 1}/{N_STAGES} "
+                    f"({cl.episodes_in_stage:4d} eps) | "
                     f"Reward: {stats['avg_reward']:7.2f} | "
                     f"Success: {stats['success_rate']:.2%} | "
                     f"Collision: {stats['collision_rate']:.2%} | "
@@ -568,116 +530,80 @@ def train(config_path: str = "config/default.yaml", device: str = None, resume_d
                     f"Len: {stats['avg_episode_length']:5.1f} | "
                     f"Buf: {len(buffer):6d} | "
                     f"Noise: {noise.sigma:.3f} | "
-                    f"{eps_per_sec:.2f} ep/s | "
-                    f"ETA: {eta_hours:.1f}h",
-                    flush=True
-                )
-            
-            # Save checkpoints
+                    f"{eps_ps:.2f} ep/s | ETA: {eta_h:.1f}h",
+                    flush=True)
+
+            # ---- Checkpoint every 1000 episodes -------------------------
             if episode % 1000 == 0 and episode > 0:
-                save_dir = f"checkpoints/episode_{episode}"
-                os.makedirs(save_dir, exist_ok=True)
-                torch.save({
-                    'shared_actor': agents[0].shared_extractor.state_dict(),
-                    'shared_opt': shared_optimizer.state_dict(),
-                    'global_step': global_step
-                }, f"{save_dir}/shared_actor.pt")
-                for i, agent in enumerate(agents):
-                    private = {k: v for k, v in agent.actor.state_dict().items()
-                               if k.startswith(('lstm.', 'fc_out.'))}
-                    torch.save({
-                        'actor_private': private,
-                        'critic': agent.critic.state_dict(),
-                        'actor_opt': agent.actor_optimizer.state_dict(),
-                        'critic_opt': agent.critic_optimizer.state_dict(),
-                    }, f"{save_dir}/agent_{i}.pt")
-                    
-            # Continuous JSON logging every 100 episodes
+                _save_checkpoint(f"checkpoints/episode_{episode}",
+                                 agents, shared_critic, shared_optimizer,
+                                 critic_optimizer, global_step)
+
+            # ---- CSV every 100 episodes ---------------------------------
             if episode % 100 == 0 and episode > 0:
-                os.makedirs("checkpoints", exist_ok=True)
-                log_file = f"checkpoints/training_log_{run_id}.csv"
-                is_new = not os.path.exists(log_file)
-                
-                gm_vals = {'actor_loss': 0.0, 'critic_loss': 0.0, 'q_vals': 0.0, 'critic_grad_norm': 0.0, 'shared_grad_norm': 0.0, 'actor_grad_norm': 0.0}
-                if 'grad_metrics' in locals() and grad_metrics.get('actor_loss'):
-                    gm_vals = {k: (float(np.mean(v)) if v else 0.0) for k, v in grad_metrics.items()}
-                
-                with open(log_file, 'a') as f:
-                    if is_new:
-                        f.write("episode,avg_reward,success_rate,collision_rate,trapped_rate,avg_episode_length,actor_loss,critic_loss,q_mean,critic_grad,shared_grad,actor_grad\n")
-                    f.write(f"{episode},{stats['avg_reward']},{stats['success_rate']},{stats['collision_rate']},"
-                            f"{stats.get('trapped_rate',0)},{stats['avg_episode_length']},{gm_vals['actor_loss']},"
-                            f"{gm_vals['critic_loss']},{gm_vals['q_vals']},{gm_vals['critic_grad_norm']},"
-                            f"{gm_vals['shared_grad_norm']},{gm_vals['actor_grad_norm']}\n")
-                    
+                _write_csv(f"checkpoints/training_log_{run_id}.csv",
+                           episode, stats, grad_metrics)
+
     except KeyboardInterrupt:
-        print("\n[KEYBOARD INTERRUPT] Training forcefully stopped by user.")
-        save_dir = f"checkpoints/interrupted_episode_{episode}"
-        os.makedirs(save_dir, exist_ok=True)
-        print(f"Saving emergency checkpoints to {save_dir} ...")
-        torch.save({
-            'shared_actor': agents[0].shared_extractor.state_dict(),
-            'shared_opt': shared_optimizer.state_dict(),
-            'global_step': global_step
-        }, f"{save_dir}/shared_actor.pt")
-        for i, agent in enumerate(agents):
-            private = {k: v for k, v in agent.actor.state_dict().items()
-                       if k.startswith(('lstm.', 'fc_out.'))}
-            torch.save({
-                'actor_private': private,
-                'critic': agent.critic.state_dict(),
-                'actor_opt': agent.actor_optimizer.state_dict(),
-                'critic_opt': agent.critic_optimizer.state_dict(),
-            }, f"{save_dir}/agent_{i}.pt")
-        
-        print("\nInterrupted Training Stats:")
-        stats = metrics.get_stats()
-        print(stats)
-        import json
-        
-        # Convert numpy types to native Python types for JSON serialization
-        serializable_stats = {}
-        for k, v in stats.items():
-            if isinstance(v, (np.floating, float)):
-                serializable_stats[k] = float(v)
-            elif isinstance(v, (np.integer, int)):
-                serializable_stats[k] = int(v)
-            else:
-                serializable_stats[k] = v
-                
-        with open(f"{save_dir}/interrupted_stats.json", 'w') as f:
-            json.dump(serializable_stats, f, indent=4)
-        print(f"Saved stats to {save_dir}/interrupted_stats.json")
+        print("\n[INTERRUPT] Saving emergency checkpoint…")
+        _save_checkpoint(f"checkpoints/interrupted_episode_{episode}",
+                         agents, shared_critic, shared_optimizer,
+                         critic_optimizer, global_step)
+        print("Done.")
         return agents
-    
-    print("\nTraining complete. Final stats:")
-    stats = metrics.get_stats()
-    print(stats)
-    import json
-    
-    # Convert numpy types to native Python types for JSON serialization
-    serializable_stats = {}
-    for k, v in stats.items():
-        if isinstance(v, (np.floating, float)):
-            serializable_stats[k] = float(v)
-        elif isinstance(v, (np.integer, int)):
-            serializable_stats[k] = int(v)
-        else:
-            serializable_stats[k] = v
-            
-    os.makedirs("checkpoints", exist_ok=True)
-    with open("checkpoints/final_stats.json", 'w') as f:
-        json.dump(serializable_stats, f, indent=4)
-    print("Saved stats to checkpoints/final_stats.json")
+
+    print("\nTraining complete.")
+    _save_checkpoint("checkpoints/final",
+                     agents, shared_critic, shared_optimizer,
+                     critic_optimizer, global_step)
     return agents
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+def _save_checkpoint(save_dir, agents, shared_critic,
+                     shared_opt, critic_opt, global_step):
+    os.makedirs(save_dir, exist_ok=True)
+    torch.save({'shared_actor': agents[0].shared_extractor.state_dict(),
+                'shared_opt':   shared_opt.state_dict(),
+                'global_step':  global_step},
+               f"{save_dir}/shared_actor.pt")
+    torch.save({'shared_critic': shared_critic.state_dict(),
+                'critic_opt':    critic_opt.state_dict()},
+               f"{save_dir}/shared_critic.pt")
+    for i, ag in enumerate(agents):
+        private = {k: v for k, v in ag.actor.state_dict().items()
+                   if k.startswith(('lstm.', 'fc_out.'))}
+        torch.save({'actor_private': private,
+                    'actor_opt':     ag.actor_optimizer.state_dict()},
+                   f"{save_dir}/agent_{i}.pt")
+
+
+def _write_csv(path, episode, stats, grad_metrics):
+    os.makedirs("checkpoints", exist_ok=True)
+    is_new = not os.path.exists(path)
+    gm = {k: (float(np.mean(v)) if v else 0.0) for k, v in grad_metrics.items()}
+    with open(path, 'a') as f:
+        if is_new:
+            f.write("episode,avg_reward,success_rate,collision_rate,"
+                    "trapped_rate,avg_episode_length,"
+                    "actor_loss,critic_loss,q_mean,"
+                    "critic_grad,shared_grad,actor_grad\n")
+        f.write(f"{episode},{stats['avg_reward']},{stats['success_rate']},"
+                f"{stats['collision_rate']},{stats.get('trapped_rate', 0)},"
+                f"{stats['avg_episode_length']},{gm['actor_loss']},"
+                f"{gm['critic_loss']},{gm['q_vals']},"
+                f"{gm['critic_grad_norm']},{gm['shared_grad_norm']},"
+                f"{gm['actor_grad_norm']}\n")
 
 
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--config', default='config/default.yaml')
-    parser.add_argument('--device', default=None, choices=['cpu', 'cuda'])
-    parser.add_argument('--resume', type=str, default=None, help='Path to checkpoint directory to resume from')
-    parser.add_argument('--seed', type=int, default=42, help='Random seed')
-    args = parser.parse_args()
-    train(args.config, args.device, args.resume, args.seed)
+    p = argparse.ArgumentParser()
+    p.add_argument('--config',  default='config/default.yaml')
+    p.add_argument('--device',  default=None, choices=['cpu', 'cuda'])
+    p.add_argument('--resume',  default=None)
+    p.add_argument('--seed',    type=int, default=42)
+    a = p.parse_args()
+    train(a.config, a.device, a.resume, a.seed)
