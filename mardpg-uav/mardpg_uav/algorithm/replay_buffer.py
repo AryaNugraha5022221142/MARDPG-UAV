@@ -46,7 +46,7 @@ import torch
 
 class SequenceReplayBuffer:
     def __init__(self, capacity: int = 100_000, seq_len: int = 90,
-                 n_agents: int = 5, obs_dim: int = 33, action_dim: int = 2):
+                 n_agents: int = 5, obs_dim: int = 43, action_dim: int = 2):
         self.capacity   = capacity
         self.seq_len    = seq_len
         self.n_agents   = n_agents

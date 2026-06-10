@@ -587,8 +587,12 @@ def train(config_path: str = "config/default.yaml",
             if (cl.episodes_in_stage >= promo_min_eps and
                     cl.episodes_in_stage % eval_every == 0 and
                     global_step >= algo_cfg.get('warmup_steps', 2000)):
+                # [N-7] run_eval advances env.scene_gen.rng; snapshot/restore it so
+                # eval cadence does not change which training scenes are generated.
+                _rng_state = env.scene_gen.rng.get_state()
                 eval_stats = run_eval(env, agents, stage_cfg,
                                       eval_episodes, action_dim, n_agents)
+                env.scene_gen.rng.set_state(_rng_state)
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx
                 wandb.log(log_payload, step=global_step)
@@ -598,7 +602,14 @@ def train(config_path: str = "config/default.yaml",
                       f"trapped {eval_stats['trapped_rate']:.2%} | "
                       f"path_eff {eval_stats['path_efficiency']:.2f} | "
                       f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f}", flush=True)
-                cl.evaluate_promotion(eval_stats)
+                
+                promoted = cl.evaluate_promotion(eval_stats)
+                if promoted:
+                    reboost = float(algo_cfg.get('noise_reboost', 0.15))
+                    if noise.sigma < reboost:
+                        noise.sigma = reboost
+                        print(f"[N-8] Exploration re-boosted: sigma -> {noise.sigma:.3f} "
+                              f"on promotion to stage {cl.current_stage_idx + 1}", flush=True)
 
             # ---- Console log every 100 episodes -------------------------
             if episode > 0 and episode % 100 == 0:

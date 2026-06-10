@@ -6,8 +6,10 @@ Fixes vs previous version
 -------------------------
 - [I4] `cl_i, _ = compute_critic_loss(...)` crashed (it returns a 3-tuple).
 - Updated to the v3 buffer API (explicit next_obs, pad mask) and the
-  simplified validity mask, so the timed update path is byte-for-byte the
-  same computation as train.py.
+  simplified validity mask. The timed update path mirrors train.py's
+  loss/backward/step structure for a representative cost estimate, but
+  omits grad-clipping and soft target updates (a few % of update time);
+  it is NOT bit-identical to train.py.
 
 Usage:
     python benchmark.py --episodes 200 --device cpu

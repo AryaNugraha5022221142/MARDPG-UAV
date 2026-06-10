@@ -126,6 +126,45 @@ def main():
     print(f"[PASS] Pads masked out; short 30-step episode produced "
           f"{int(n_valid_before)} valid window(s) via padding.")
 
+    print("\n--- Diagnostic 5: Done agents are not collision hazards (N-1) ---")
+    e2 = MultiUAVEnv(env_cfg)
+    e2.reset({'env_size': [100., 100., 60.], 'static_obs': 0,
+              'min_sep': 15., 'max_steps': 50, 'min_start_sep': 12.})
+    # Force agent 0 done and teleport agent 1 on top of it.
+    e2.agent_done[0] = True
+    e2.agent_reached[0] = True
+    e2.agents_state[1, :3] = e2.agents_state[0, :3] + 0.1  # well inside inter_uav_min_dist
+    z = np.zeros((n_agents, act_dim), dtype=np.float32)
+    _, _, _, info2 = e2.step(z)
+    assert not info2['step_collisions'][1], \
+        "CRITICAL (N-1): live agent collided with a frozen/done ghost."
+    print("[PASS] Live agent does not collide with a done agent at the same point.")
+
+    print("\n--- Diagnostic 6: Goal-to-goal separation floor (N-4) ---")
+    e3 = MultiUAVEnv(env_cfg)
+    e3.reset({'env_size': [100., 100., 60.], 'static_obs': 0,
+              'min_sep': 30., 'max_steps': 50, 'min_start_sep': 12.})
+    floor = e3.cfg.get('goal_min_sep',
+                       2.0 * e3.cfg['goal_threshold'] + e3.cfg['inter_uav_min_dist'])
+    gmin = min(np.linalg.norm(e3.goals[a] - e3.goals[b])
+               for a in range(n_agents) for b in range(a + 1, n_agents))
+    assert gmin >= floor - 1e-3, f"CRITICAL (N-4): goals {gmin:.2f} m < floor {floor:.2f} m."
+    print(f"[PASS] Min goal-goal distance {gmin:.2f} m >= floor {floor:.2f} m.")
+
+    print("\n--- Diagnostic 7: Neighbor block reflects only LIVE agents (N-1) ---")
+    e4 = MultiUAVEnv(env_cfg)
+    o4 = e4.reset({'env_size': [100., 100., 60.], 'static_obs': 0,
+                   'min_sep': 15., 'max_steps': 50, 'min_start_sep': 12.})
+    K = e4.n_neighbors
+    pres0 = o4[0][34 + 3: 34 + 4 * K: 4]  # presence flags of agent 0's neighbor slots
+    assert pres0.sum() == min(K, e4.n_agents - 1), "Neighbor presence flags wrong at reset."
+    e4.agent_done[:] = True          # kill everyone except agent 0's perspective
+    e4.agent_done[0] = False
+    o4b = e4._get_observations()
+    pres0b = o4b[0][34 + 3: 34 + 4 * K: 4]
+    assert pres0b.sum() == 0, "CRITICAL (N-1): done agents still appear in neighbor block."
+    print("[PASS] Neighbor block excludes done agents.")
+
     print("\n✅ All structural checks passed. Safe to train.")
 
 

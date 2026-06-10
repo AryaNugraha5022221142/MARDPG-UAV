@@ -39,9 +39,9 @@ All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathe
 Key sections:
 
 - **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
-- **Observation space** (32‑dim: sin/cos attitude (4) + 25‑beam lidar + goal vector (3))
+- **Observation space** (43‑dim: sin/cos attitude (4) + 25‑beam lidar + goal bearing (5) + neighbors (8) + alive flag (1))
 - **Reward function** (progress + collision penalty + separation penalty + free‑space bonus)
-- **Centralised critic** (permutation‑invariant Q‑function)
+- **Centralised critic** (concatenated ordered observations)
 - **Per‑agent termination & validity masking** (for BPTT)
 
 ---
@@ -57,7 +57,7 @@ Key sections:
 | Termination | Per‑agent flags, episode ends only when all agents are done |
 | Observation encoding | Sin/cos for yaw/pitch |
 | Rate limiting | `δ_max = 0.5236 rad/step` for smooth commands |
-| Replay buffer | Episode‑based, stores explicit next-obs; short episodes padded (10^5 transitions), BPTT length 80 (+10 burn-in) |
+| Replay buffer | Episode‑based (capacity 10^5 transitions), stores explicit next-obs; short episodes padded, BPTT length 80 (+10 burn-in) |
 
 ---
 

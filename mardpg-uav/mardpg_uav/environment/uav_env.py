@@ -49,7 +49,9 @@ class MultiUAVEnv(gym.Env):
         )
         
         # Spaces
-        self.obs_dim = 33  # [sin, cos (theta, phi) (4), lidar(25), xi(3), alive(1)]
+        # [N-1/N-9] 4 attitude + 25 lidar + 5 goal(sin/cos bearing) + 8 neighbors(K=2) + 1 alive
+        self.n_neighbors = 2
+        self.obs_dim = 4 + 25 + 5 + 4 * self.n_neighbors + 1  # = 43
         self.action_dim = 2  # [rho, tau]
         
         self.observation_space = gym.spaces.Box(
@@ -130,8 +132,11 @@ class MultiUAVEnv(gym.Env):
             for _ in range(200):
                 goal = self._sample_free_position()
                 # Check min separation from own start, other goals, and other starts
+                goal_min_sep = self.cfg.get(
+                    'goal_min_sep',
+                    max(2.0 * self.cfg['goal_threshold'] + self.cfg['inter_uav_min_dist'], 4.0))
                 if (np.linalg.norm(goal - pos) >= min_sep and
-                        all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist'] for g in self.goals[:i]) and
+                        all(np.linalg.norm(goal - g) >= goal_min_sep for g in self.goals[:i]) and
                         all(np.linalg.norm(goal - p) >= min_start_sep for p in positions)):
                     valid_goal = True
                     break
@@ -140,7 +145,6 @@ class MultiUAVEnv(gym.Env):
                 goal = self._sample_free_position()
             self.goals[i] = goal
 
-        self.prev_applied_actions = np.zeros((self.n_agents, 3), dtype=np.float32)
         self.agent_done = np.zeros(self.n_agents, dtype=bool)
         self.agent_reached = np.zeros(self.n_agents, dtype=bool)
         self.agent_collided = np.zeros(self.n_agents, dtype=bool)
@@ -169,11 +173,11 @@ class MultiUAVEnv(gym.Env):
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
         """
         Args:
-            actions: [n_agents, 3] in [-v_max, v_max]
+            actions: [n_agents, 2] angle increments in [-max_delta_angle, max_delta_angle]
         Returns:
-            observations: [n_agents, 34]
+            observations: [n_agents, 33]
             rewards: [n_agents]
-            done: bool (episode terminates if any agent collides or all reach goals)
+            done: bool (timeout, or all agents terminal)
             info: dict
         """
         actions = np.clip(np.array(actions, dtype=np.float32),
@@ -216,7 +220,15 @@ class MultiUAVEnv(gym.Env):
         diffs = positions_arr[:, None, :] - positions_arr[None, :, :]  # (N, N, 3)
         dist_matrix = np.linalg.norm(diffs, axis=-1)  # (N, N)
         np.fill_diagonal(dist_matrix, np.inf)
-        inter_collisions = np.any(dist_matrix < self.cfg['inter_uav_min_dist'], axis=1)  # (N,)
+        # [N-1] Done agents are NOT physical collision hazards: a reached agent has
+        # landed and a crashed agent is removed. A live agent cannot sense them
+        # (lidar ignores UAVs) and must not die to a frozen "ghost". Mask done
+        # agents out as collision TARGETS (columns). dist_matrix itself is left
+        # intact for the safe_inter_uav metric, which already slices active agents.
+        ghost = self.agent_done  # frozen from prior steps; both-die-this-step pairs are still live here
+        dist_for_collision = dist_matrix.copy()
+        dist_for_collision[:, ghost] = np.inf
+        inter_collisions = np.any(dist_for_collision < self.cfg['inter_uav_min_dist'], axis=1)  # (N,)
 
         for i in range(self.n_agents):
             if self.agent_done[i]: continue
@@ -292,7 +304,9 @@ class MultiUAVEnv(gym.Env):
             obs_list.append(obs)
             
             # Reward
-            other_pos = [positions[j] for j in range(self.n_agents) if j != i]
+            # [N-1] Separation penalty only over agents that physically exist.
+            other_pos = [positions[j] for j in range(self.n_agents)
+                         if j != i and not self.agent_done[j]]
             rewards[i] = self.reward_fn.compute(
                 i, pos, self.goals[i], rangefinder_raw, rangefinder_norm, other_pos, self.obstacles,
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
@@ -303,11 +317,15 @@ class MultiUAVEnv(gym.Env):
                 reached[i] = True
                 rewards[i] += self.cfg['reward'].get('r_goal', 10.0)  # Add terminal anchor
                 
-            # NEW FIX: Massive terminal penalty at the exact step of death
+            # [N-3/M-2] Terminal collision anchor, applied UNSCALED so it is
+            # symmetric with the unscaled +r_goal success anchor. This is the
+            # raw reward decrement, NOT routed through the proximity weight
+            # delta[1]. With gamma=0.99 the discounted value of wandering in the
+            # proximity band is bounded well below this magnitude, so immediate
+            # death stays value-dominated. (At 30.0 this reproduces the previous
+            # effective penalty exactly: 0.30 * 100 == 30.)
             elif collisions[i]:
-                # Assuming max_steps is ~1500 and r_step is -1.0. 
-                # This ensures dying is mathematically worse than living.
-                rewards[i] -= self.reward_fn.delta[1] * self.cfg['reward'].get('r_collision_terminal', 100.0)
+                rewards[i] -= self.cfg['reward'].get('r_collision_terminal', 30.0)
         
         self.steps += 1
         
@@ -326,8 +344,6 @@ class MultiUAVEnv(gym.Env):
         timeout = self.steps >= self.cfg['max_steps_per_episode']
         episode_done = timeout or bool(np.all(self.agent_done))
         
-        applied_actions = self.prev_applied_actions.copy()
-        
         dyn_collisions_copy = self.agent_dyn_collided.copy() if hasattr(self, 'agent_dyn_collided') else np.zeros(self.n_agents, dtype=bool)
 
         trapped_agents = self.get_trapped_agents() if episode_done else np.zeros(self.n_agents, dtype=bool)
@@ -342,8 +358,7 @@ class MultiUAVEnv(gym.Env):
             'trapped': trapped_agents,
             'timeout': timeout,
             'steps': self.steps,
-            'agent_done': self.agent_done.copy(),
-            'applied_actions': applied_actions,
+            'agent_done': self.agent_done.copy()
         }
         
         return np.array(obs_list), rewards, episode_done, info
@@ -386,38 +401,47 @@ class MultiUAVEnv(gym.Env):
                 obs_max_sizes=self.obs_max_sizes,
             )
 
+        arena_diag = float(np.sqrt(sum(s**2 for s in self.cfg['env_size'])))
+
+        # ---- Goal block: distance + sin/cos of body-frame bearing (wrap-free) [N-9] ----
         goal_vec = self.goals[i] - pos
         d5       = np.linalg.norm(goal_vec)
         if d5 > 1e-6:
-            # 1. Calculate absolute angles
-            abs_varpi = np.arctan2(goal_vec[1], goal_vec[0]) 
-            abs_varpi_z = np.arctan2(goal_vec[2], np.linalg.norm(goal_vec[:2])) 
-            
-            # 2. Convert to Relative Angles (Subtract UAV heading)
-            varpi = abs_varpi - theta
+            abs_varpi   = np.arctan2(goal_vec[1], goal_vec[0])
+            abs_varpi_z = np.arctan2(goal_vec[2], np.linalg.norm(goal_vec[:2]))
+            varpi   = abs_varpi   - theta
             varpi_z = abs_varpi_z - phi
-            
-            # 3. Normalize to [-pi, pi] to prevent continuous rotation buildup
-            varpi = (varpi + np.pi) % (2 * np.pi) - np.pi
-            varpi_z = (varpi_z + np.pi) % (2 * np.pi) - np.pi
         else:
             varpi = varpi_z = 0.0
+        d5_norm = d5 / arena_diag
+        goal_block = np.array([d5_norm,
+                               np.sin(varpi),   np.cos(varpi),
+                               np.sin(varpi_z), np.cos(varpi_z)], dtype=np.float32)
 
-        # Normalize distance
-        arena_diag = np.sqrt(sum(s**2 for s in self.cfg['env_size']))
-        d5_norm = d5 / arena_diag 
-        
-        xi  = np.array([d5_norm, varpi, varpi_z], dtype=np.float32)
-        alive = 1.0 if not getattr(self, 'agent_done', [False]*(i+1))[i] else 0.0
-        
+        # ---- Neighbor block: K nearest LIVE neighbors, normalized world-frame
+        # displacement + presence flag [N-1]. Done agents are invisible. ----
+        done = getattr(self, 'agent_done', np.zeros(self.n_agents, dtype=bool))
+        cand = [(np.linalg.norm(self.agents_state[j, :3] - pos), j)
+                for j in range(self.n_agents) if j != i and not done[j]]
+        cand.sort(key=lambda t: t[0])
+        nbr = np.zeros(4 * self.n_neighbors, dtype=np.float32)
+        for k in range(min(self.n_neighbors, len(cand))):
+            _, j = cand[k]
+            rel = (self.agents_state[j, :3] - pos) / arena_diag
+            nbr[4 * k:4 * k + 3] = rel
+            nbr[4 * k + 3]       = 1.0  # presence flag
+
+        alive = 1.0 if not done[i] else 0.0
+
         obs = np.concatenate([
-            [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],
-            lidar_norm.flatten(),
-            xi,
-            [alive]
-        ])
-        assert obs.shape == (33,), f"obs shape mismatch: {obs.shape}"
-        return obs.astype(np.float32)
+            [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],  # 0:4
+            lidar_norm.flatten(),                                      # 4:29
+            goal_block,                                                # 29:34
+            nbr,                                                       # 34:42
+            [alive],                                                   # 42
+        ]).astype(np.float32)
+        assert obs.shape == (self.obs_dim,), f"obs shape mismatch: {obs.shape}"
+        return obs
 
     def _get_observations(self) -> np.ndarray:
         """Get current observations for all agents."""

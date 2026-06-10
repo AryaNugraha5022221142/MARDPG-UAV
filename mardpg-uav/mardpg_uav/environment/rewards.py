@@ -47,8 +47,9 @@ class RewardFunction:
         # Measure obstacle clearance from the UAV body edge (radius R) so the penalty band
         # aligns with the collision-termination radius instead of sitting entirely inside it.
         # The UAV term already references the 2R bubble (d_uav - inter_uav_min); this makes
-        # the obstacle term consistent. Without it, sigma=15 leaves the obstacle penalty ~0
-        # at the 0.5 m termination distance — almost no shaping for walls/static obstacles.
+        # the obstacle term consistent. (Config sigma_col=3.0 => the penalty band is ~1 m
+        # wide; measuring clearance from the body edge keeps meaningful shaping near walls
+        # instead of collapsing to ~0 inside the 0.5 m termination radius.)
         d_obs_clear = d_obs - self.collision_radius
         d_min = min(d_obs_clear, d_uav - self.inter_uav_min)
         d_min = max(0.0, d_min)

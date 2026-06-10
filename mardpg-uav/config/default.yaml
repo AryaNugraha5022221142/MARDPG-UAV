@@ -11,9 +11,12 @@ environment:
   env_size: [100.0, 100.0, 60.0]
   max_steps_per_episode: 1500
   goal_threshold: 1.0
+  goal_min_sep: 4.0           # [N-4] min goal-to-goal distance; must exceed
+                              # 2*goal_threshold + inter_uav_min_dist (=3.0) so
+                              # two agents cannot satisfy their goal thresholds
+                              # while inside each other's collision radius.
 
   # Obstacle generation
-  scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
 
   # Reward parameters (Eq 4)
   reward:
@@ -23,13 +26,15 @@ environment:
     r_free:  0.1
     r_step: -1.0
     r_goal: 10.0               # terminal success anchor
-    # [I1] Terminal collision penalty, previously hardcoded -500 in
-    # uav_env.py. -100 still makes death decisively worse than wandering
-    # (weighted step cost is only -0.06/step => 1500 steps ~= -90 + shaping)
-    # while shrinking TD-error magnitudes ~5x, which fixes the critic
-    # living permanently in the gradient-clipping regime.
-    # NOTE: changing this changes the MDP — requires training from scratch.
-    r_collision_terminal: 100.0   # applied as reward -= this value
+    # [N-3] Terminal collision penalty, applied UNSCALED in uav_env.py
+    # (reward -= this value), symmetric with the unscaled +r_goal anchor.
+    # Effective weighted step cost is delta[3]*r_step = 0.10 * -1.0 = -0.10/step,
+    # so undiscounted wandering for 1500 steps is ~-150; discounted (gamma=0.99)
+    # it is ~-10, well above this penalty in magnitude => immediate death is
+    # value-dominated. Huber (huber_beta) keeps the resulting TD errors out of
+    # the permanent gradient-clipping regime.
+    # NOTE: changing this value changes the MDP — requires training from scratch.
+    r_collision_terminal: 30.0    # applied as reward -= this value (unscaled)
     delta: [0.45, 0.30, 0.15, 0.10]
 
 algorithm:
@@ -51,6 +56,11 @@ algorithm:
   noise_std:    0.3
   noise_min:    0.05
   noise_decay:  0.9995
+  noise_reboost: 0.15          # [N-8] on promotion, sigma <- max(sigma, this).
+                               # Counters the per-episode decay flooring sigma at
+                               # 0.05 long before the later (harder) stages, which
+                               # would otherwise be explored at ~10% action bound
+                               # right when the distribution shift is largest.
 
   # ---- New (audit fixes) -------------------------------------------------
   huber_beta: 10.0             # [I1] Huber transition point for critic loss.
