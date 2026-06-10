@@ -10,7 +10,7 @@ def test_obs_shape():
     env = MultiUAVEnv(cfg['environment'])
     obs = env.reset(cfg['environment'])
     assert obs.shape == (env.n_agents, env.obs_dim), f"Got {obs.shape}"
-    assert env.obs_dim == 32
+    assert env.obs_dim == 33
 
 def test_trapped_detection():
     """Agent that stays in place should be trapped; one that moves to goal should not."""

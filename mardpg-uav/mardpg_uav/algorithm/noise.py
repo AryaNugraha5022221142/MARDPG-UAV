@@ -9,9 +9,6 @@ class GaussianNoise:
         self.sigma_min = sigma_min
         self.decay = decay
 
-    def reset(self):
-        pass
-        
     def decay_sigma(self):
         self.sigma = max(self.sigma_min, self.sigma * self.decay)
 

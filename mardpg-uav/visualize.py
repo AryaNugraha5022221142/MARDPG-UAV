@@ -26,7 +26,7 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         agent = MARDPGAgent(
             agent_id=i, 
             n_agents=n_agents,
-            obs_dim=32,
+            obs_dim=env.obs_dim,
             action_dim=env.action_dim,
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),

@@ -49,7 +49,7 @@ class MultiUAVEnv(gym.Env):
         )
         
         # Spaces
-        self.obs_dim = 32  # [sin, cos (theta, phi) (4), lidar(25), xi(3)]
+        self.obs_dim = 33  # [sin, cos (theta, phi) (4), lidar(25), xi(3), alive(1)]
         self.action_dim = 2  # [rho, tau]
         
         self.observation_space = gym.spaces.Box(
@@ -110,24 +110,34 @@ class MultiUAVEnv(gym.Env):
         positions = []
         min_start_sep = stage_cfg.get('min_start_sep', max(self.cfg.get('inter_uav_min_dist', 1.0) * 8, 10.0))
         for i in range(self.n_agents):
+            valid_start = False
             for _ in range(200):
                 pos = self._sample_free_position()
                 # Ensure minimum separation from all already-placed start positions
                 if all(np.linalg.norm(pos - p) >= min_start_sep for p in positions):
+                    valid_start = True
                     break
+            if not valid_start:
+                print(f"Warning: Failed to place start pos for agent {i} with min_start_sep={min_start_sep}")
+                pos = self._sample_free_position()
             positions.append(pos)
             self.agents_state[i, :3] = pos
             # Random initial heading
             self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
             self.agents_state[i, 4] = self.scene_gen.rng.uniform(-np.pi/6, np.pi/6)  # phi
             
+            valid_goal = False
             for _ in range(200):
                 goal = self._sample_free_position()
                 # Check min separation from own start, other goals, and other starts
                 if (np.linalg.norm(goal - pos) >= min_sep and
                         all(np.linalg.norm(goal - g) >= self.cfg['inter_uav_min_dist'] for g in self.goals[:i]) and
                         all(np.linalg.norm(goal - p) >= min_start_sep for p in positions)):
+                    valid_goal = True
                     break
+            if not valid_goal:
+                print(f"Warning: Failed to place goal for agent {i} with min_sep={min_sep}")
+                goal = self._sample_free_position()
             self.goals[i] = goal
 
         self.prev_applied_actions = np.zeros((self.n_agents, 3), dtype=np.float32)
@@ -295,9 +305,9 @@ class MultiUAVEnv(gym.Env):
                 
             # NEW FIX: Massive terminal penalty at the exact step of death
             elif collisions[i]:
-                # Assuming max_steps is ~1500 and r_step is -0.6. 
+                # Assuming max_steps is ~1500 and r_step is -1.0. 
                 # This ensures dying is mathematically worse than living.
-                rewards[i] -= self.cfg['reward'].get('r_collision_terminal', 100.0)
+                rewards[i] -= self.reward_fn.delta[1] * self.cfg['reward'].get('r_collision_terminal', 100.0)
         
         self.steps += 1
         
@@ -307,6 +317,11 @@ class MultiUAVEnv(gym.Env):
         # Episode termination
         for i in range(self.n_agents):
             self.agent_done[i] = self.agent_done[i] or self.agent_collided[i] or self.agent_reached[i]
+            
+            if self.agent_done[i]:
+                obs_list[i][-1] = 0.0
+                if self._cached_obs[i] is not None:
+                    self._cached_obs[i][-1] = 0.0
             
         timeout = self.steps >= self.cfg['max_steps_per_episode']
         episode_done = timeout or bool(np.all(self.agent_done))
@@ -393,12 +408,15 @@ class MultiUAVEnv(gym.Env):
         d5_norm = d5 / arena_diag 
         
         xi  = np.array([d5_norm, varpi, varpi_z], dtype=np.float32)
+        alive = 1.0 if not getattr(self, 'agent_done', [False]*(i+1))[i] else 0.0
+        
         obs = np.concatenate([
             [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],
             lidar_norm.flatten(),
-            xi
+            xi,
+            [alive]
         ])
-        assert obs.shape == (32,), f"obs shape mismatch: {obs.shape}"
+        assert obs.shape == (33,), f"obs shape mismatch: {obs.shape}"
         return obs.astype(np.float32)
 
     def _get_observations(self) -> np.ndarray:

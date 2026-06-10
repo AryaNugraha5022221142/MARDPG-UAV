@@ -21,7 +21,7 @@ environment:
     lambda_col: 5.0
     sigma_col: 3.0             # ~1m warning band
     r_free:  0.1
-    r_step: -0.6
+    r_step: -1.0
     r_goal: 10.0               # terminal success anchor
     # [I1] Terminal collision penalty, previously hardcoded -500 in
     # uav_env.py. -100 still makes death decisively worse than wandering
@@ -38,6 +38,7 @@ algorithm:
   tau:          0.01
   lr_actor:     0.001
   lr_critic:    0.001
+  lr_shared_actor: 0.002
   batch_size:   128
   seq_len:      80
   burn_in:      10
@@ -45,6 +46,7 @@ algorithm:
   update_freq:  100
   warmup_steps: 2000
   gradient_clip: 1.0
+  shared_gradient_clip: 5.0
   n_episodes:   20000
   noise_std:    0.3
   noise_min:    0.05
@@ -62,10 +64,11 @@ algorithm:
                                # deterministic LSTM kernels are slow on GPU.
   eval_every: 200              # [I3] run a noise-free eval block every N
                                # in-stage episodes...
-  eval_episodes: 20            # ...of this many episodes; promotion is
+  eval_episodes: 50            # ...of this many episodes; promotion is
                                # decided on these stats, not noisy rollouts.
   promotion_min_episodes: 200  # minimum episodes in a stage before the
                                # first promotion eval.
+  promotion_consecutive_evals: 2 # consecutive passing evals needed to promote
   save_replay_on_checkpoint: false  # [C3] replay is always saved on
                                # KeyboardInterrupt; enable this to also save
                                # it on periodic checkpoints (~100-300 MB).

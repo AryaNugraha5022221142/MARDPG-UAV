@@ -5,9 +5,9 @@ Input layout (30D): [theta(1), phi(1), lidar(25), d5(1), varpi(1), varpi_z(1)]
 import torch, torch.nn as nn
 
 class SharedFeatureExtractor(nn.Module):
-    def __init__(self, obs_dim=32):
+    def __init__(self, obs_dim=33):
         super(SharedFeatureExtractor, self).__init__()
-        # [BUG-3 FIX] Correct input dimensions based on 32-D layout
+        # [BUG-3 FIX] Correct input dimensions based on 32-D layout (index 32 is alive flag for critic)
         self.fc_angle = nn.Linear(4, 8)    # Indices 0:4
         self.conv_lidar = nn.Conv2d(1, 32, kernel_size=2, stride=1)  # 5x5 -> 4x4x32
         self.lidar_out  = nn.Linear(32 * 4 * 4, 32)
@@ -18,7 +18,7 @@ class SharedFeatureExtractor(nn.Module):
 
     def forward(self, obs):
         import torch.nn.functional as F
-        # [BUG-3 FIX] Correct slicing
+        # [BUG-3 FIX] Correct slicing. Note: alive flag at index 32 is deliberately omitted.
         angles = obs[..., 0:4]
         lidar = obs[..., 4:29].reshape(*obs.shape[:-1], 1, 5, 5)
         goal = obs[..., 29:32]

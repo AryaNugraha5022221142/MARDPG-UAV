@@ -53,19 +53,19 @@ CURRICULUM = [
         'name': 'Free Space (near)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
         'static_obs': 0, 'min_sep': 15.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.35, 'collision_rate': 0.55,
+        'criteria': {'success_rate': 0.35, 'collision_rate': 0.40,
                      'path_efficiency': 0.40, 'operator': 'less_col'}},
     {   # 2 — Free space, FAR goals. Horizon extension BEFORE obstacles.
         'name': 'Free Space (far)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 600,
         'static_obs': 0, 'min_sep': 30.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.45, 'collision_rate': 0.45,
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.35,
                      'path_efficiency': 0.45, 'operator': 'less_col'}},
     {   # 3 — FEW obstacles at the SHORTER goal distance.
         'name': 'Sparse Obstacles (near)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
         'static_obs': 3, 'max_h': 20.0, 'min_sep': 30.0, 'min_start_sep': 12.0,
-        'criteria': {'success_rate': 0.45, 'collision_rate': 0.40,
+        'criteria': {'success_rate': 0.45, 'collision_rate': 0.30,
                      'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}},
     {   # 4 — Moderate density + longer goals.
         'name': 'Moderate Density',
@@ -100,10 +100,12 @@ N_STAGES = len(CURRICULUM)
 # Curriculum manager  (promotion now driven by noise-free eval stats — I3)
 # ---------------------------------------------------------------------------
 class CurriculumManager:
-    def __init__(self, stages):
+    def __init__(self, stages, required_consecutive_passes=2):
         self.stages            = stages
         self.current_stage_idx = 0
         self.episodes_in_stage = 0
+        self.consecutive_passes = 0
+        self.required_consecutive_passes = required_consecutive_passes
 
     def get_current_config(self):
         return self.stages[self.current_stage_idx]
@@ -126,13 +128,21 @@ class CurriculumManager:
         elif op == 'less_dyn':
             passed = passed and stats['dyn_collision_rate'] <= c['dyn_collision_rate']
 
-        if passed and self.current_stage_idx < len(self.stages) - 1:
+        if passed:
+            self.consecutive_passes += 1
+        else:
+            self.consecutive_passes = 0
+
+        if self.consecutive_passes >= self.required_consecutive_passes and self.current_stage_idx < len(self.stages) - 1:
             self.current_stage_idx += 1
             self.episodes_in_stage  = 0
+            self.consecutive_passes = 0
             name = self.stages[self.current_stage_idx]['name']
             print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx + 1}/{N_STAGES}: "
                   f"{name} 🚀\n", flush=True)
             return True
+        elif passed:
+            print(f"\n⏳ QUALIFIED FOR PROMOTION: {self.consecutive_passes}/{self.required_consecutive_passes} consecutive passes.\n", flush=True)
         return False
 
 
@@ -154,23 +164,19 @@ def load_config(path: str = "config/default.yaml") -> dict:
 # ---------------------------------------------------------------------------
 def select_actions_batch(agents, obs_all, prev_actions, noise_val,
                          agent_done, action_dim=2):
-    n          = len(agents)
     obs_t      = torch.FloatTensor(obs_all).unsqueeze(1).to(agents[0].device)
     prev_act_t = torch.FloatTensor(np.array(prev_actions)).unsqueeze(1).to(agents[0].device)
 
     with torch.no_grad():
-        shared_feat = agents[0].actor.shared(obs_t.view(n, -1)).unsqueeze(1)
         actions = []
         for i, ag in enumerate(agents):
             if not agent_done[i]:
-                x_i  = torch.cat([shared_feat[i:i+1], prev_act_t[i:i+1]], dim=-1)
                 h_in = ag.actor_hidden if ag.actor_hidden is not None else (
                     torch.zeros(1, 1, ag.actor.lstm.hidden_size).to(ag.device),
                     torch.zeros(1, 1, ag.actor.lstm.hidden_size).to(ag.device))
-                out, h_out = ag.actor.lstm(x_i, h_in)
-                act = ag.actor.tanh(ag.actor.fc_out(out[:, -1, :])) * ag.actor.action_bound
+                act, h_out = ag.actor(obs_t[i:i+1], prev_act_t[i:i+1], h_in)
                 ag.actor_hidden = h_out
-                action = act[0].cpu().numpy() + noise_val[i]
+                action = act[0, -1].cpu().numpy() + noise_val[i]
                 action = np.clip(action, -ag.action_bound, ag.action_bound)
             else:
                 action = np.zeros(action_dim, dtype=np.float32)
@@ -253,7 +259,7 @@ def train(config_path: str = "config/default.yaml",
 
     env        = MultiUAVEnv(env_cfg)
     n_agents   = env_cfg['n_agents']
-    obs_dim    = 32
+    obs_dim    = env.obs_dim
     action_dim = env.action_dim
 
     # --- Agents ---
@@ -278,7 +284,7 @@ def train(config_path: str = "config/default.yaml",
         agents[i].share_parameters(agents[0])
 
     shared_optimizer = torch.optim.Adam(
-        agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
+        agents[0].shared_extractor.parameters(), lr=algo_cfg.get('lr_shared_actor', algo_cfg['lr_actor']))
 
     # --- Buffer / noise / metrics / curriculum ---
     buffer = SequenceReplayBuffer(
@@ -291,7 +297,7 @@ def train(config_path: str = "config/default.yaml",
                             sigma_min=algo_cfg.get('noise_min', 0.05),
                             decay=algo_cfg.get('noise_decay', 0.9995))
     metrics = MetricsTracker()
-    cl      = CurriculumManager(CURRICULUM)
+    cl      = CurriculumManager(CURRICULUM, required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2))
 
     # --- Optional resume (C3: full training state) ---
     start_episode = 0
@@ -313,6 +319,7 @@ def train(config_path: str = "config/default.yaml",
                 start_episode = int(m.group(1)) if m else 0
             cl.current_stage_idx = int(sc.get('stage_idx', 0))
             cl.episodes_in_stage = int(sc.get('episodes_in_stage', 0))
+            cl.consecutive_passes = int(sc.get('consecutive_passes', 0))
             noise.sigma          = float(sc.get('noise_sigma', noise.sigma))
         except Exception as e:
             print(f"  shared_actor.pt not loaded: {e}")
@@ -368,7 +375,6 @@ def train(config_path: str = "config/default.yaml",
 
             for ag in agents:
                 ag.reset_hidden(batch_size=1, eval_mode=False)
-            noise.reset()
 
             episode_reward = 0.0
             ep_len         = 0
@@ -380,10 +386,8 @@ def train(config_path: str = "config/default.yaml",
             for step in range(stage_cfg['max_steps']):
                 noise_val = noise.sample()
                 if global_step < algo_cfg.get('warmup_steps', 2000):
-                    actions = np.array([
-                        env.action_space.sample()[i] if not env.agent_done[i]
-                        else np.zeros(action_dim, dtype=np.float32)
-                        for i in range(n_agents)])
+                    actions = env.action_space.sample()
+                    actions[env.agent_done] = 0.0
                 else:
                     actions = select_actions_batch(
                         agents, obs, prev_actions, noise_val,
@@ -491,6 +495,9 @@ def train(config_path: str = "config/default.yaml",
 
                     next_act_all = torch.stack(
                         [a.reshape(b_sz * seq_len, -1) for a in target_actions], dim=1)
+                    
+                    # Zero target actions for agents that are done
+                    next_act_all = next_act_all.masked_fill(batch_dones.reshape(b_sz * seq_len, n_agents, 1), 0.0)
 
                     # ---- Independent critic updates ----------------------
                     c_loss_vals, q_mean_list, c_grads = [], [], []
@@ -540,7 +547,7 @@ def train(config_path: str = "config/default.yaml",
 
                         sh_grad = torch.nn.utils.clip_grad_norm_(
                             agents[0].shared_extractor.parameters(),
-                            algo_cfg['gradient_clip'])
+                            algo_cfg.get('shared_gradient_clip', algo_cfg['gradient_clip']))
                         shared_optimizer.step()
 
                         for ag in agents:
@@ -658,6 +665,7 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
                 'episode':           episode,
                 'stage_idx':         curriculum.current_stage_idx,
                 'episodes_in_stage': curriculum.episodes_in_stage,
+                'consecutive_passes': curriculum.consecutive_passes,
                 'noise_sigma':       noise.sigma},
                f"{save_dir}/shared_actor.pt")
     for i, ag in enumerate(agents):

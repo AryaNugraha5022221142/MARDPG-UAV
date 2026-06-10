@@ -33,7 +33,7 @@ def main():
 
     env      = MultiUAVEnv(env_cfg)
     n_agents = env_cfg['n_agents']
-    obs_dim  = 32
+    obs_dim  = env.obs_dim
     act_dim  = env.action_dim
     seq      = algo_cfg['seq_len'] + algo_cfg['burn_in']
     bi       = algo_cfg['burn_in']

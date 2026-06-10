@@ -19,7 +19,7 @@ def main():
     device = 'cpu'
 
     env = MultiUAVEnv(env_cfg)
-    n_agents, obs_dim, act_dim = env_cfg['n_agents'], 32, env.action_dim
+    n_agents, obs_dim, act_dim = env_cfg['n_agents'], env.obs_dim, env.action_dim
     seq = algo_cfg['seq_len'] + algo_cfg['burn_in']
     bi  = algo_cfg['burn_in']
 
