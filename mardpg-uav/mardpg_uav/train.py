@@ -589,7 +589,8 @@ def train(config_path: str = "config/default.yaml",
                       f"success {eval_stats['success_rate']:.2%} | "
                       f"collision {eval_stats['collision_rate']:.2%} | "
                       f"trapped {eval_stats['trapped_rate']:.2%} | "
-                      f"path_eff {eval_stats['path_efficiency']:.2f}", flush=True)
+                      f"path_eff {eval_stats['path_efficiency']:.2f} | "
+                      f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f}", flush=True)
                 cl.evaluate_promotion(eval_stats)
 
             # ---- Console log every 100 episodes -------------------------
