@@ -57,7 +57,7 @@ Key sections:
 | Termination | Per‑agent flags, episode ends only when all agents are done |
 | Observation encoding | Sin/cos for yaw/pitch |
 | Rate limiting | `δ_max = 0.5236 rad/step` for smooth commands |
-| Replay buffer | Episode‑based, FIFO (10^5 transitions), BPTT length 80 (+10 burn-in) |
+| Replay buffer | Episode‑based, stores explicit next-obs; short episodes padded (10^5 transitions), BPTT length 80 (+10 burn-in) |
 
 ---
 

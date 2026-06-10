@@ -22,7 +22,7 @@ def select_actions_batch_eval(agents, obs_all, v_max, agent_done, prev_actions, 
     return np.array(actions)
 
 def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
-             n_eval_episodes: int = 250, device: str = 'cpu'):
+             n_eval_episodes: int = 250, device: str = 'cpu', static_obs: int = 16):
     import os
     if not os.path.exists(config_path):
         fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_path)
@@ -71,7 +71,7 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
     metrics = MetricsTracker()
     
     final_stage_cfg = {
-        'env_size': [100.0, 100.0, 60.0], 'static_obs': 20,
+        'env_size': [100.0, 100.0, 60.0], 'static_obs': static_obs,
         'min_sep': 40.0, 'max_steps': 1500
     }
     
@@ -114,7 +114,8 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
         metrics.record_episode(
             length=step + 1,
             info={'reached': np.array(reached), 'collisions': np.array(per_agent_collided),
-                  'dyn_collisions': np.zeros(n_agents), 'safe_inter_uav_ratio': 1.0},
+                  'dyn_collisions': info.get('dyn_collisions', np.zeros(n_agents)), 
+                  'safe_inter_uav_ratio': info.get('safe_inter_uav_ratio', 1.0)},
             start_pos=[path_history[0][i] for i in range(n_agents)],
             goal_pos=[env.goals[i] for i in range(n_agents)],
             path_history=path_history,
@@ -143,6 +144,9 @@ if __name__ == "__main__":
     parser.add_argument('--config', default='config/default.yaml')
     parser.add_argument('--episodes', type=int, default=250)
     parser.add_argument('--device', default='cpu')
+    parser.add_argument('--static-obs', type=int, default=16,
+                        help='16 = final training stage; 20 = out-of-distribution '
+                             'generalization test (report separately).')
     args = parser.parse_args()
     
-    evaluate(args.checkpoint, args.config, args.episodes, args.device)
+    evaluate(args.checkpoint, args.config, args.episodes, args.device, args.static_obs)

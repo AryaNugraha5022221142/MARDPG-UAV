@@ -14,7 +14,8 @@ from .rewards import RewardFunction
 class MultiUAVEnv(gym.Env):
     def __init__(self, config: dict):
         super().__init__()
-        self.cfg = config
+        import copy as _copy
+        self.cfg = _copy.deepcopy(config)
         self.n_agents = config['n_agents']
         
         self.obs_centers = np.zeros((0, 3), dtype=np.float32)
@@ -296,7 +297,7 @@ class MultiUAVEnv(gym.Env):
             elif collisions[i]:
                 # Assuming max_steps is ~1500 and r_step is -0.6. 
                 # This ensures dying is mathematically worse than living.
-                rewards[i] -= 500.0
+                rewards[i] -= self.cfg['reward'].get('r_collision_terminal', 100.0)
         
         self.steps += 1
         

@@ -14,23 +14,30 @@ environment:
 
   # Obstacle generation
   scene_types: [1, 2, 3, 4]   # 1=square, 2=cylinder, 3=forest, 4=circular
-  
+
   # Reward parameters (Eq 4)
   reward:
     alpha:    3.0
     lambda_col: 5.0
-    sigma_col: 3.0             # REDUCED from 15.0 to widen penalty band (~1m warning)
+    sigma_col: 3.0             # ~1m warning band
     r_free:  0.1
     r_step: -0.6
-    r_goal: 10.0               # ADDED strong terminal success anchor
+    r_goal: 10.0               # terminal success anchor
+    # [I1] Terminal collision penalty, previously hardcoded -500 in
+    # uav_env.py. -100 still makes death decisively worse than wandering
+    # (weighted step cost is only -0.06/step => 1500 steps ~= -90 + shaping)
+    # while shrinking TD-error magnitudes ~5x, which fixes the critic
+    # living permanently in the gradient-clipping regime.
+    # NOTE: changing this changes the MDP — requires training from scratch.
+    r_collision_terminal: 100.0   # applied as reward -= this value
     delta: [0.45, 0.30, 0.15, 0.10]
 
 algorithm:
   device: cuda
   gamma:        0.99
   tau:          0.01
-  lr_actor:     0.001          # REDUCED from 0.01
-  lr_critic:    0.001          # REDUCED from 0.01
+  lr_actor:     0.001
+  lr_critic:    0.001
   batch_size:   128
   seq_len:      80
   burn_in:      10
@@ -39,9 +46,29 @@ algorithm:
   warmup_steps: 2000
   gradient_clip: 1.0
   n_episodes:   20000
-  noise_std:    0.3            # INCREASED initial noise for wider support
-  noise_min:    0.05           # ADDED for annealing
-  noise_decay:  0.9995         # ADDED for annealing
+  noise_std:    0.3
+  noise_min:    0.05
+  noise_decay:  0.9995
+
+  # ---- New (audit fixes) -------------------------------------------------
+  huber_beta: 10.0             # [I1] Huber transition point for critic loss.
+                               # TD errors below this behave as MSE/2;
+                               # above it, per-element gradient is capped.
+  grad_steps_per_update: 1     # [I4] raise to 2-4 on T4 if benchmark shows
+                               # the env (CPU) dominates — converts idle GPU
+                               # into sample efficiency without touching the
+                               # data-collection rate.
+  deterministic_cudnn: false   # [I4] true only for strict-repro debug runs;
+                               # deterministic LSTM kernels are slow on GPU.
+  eval_every: 200              # [I3] run a noise-free eval block every N
+                               # in-stage episodes...
+  eval_episodes: 20            # ...of this many episodes; promotion is
+                               # decided on these stats, not noisy rollouts.
+  promotion_min_episodes: 200  # minimum episodes in a stage before the
+                               # first promotion eval.
+  save_replay_on_checkpoint: false  # [C3] replay is always saved on
+                               # KeyboardInterrupt; enable this to also save
+                               # it on periodic checkpoints (~100-300 MB).
 
 network:
   fc_angle_units:  8
