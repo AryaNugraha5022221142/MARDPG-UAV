@@ -260,11 +260,8 @@ class MultiUAVEnv(gym.Env):
             if self.agent_done[i]:
                 obs_list.append(self._cached_obs[i])
                 
-                # FIX: Prevent suicide exploit by punishing collided agents until episode ends
-                if self.agent_collided[i]:
-                    rewards[i] = self.reward_fn.delta[3] * self.cfg['reward']['r_step']
-                else:
-                    rewards[i] = 0.0
+                # Done agents receive 0 reward (ignored by sequence mask anyway)
+                rewards[i] = 0.0
                 continue
                 
             pos = self.agents_state[i, :3]
@@ -294,6 +291,12 @@ class MultiUAVEnv(gym.Env):
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
                 rewards[i] += self.cfg['reward'].get('r_goal', 10.0)  # Add terminal anchor
+                
+            # NEW FIX: Massive terminal penalty at the exact step of death
+            elif collisions[i]:
+                # Assuming max_steps is ~1500 and r_step is -0.6. 
+                # This ensures dying is mathematically worse than living.
+                rewards[i] -= 500.0
         
         self.steps += 1
         
