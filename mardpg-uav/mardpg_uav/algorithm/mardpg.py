@@ -19,6 +19,7 @@ import numpy as np
 
 from ..networks.shared import SharedFeatureExtractor
 from ..networks.actor  import Actor
+from ..networks.critic import RecurrentCritic
 
 
 class MARDPGAgent:
@@ -47,16 +48,19 @@ class MARDPGAgent:
         self.actor_target     = copy.deepcopy(self.actor).to(self.device)
         self.actor_target.eval()
 
-        # Critic placeholder — train.py assigns shared_critic after construction
-        self.critic        = None
-        self.critic_target = None
+        # Critic: N independent instances
+        self.critic        = RecurrentCritic(n_agents, obs_dim, action_dim, fc_hidden, lstm_hidden).to(self.device)
+        self.critic_target = copy.deepcopy(self.critic).to(self.device)
+        self.critic_target.eval()
 
-        # Actor optimizer: private params only (LSTM + head)
+        # Optimizers
         self.actor_private_params = (list(self.actor.lstm.parameters()) +
                                      list(self.actor.fc_out.parameters()))
         self.actor_optimizer = optim.Adam(self.actor_private_params, lr=lr_actor)
+        self.critic_optimizer = optim.Adam(self.critic.parameters(), lr=lr_critic)
 
         self._hard_update(self.actor_target, self.actor)
+        self._hard_update(self.critic_target, self.critic)
 
         # Hidden states
         self.actor_hidden      = None
@@ -92,6 +96,42 @@ class MARDPGAgent:
         return (h, h.clone())
 
     # ------------------------------------------------------------------
+    # Critic update
+    # ------------------------------------------------------------------
+    def compute_critic_loss(self, obs_all_seq: torch.Tensor,
+                            act_all_seq: torch.Tensor,
+                            next_obs_all_seq: torch.Tensor,
+                            next_act_all_seq: torch.Tensor,
+                            rewards: torch.Tensor,
+                            dones: torch.Tensor,
+                            mask: torch.Tensor) -> torch.Tensor:
+        """
+        DPG critic loss (paper Eq. 8).
+        """
+        batch_size, total_seq_len = mask.shape
+        learn_start = self.burn_in
+
+        # Current Q
+        q, _ = self.critic(obs_all_seq, act_all_seq, hidden=None, seq_len=total_seq_len)
+        q = q.view(batch_size, total_seq_len)
+
+        # Target Q
+        with torch.no_grad():
+            q_next, _ = self.critic_target(next_obs_all_seq, next_act_all_seq, hidden=None, seq_len=total_seq_len)
+            q_next = q_next.view(batch_size, total_seq_len)
+            
+            y = rewards + self.gamma * q_next * (~dones)
+
+        q_learn = q[:, learn_start:]
+        y_learn = y[:, learn_start:].detach()
+        mask_learn = mask[:, learn_start:]
+
+        eps = 1e-8
+        critic_loss = (((q_learn - y_learn) ** 2) * mask_learn).sum() / (mask_learn.sum() + eps)
+        
+        return critic_loss, q_learn
+
+    # ------------------------------------------------------------------
     # Actor loss  (critic freeze handled externally in train.py)
     # ------------------------------------------------------------------
     def compute_actor_loss(self, obs_all_seq: torch.Tensor,
@@ -100,10 +140,6 @@ class MARDPGAgent:
                            mask: torch.Tensor) -> torch.Tensor:
         """
         DPG actor loss (paper Eq. 11).
-
-        The critic is assumed to be frozen by the caller (train.py) before
-        this method is invoked.  The freeze/unfreeze is NOT done here so
-        that the trunk runs only once across all five agent losses.
         """
         batch_size, total_seq_len = mask.shape
 
@@ -116,9 +152,8 @@ class MARDPGAgent:
         my_acts, _ = self.actor(my_obs, my_pa, hidden=None)
         joint_actions[:, self.agent_id, :] = my_acts.reshape(-1, my_acts.shape[-1])
 
-        # Query shared critic — uses this agent's head
-        q_flat = self.critic(obs_all_seq, joint_actions,
-                             self.agent_id, total_seq_len)
+        # Query independent critic
+        q_flat, _ = self.critic(obs_all_seq, joint_actions, hidden=None, seq_len=total_seq_len)
         q_full = q_flat.view(batch_size, total_seq_len)
 
         learn_start = self.burn_in

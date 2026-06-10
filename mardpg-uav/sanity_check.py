@@ -1,13 +1,11 @@
 """
 Run before any paid GPU session.
-Checks shapes, forward pass, one full update cycle, and confirms the shared
-critic produces different Q values per agent (heads are diverging correctly).
+Checks shapes, forward pass, one full update cycle for independent critics.
 """
-import torch, numpy as np, yaml, copy
+import torch, numpy as np, yaml
 from mardpg_uav.environment.uav_env   import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg      import MARDPGAgent
 from mardpg_uav.algorithm.replay_buffer import SequenceReplayBuffer
-from mardpg_uav.networks.critic        import SharedCentralCritic
 
 CFG_PATH = "config/default.yaml"
 
@@ -16,7 +14,6 @@ def main():
         cfg = yaml.safe_load(f)
     env_cfg  = cfg['environment']
     algo_cfg = cfg['algorithm']
-    net_cfg  = cfg['network']
     device   = 'cpu'
 
     env      = MultiUAVEnv(env_cfg)
@@ -32,15 +29,7 @@ def main():
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
 
-    # Shared critic
-    shared_critic = SharedCentralCritic(n_agents, obs_dim, act_dim)
-    shared_critic_target = copy.deepcopy(shared_critic)
-    for ag in agents:
-        ag.critic = shared_critic
-        ag.critic_target = shared_critic_target
-
     shared_opt  = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=1e-3)
-    critic_opt  = torch.optim.Adam(shared_critic.parameters(), lr=1e-3)
 
     # 1. Observation shape
     obs = env.reset({'env_size': [100.,100.,60.], 'static_obs': 0,
@@ -76,57 +65,46 @@ def main():
     nobs_all = b_obs_next.reshape(b_sz * seq_len, n_agents, -1)
     nact_all = act_all.clone()
 
-    # 3. Trunk forward
-    h = shared_critic.trunk(obs_all, act_all, seq_len)
-    assert h.shape == (b_sz, seq_len, 128), f"Trunk shape {h.shape}"
-    print(f"[PASS] trunk shape {h.shape}")
-
-    # 4. Heads produce DIFFERENT Q values per agent
-    q0 = shared_critic.q_from_trunk(h, 0).mean().item()
-    q1 = shared_critic.q_from_trunk(h, 1).mean().item()
-    # at init they may be equal — confirm the update changes them differently
-    print(f"[INFO] Q agent 0: {q0:.4f}  Q agent 1: {q1:.4f}  (may match at init)")
-
-    # 5. One critic update
-    shared_critic.train()
-    h_cur = shared_critic.trunk(obs_all, act_all, seq_len)
-    with torch.no_grad():
-        h_nxt = shared_critic.trunk(nobs_all, nact_all, seq_len)
-    loss = torch.zeros(1)
-    for i in range(n_agents):
-        qc = shared_critic.q_from_trunk(h_cur, i).view(b_sz, seq_len)[:, bi:]
-        with torch.no_grad():
-            qn  = shared_critic.q_from_trunk(h_nxt, i).view(b_sz, seq_len)[:, bi:]
-            y   = b_rew[:, bi:, i] + 0.99 * qn * (~b_done[:, bi:, i])
-        loss = loss + ((qc - y.detach()) ** 2).mean()
-    critic_opt.zero_grad(); loss.backward(); critic_opt.step()
-    assert torch.isfinite(loss), "Critic loss is not finite"
-    print(f"[PASS] critic loss {loss.item():.4f}")
-
-    # 6. One actor update
-    for p in shared_critic.parameters(): p.requires_grad = False
-    shared_opt.zero_grad()
-    for ag in agents: ag.actor_optimizer.zero_grad()
-    prev_act_all = b_prev_act.reshape(b_sz * seq_len, n_agents, -1)
     done_mask = ~torch.cat([torch.zeros(b_sz,1,n_agents,dtype=torch.bool),
                             b_done[:,:-1,:]], dim=1)
     burn_mask = torch.arange(seq_len).view(1,-1,1) >= bi
     agent_mask = (burn_mask | (b_done & done_mask)) & done_mask
+
+    # 3. Independent critics logic check
+    for p in agents[0].critic.parameters(): p.requires_grad = True
+
+    c_loss_total = torch.zeros(1)
+    for i, ag in enumerate(agents):
+        ag.critic_optimizer.zero_grad()
+        cl_i, q_learn = ag.compute_critic_loss(
+            obs_all, act_all, nobs_all, nact_all,
+            b_rew[:, :, i], b_done[:, :, i], agent_mask[:, :, i]
+        )
+        cl_i.backward()
+        ag.critic_optimizer.step()
+        c_loss_total = c_loss_total + cl_i
+        
+    assert torch.isfinite(c_loss_total), "Critic loss is not finite"
+    print(f"[PASS] independent critic avg loss {(c_loss_total/n_agents).item():.4f}")
+
+    # 4. One actor update
+    for ag in agents:
+        for p in ag.critic.parameters(): p.requires_grad = False
+        
+    shared_opt.zero_grad()
+    for ag in agents: ag.actor_optimizer.zero_grad()
+    
+    prev_act_all = b_prev_act.reshape(b_sz * seq_len, n_agents, -1)
     al = sum(ag.compute_actor_loss(obs_all, act_all, prev_act_all, agent_mask[:,:,ag.agent_id])
              for ag in agents) / n_agents
     al.backward()
     shared_opt.step()
-    for ag in agents: ag.actor_optimizer.step()
-    for p in shared_critic.parameters(): p.requires_grad = True
+    for ag in agents: 
+        ag.actor_optimizer.step()
+        for p in ag.critic.parameters(): p.requires_grad = True
+        
     assert torch.isfinite(al), "Actor loss is not finite"
     print(f"[PASS] actor loss {al.item():.4f}")
-
-    # 7. After update, Q values differ between agents (heads diverged)
-    with torch.no_grad():
-        h2 = shared_critic.trunk(obs_all, act_all, seq_len)
-        q0b = shared_critic.q_from_trunk(h2, 0).mean().item()
-        q1b = shared_critic.q_from_trunk(h2, 1).mean().item()
-    print(f"[INFO] After update — Q agent 0: {q0b:.4f}  Q agent 1: {q1b:.4f}")
 
     print("\n✅  All checks passed — safe to start a paid run.")
 

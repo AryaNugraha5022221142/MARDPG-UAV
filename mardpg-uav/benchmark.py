@@ -5,11 +5,10 @@ Run on BOTH your CPU instance and the T4 before committing to a long paid run.
 Usage:
     python benchmark.py --episodes 200
 """
-import argparse, time, yaml, torch, numpy as np, copy
+import argparse, time, yaml, torch, numpy as np
 from mardpg_uav.environment.uav_env     import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg        import MARDPGAgent
 from mardpg_uav.algorithm.replay_buffer import SequenceReplayBuffer
-from mardpg_uav.networks.critic          import SharedCentralCritic
 
 def main():
     ap = argparse.ArgumentParser()
@@ -21,7 +20,6 @@ def main():
         cfg = yaml.safe_load(f)
     env_cfg  = cfg['environment']
     algo_cfg = cfg['algorithm']
-    net_cfg  = cfg['network']
     device   = args.device
 
     env      = MultiUAVEnv(env_cfg)
@@ -36,14 +34,7 @@ def main():
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
 
-    shared_critic = SharedCentralCritic(n_agents, obs_dim, act_dim).to(device)
-    shared_critic_target = copy.deepcopy(shared_critic).to(device)
-    for ag in agents:
-        ag.critic = shared_critic
-        ag.critic_target = shared_critic_target
-
     shared_opt = torch.optim.Adam(agents[0].shared_extractor.parameters(), lr=1e-3)
-    critic_opt = torch.optim.Adam(shared_critic.parameters(), lr=1e-3)
 
     buf = SequenceReplayBuffer(capacity=100_000,
                                seq_len=algo_cfg['seq_len']+algo_cfg['burn_in'],
@@ -110,32 +101,35 @@ def main():
                             ag.actor_target.fc_out(hn)) * ag.actor_target.action_bound)
                 nact_all = torch.stack([t.reshape(b_sz*seq,-1) for t in tgt], dim=1)
 
-                shared_critic.train()
-                h_cur = shared_critic.trunk(obs_all, act_all, seq)
-                with torch.no_grad():
-                    h_nxt = shared_critic_target.trunk(nobs_all, nact_all, seq)
-                c_loss = sum(
-                    (((shared_critic.q_from_trunk(h_cur,i).view(b_sz,seq)[:,bi:] -
-                       (b_rew[:,:,i][:,bi:] + 0.99 *
-                        shared_critic_target.q_from_trunk(h_nxt,i).view(b_sz,seq)[:,bi:] *
-                        (~b_done[:,:,i][:,bi:]))).detach()) ** 2).mean()
-                    for i in range(n_agents)) / n_agents
-                critic_opt.zero_grad(); c_loss.backward(); critic_opt.step()
-
-                for p in shared_critic.parameters(): p.requires_grad = False
-                shared_opt.zero_grad()
-                for ag in agents: ag.actor_optimizer.zero_grad()
-                prev_act_all = b_prev_act.reshape(b_sz*seq, n_agents, -1)
                 done_mask = ~torch.cat([torch.zeros(b_sz,1,n_agents,dtype=torch.bool,device=device),
                                         b_done[:,:-1,:]], dim=1)
                 burn_mask = torch.arange(seq,device=device).view(1,-1,1) >= bi
                 amask = (burn_mask|(b_done&done_mask))&done_mask
+
+                for i, ag in enumerate(agents):
+                    ag.critic_optimizer.zero_grad()
+                    cl_i, _ = ag.compute_critic_loss(
+                        obs_all, act_all, nobs_all, nact_all,
+                        b_rew[:, :, i], b_done[:, :, i], amask[:, :, i]
+                    )
+                    cl_i.backward()
+                    ag.critic_optimizer.step()
+
+                for ag in agents:
+                    for p in ag.critic.parameters(): p.requires_grad = False
+                
+                shared_opt.zero_grad()
+                for ag in agents: ag.actor_optimizer.zero_grad()
+                
+                prev_act_all = b_prev_act.reshape(b_sz*seq, n_agents, -1)
                 al = sum(ag.compute_actor_loss(obs_all,act_all,prev_act_all,amask[:,:,ag.agent_id])
                          for ag in agents) / n_agents
                 al.backward()
                 shared_opt.step()
-                for ag in agents: ag.actor_optimizer.step()
-                for p in shared_critic.parameters(): p.requires_grad = True
+                for ag in agents: 
+                    ag.actor_optimizer.step()
+                    for p in ag.critic.parameters(): p.requires_grad = True
+                    
                 update_time += time.perf_counter() - t0
 
         obs = env.reset(stage_cfg)

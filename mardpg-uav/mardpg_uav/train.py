@@ -218,21 +218,6 @@ def train(config_path: str = "config/default.yaml",
     shared_optimizer = torch.optim.Adam(
         agents[0].shared_extractor.parameters(), lr=algo_cfg['lr_actor'])
 
-    # --- Shared critic (Group 2 fix) ---
-    shared_critic = SharedCentralCritic(
-        n_agents, obs_dim, action_dim,
-        net_cfg.get('critic_lstm_hidden', 128),
-        net_cfg.get('critic_lstm_hidden', 128)).to(device)
-    shared_critic_target = copy.deepcopy(shared_critic).to(device)
-    shared_critic_target.eval()
-    critic_optimizer = torch.optim.Adam(
-        shared_critic.parameters(), lr=algo_cfg['lr_critic'])
-
-    # Give every agent a reference to the same critic / target
-    for ag in agents:
-        ag.critic        = shared_critic
-        ag.critic_target = shared_critic_target
-
     # --- Optional resume ---
     start_episode = 0
     global_step   = 0
@@ -256,19 +241,15 @@ def train(config_path: str = "config/default.yaml",
                 except Exception as e:
                     print(f"  shared_actor.pt not loaded: {e}")
 
-                try:
-                    cc = torch.load(f"{resume_dir}/shared_critic.pt", map_location=device)
-                    shared_critic.load_state_dict(cc['shared_critic'])
-                    shared_critic_target.load_state_dict(cc['shared_critic'])
-                    if 'critic_opt' in cc:
-                        critic_optimizer.load_state_dict(cc['critic_opt'])
-                except Exception as e:
-                    print(f"  shared_critic.pt not loaded: {e}")
-
             if 'actor_private' in ckpt:
                 ag.actor.load_state_dict(ckpt['actor_private'], strict=False)
             if 'actor_opt' in ckpt:
                 ag.actor_optimizer.load_state_dict(ckpt['actor_opt'])
+            if 'critic' in ckpt:
+                ag.critic.load_state_dict(ckpt['critic'])
+                ag.critic_target.load_state_dict(ckpt['critic'])
+            if 'critic_opt' in ckpt:
+                ag.critic_optimizer.load_state_dict(ckpt['critic_opt'])
 
             for tp, sp in zip(ag.actor_target.parameters(), ag.actor.parameters()):
                 tp.data.copy_(sp.data)
@@ -430,36 +411,33 @@ def train(config_path: str = "config/default.yaml",
                     next_act_all = torch.stack(
                         [a.reshape(b_sz * seq_len, -1) for a in target_actions], dim=1)
 
-                    # ---- Shared critic update (trunk runs ONCE) ----------
-                    shared_critic.train()
-                    h_cur  = shared_critic.trunk(obs_all, act_all, seq_len)
-                    with torch.no_grad():
-                        h_nxt = shared_critic_target.trunk(next_obs_all, next_act_all, seq_len)
-
+                    # ---- Independent critic updates ----------
                     c_loss_total = torch.zeros(1, device=device)
                     q_mean_list  = []
-                    for i in range(n_agents):
-                        q_cur = shared_critic.q_from_trunk(h_cur, i).view(b_sz, seq_len)
-                        with torch.no_grad():
-                            q_nxt = shared_critic_target.q_from_trunk(h_nxt, i).view(b_sz, seq_len)
-                            r = batch_rewards[:, :, i]
-                            d = batch_dones[:, :, i]
-                            y = r + algo_cfg['gamma'] * q_nxt * (~d)
-                        m  = agent_mask[:, :, i][:, bi:]
-                        cl_i = (((q_cur[:, bi:] - y[:, bi:].detach()) ** 2) * m).sum() / (m.sum() + 1e-8)
+                    c_grads = []
+
+                    for i, ag in enumerate(agents):
+                        ag.critic_optimizer.zero_grad()
+                        cl_i, q_learn = ag.compute_critic_loss(
+                            obs_all, act_all, next_obs_all, next_act_all,
+                            batch_rewards[:, :, i], batch_dones[:, :, i], agent_mask[:, :, i]
+                        )
+                        cl_i.backward()
+                        c_grad_i = torch.nn.utils.clip_grad_norm_(
+                            ag.critic.parameters(), algo_cfg['gradient_clip'])
+                        ag.critic_optimizer.step()
+
                         c_loss_total = c_loss_total + cl_i
-                        q_mean_list.append(q_cur[:, bi:].detach().mean().item())
+                        q_mean_list.append(q_learn.mean().item())
+                        c_grads.append(c_grad_i.item())
 
                     c_loss_mean = c_loss_total / n_agents
-                    critic_optimizer.zero_grad()
-                    c_loss_mean.backward()
-                    c_grad = torch.nn.utils.clip_grad_norm_(
-                        shared_critic.parameters(), algo_cfg['gradient_clip'])
-                    critic_optimizer.step()
+                    c_grad = np.mean(c_grads)
 
                     # ---- Actor update (critics frozen) -------------------
-                    for p in shared_critic.parameters():
-                        p.requires_grad = False
+                    for ag in agents:
+                        for p in ag.critic.parameters():
+                            p.requires_grad = False
 
                     shared_optimizer.zero_grad()
                     for ag in agents:
@@ -485,8 +463,9 @@ def train(config_path: str = "config/default.yaml",
                         ag_grads.append(g.item())
                         ag.actor_optimizer.step()
 
-                    for p in shared_critic.parameters():
-                        p.requires_grad = True
+                    for ag in agents:
+                        for p in ag.critic.parameters():
+                            p.requires_grad = True
 
                     # ---- Soft target updates ----------------------------
                     agents[0]._soft_update(agents[0].actor_target.shared,
@@ -494,13 +473,13 @@ def train(config_path: str = "config/default.yaml",
                     for ag in agents:
                         ag._soft_update(ag.actor_target.lstm,   ag.actor.lstm)
                         ag._soft_update(ag.actor_target.fc_out, ag.actor.fc_out)
-                    agents[0]._soft_update(shared_critic_target, shared_critic)
+                        ag._soft_update(ag.critic_target, ag.critic)
 
                     # ---- Accumulate grad metrics -------------------------
                     grad_metrics["actor_loss"].append(total_actor_loss.item())
                     grad_metrics["critic_loss"].append(c_loss_mean.item())
                     grad_metrics["q_vals"].append(np.mean(q_mean_list))
-                    grad_metrics["critic_grad_norm"].append(c_grad.item())
+                    grad_metrics["critic_grad_norm"].append(c_grad)
                     grad_metrics["shared_grad_norm"].append(sh_grad.item())
                     grad_metrics["actor_grad_norm"].append(np.mean(ag_grads))
 
@@ -536,8 +515,8 @@ def train(config_path: str = "config/default.yaml",
             # ---- Checkpoint every 1000 episodes -------------------------
             if episode % 1000 == 0 and episode > 0:
                 _save_checkpoint(f"checkpoints/episode_{episode}",
-                                 agents, shared_critic, shared_optimizer,
-                                 critic_optimizer, global_step)
+                                 agents, shared_optimizer,
+                                 global_step)
 
             # ---- CSV every 100 episodes ---------------------------------
             if episode % 100 == 0 and episode > 0:
@@ -547,36 +526,35 @@ def train(config_path: str = "config/default.yaml",
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Saving emergency checkpoint…")
         _save_checkpoint(f"checkpoints/interrupted_episode_{episode}",
-                         agents, shared_critic, shared_optimizer,
-                         critic_optimizer, global_step)
+                         agents, shared_optimizer,
+                         global_step)
         print("Done.")
         return agents
 
     print("\nTraining complete.")
     _save_checkpoint("checkpoints/final",
-                     agents, shared_critic, shared_optimizer,
-                     critic_optimizer, global_step)
+                     agents, shared_optimizer,
+                     global_step)
     return agents
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-def _save_checkpoint(save_dir, agents, shared_critic,
-                     shared_opt, critic_opt, global_step):
+def _save_checkpoint(save_dir, agents,
+                     shared_opt, global_step):
     os.makedirs(save_dir, exist_ok=True)
     torch.save({'shared_actor': agents[0].shared_extractor.state_dict(),
                 'shared_opt':   shared_opt.state_dict(),
                 'global_step':  global_step},
                f"{save_dir}/shared_actor.pt")
-    torch.save({'shared_critic': shared_critic.state_dict(),
-                'critic_opt':    critic_opt.state_dict()},
-               f"{save_dir}/shared_critic.pt")
     for i, ag in enumerate(agents):
         private = {k: v for k, v in ag.actor.state_dict().items()
                    if k.startswith(('lstm.', 'fc_out.'))}
         torch.save({'actor_private': private,
-                    'actor_opt':     ag.actor_optimizer.state_dict()},
+                    'actor_opt':     ag.actor_optimizer.state_dict(),
+                    'critic':        ag.critic.state_dict(),
+                    'critic_opt':    ag.critic_optimizer.state_dict()},
                    f"{save_dir}/agent_{i}.pt")
 
 
