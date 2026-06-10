@@ -25,7 +25,7 @@ from .algorithm.mardpg          import MARDPGAgent
 from .algorithm.replay_buffer   import SequenceReplayBuffer
 from .algorithm.noise           import GaussianNoise
 from .utils.metrics             import MetricsTracker
-from .networks.critic           import SharedCentralCritic
+
 
 # ---------------------------------------------------------------------------
 # Curriculum  (8 stages — difficulty axes separated to avoid cliff)
@@ -267,7 +267,9 @@ def train(config_path: str = "config/default.yaml",
         n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim)
 
     noise   = GaussianNoise(n_agents=n_agents, action_dim=action_dim,
-                            sigma=algo_cfg.get('noise_std', 0.1))
+                            sigma=algo_cfg.get('noise_std', 0.1),
+                            sigma_min=algo_cfg.get('noise_min', 0.05),
+                            decay=algo_cfg.get('noise_decay', 0.9995))
     metrics = MetricsTracker()
     cl      = CurriculumManager(CURRICULUM)
 
@@ -332,6 +334,8 @@ def train(config_path: str = "config/default.yaml",
                     break
 
             buffer.end_episode()
+            if hasattr(noise, 'decay_sigma'):
+                noise.decay_sigma()
             metrics.record_episode(
                 length=ep_len, info=info,
                 start_pos=[path_history[0][i] for i in range(n_agents)],
@@ -415,57 +419,70 @@ def train(config_path: str = "config/default.yaml",
                     c_loss_total = torch.zeros(1, device=device)
                     q_mean_list  = []
                     c_grads = []
+                    valid_critics = 0
 
                     for i, ag in enumerate(agents):
                         ag.critic_optimizer.zero_grad()
-                        cl_i, q_learn = ag.compute_critic_loss(
+                        cl_i, q_learn, valid_steps = ag.compute_critic_loss(
                             obs_all, act_all, next_obs_all, next_act_all,
                             batch_rewards[:, :, i], batch_dones[:, :, i], agent_mask[:, :, i]
                         )
-                        cl_i.backward()
-                        c_grad_i = torch.nn.utils.clip_grad_norm_(
-                            ag.critic.parameters(), algo_cfg['gradient_clip'])
-                        ag.critic_optimizer.step()
+                        if valid_steps > 0:
+                            cl_i.backward()
+                            c_grad_i = torch.nn.utils.clip_grad_norm_(
+                                ag.critic.parameters(), algo_cfg['gradient_clip'])
+                            ag.critic_optimizer.step()
 
-                        c_loss_total = c_loss_total + cl_i
-                        q_mean_list.append(q_learn.mean().item())
-                        c_grads.append(c_grad_i.item())
+                            c_loss_total = c_loss_total + cl_i
+                            q_mean_list.append(q_learn.mean().item())
+                            c_grads.append(c_grad_i.item())
+                            valid_critics += 1
 
-                    c_loss_mean = c_loss_total / n_agents
-                    c_grad = np.mean(c_grads)
+                    if valid_critics > 0:
+                        c_loss_mean = c_loss_total / valid_critics
+                        c_grad = np.mean(c_grads) if c_grads else 0.0
+                    else:
+                        c_loss_mean = torch.zeros(1, device=device)
+                        c_grad = 0.0
 
                     # ---- Actor update (critics frozen) -------------------
                     for ag in agents:
-                        for p in ag.critic.parameters():
-                            p.requires_grad = False
+                        for p in ag.critic.parameters(): p.requires_grad = False
 
                     shared_optimizer.zero_grad()
-                    for ag in agents:
-                        ag.actor_optimizer.zero_grad()
+                    for ag in agents: ag.actor_optimizer.zero_grad()
 
                     prev_act_all = batch_prev_actions.reshape(b_sz * seq_len, n_agents, -1)
-                    actor_losses = [
-                        ag.compute_actor_loss(obs_all, act_all, prev_act_all,
-                                              agent_mask[:, :, ag.agent_id])
-                        for ag in agents]
-                    total_actor_loss = sum(actor_losses) / n_agents
-                    total_actor_loss.backward()
-
-                    sh_grad = torch.nn.utils.clip_grad_norm_(
-                        agents[0].shared_extractor.parameters(),
-                        algo_cfg['gradient_clip'])
-                    shared_optimizer.step()
-
+                    
+                    # Compute losses and filter out dead agents
+                    actor_results = [
+                        ag.compute_actor_loss(obs_all, act_all, prev_act_all, agent_mask[:, :, ag.agent_id])
+                        for ag in agents
+                    ]
+                    actor_losses = [res[0] for res in actor_results if res[1] > 0]
+                    
                     ag_grads = []
-                    for ag in agents:
-                        g = torch.nn.utils.clip_grad_norm_(
-                            ag.actor_private_params, algo_cfg['gradient_clip'])
-                        ag_grads.append(g.item())
-                        ag.actor_optimizer.step()
+                    sh_grad = torch.zeros(1)
+                    
+                    if actor_losses:
+                        total_actor_loss = sum(actor_losses) / len(actor_losses) # Average only over LIVE agents
+                        total_actor_loss.backward()
+
+                        sh_grad = torch.nn.utils.clip_grad_norm_(
+                            agents[0].shared_extractor.parameters(), algo_cfg['gradient_clip'])
+                        shared_optimizer.step()
+
+                        for ag in agents:
+                            g = torch.nn.utils.clip_grad_norm_(
+                                ag.actor_private_params, algo_cfg['gradient_clip'])
+                            ag_grads.append(g.item())
+                            ag.actor_optimizer.step()
+                    else:
+                        total_actor_loss = torch.zeros(1)
+                        ag_grads = [0.0] * n_agents
 
                     for ag in agents:
-                        for p in ag.critic.parameters():
-                            p.requires_grad = True
+                        for p in ag.critic.parameters(): p.requires_grad = True
 
                     # ---- Soft target updates ----------------------------
                     agents[0]._soft_update(agents[0].actor_target.shared,

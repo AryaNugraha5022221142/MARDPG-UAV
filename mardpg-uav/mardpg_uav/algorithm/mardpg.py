@@ -104,7 +104,7 @@ class MARDPGAgent:
                             next_act_all_seq: torch.Tensor,
                             rewards: torch.Tensor,
                             dones: torch.Tensor,
-                            mask: torch.Tensor) -> torch.Tensor:
+                            mask: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, float]:
         """
         DPG critic loss (paper Eq. 8).
         """
@@ -126,10 +126,13 @@ class MARDPGAgent:
         y_learn = y[:, learn_start:].detach()
         mask_learn = mask[:, learn_start:]
 
-        eps = 1e-8
-        critic_loss = (((q_learn - y_learn) ** 2) * mask_learn).sum() / (mask_learn.sum() + eps)
+        valid_steps = mask_learn.sum()
+        if valid_steps < 1e-6:
+            return (((q_learn - y_learn) ** 2) * mask_learn).sum() * 0.0, q_learn, valid_steps.item()
+
+        critic_loss = (((q_learn - y_learn) ** 2) * mask_learn).sum() / valid_steps
         
-        return critic_loss, q_learn
+        return critic_loss, q_learn, valid_steps.item()
 
     # ------------------------------------------------------------------
     # Actor loss  (critic freeze handled externally in train.py)
@@ -137,7 +140,7 @@ class MARDPGAgent:
     def compute_actor_loss(self, obs_all_seq: torch.Tensor,
                            act_all_seq: torch.Tensor,
                            prev_act_all_seq: torch.Tensor,
-                           mask: torch.Tensor) -> torch.Tensor:
+                           mask: torch.Tensor) -> tuple[torch.Tensor, float]:
         """
         DPG actor loss (paper Eq. 11).
         """
@@ -160,8 +163,13 @@ class MARDPGAgent:
         q_learn    = q_full[:, learn_start:]
         mask_learn = mask[:, learn_start:]
 
-        eps = 1e-8
-        return -(q_learn * mask_learn).sum() / (mask_learn.sum() + eps)
+        valid_steps = mask_learn.sum()
+        if valid_steps < 1e-6:
+            # Return 0 loss but preserve computational graph mathematically
+            return (q_learn * mask_learn).sum() * 0.0, valid_steps.item()
+
+        loss = -(q_learn * mask_learn).sum() / valid_steps
+        return loss, valid_steps.item()
 
     # ------------------------------------------------------------------
     # Parameter utilities

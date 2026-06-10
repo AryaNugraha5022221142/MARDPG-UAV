@@ -293,6 +293,7 @@ class MultiUAVEnv(gym.Env):
             # Apply pre-calculated penalties
             if np.linalg.norm(pos - self.goals[i]) < self.cfg['goal_threshold']:
                 reached[i] = True
+                rewards[i] += self.cfg['reward'].get('r_goal', 10.0)  # Add terminal anchor
         
         self.steps += 1
         
