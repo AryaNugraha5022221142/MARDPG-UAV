@@ -33,13 +33,14 @@ from ..networks.critic import RecurrentCritic
 
 class MARDPGAgent:
     def __init__(self, agent_id: int, n_agents: int,
-                 obs_dim: int = 43, action_dim: int = 2,
+                 obs_dim: int = 49, action_dim: int = 2,           # 43 -> 49
                  action_bound: float = 0.5236,
                  lstm_hidden: int = 128, fc_hidden: int = 128,
                  lr_actor: float = 0.001, lr_critic: float = 0.001,
                  tau: float = 0.01, gamma: float = 0.99,
                  gradient_clip: float = 1.0, burn_in: int = 10,
                  huber_beta: float = 10.0,
+                 twin_critic: bool = False,                        # [N3-7]
                  device: str = 'cpu'):
 
         self.agent_id      = agent_id
@@ -49,6 +50,7 @@ class MARDPGAgent:
         self.gradient_clip = gradient_clip
         self.burn_in       = burn_in
         self.huber_beta    = huber_beta
+        self.twin_critic   = twin_critic
         self.device        = torch.device(device)
         self.action_bound  = action_bound
 
@@ -65,7 +67,14 @@ class MARDPGAgent:
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
         self.critic_target.eval()
 
-        # Optimizers
+        # [N3-7] Optional second critic for clipped double-Q.
+        if self.twin_critic:
+            self.critic2        = RecurrentCritic(n_agents, obs_dim, action_dim,
+                                                  fc_hidden, lstm_hidden).to(self.device)
+            self.critic2_target = copy.deepcopy(self.critic2).to(self.device)
+            self.critic2_target.eval()
+            self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr_critic)
+
         self.actor_private_params = (list(self.actor.lstm.parameters()) +
                                      list(self.actor.fc_out.parameters()))
         self.actor_optimizer  = optim.Adam(self.actor_private_params, lr=lr_actor)
@@ -73,8 +82,9 @@ class MARDPGAgent:
 
         self._hard_update(self.actor_target,  self.actor)
         self._hard_update(self.critic_target, self.critic)
+        if self.twin_critic:
+            self._hard_update(self.critic2_target, self.critic2)
 
-        # Hidden states
         self.actor_hidden      = None
         self.eval_actor_hidden = None
 
@@ -110,62 +120,64 @@ class MARDPGAgent:
     # ------------------------------------------------------------------
     # Critic loss
     # ------------------------------------------------------------------
-    def compute_critic_loss(self, obs_all_seq: torch.Tensor,
-                            act_all_seq: torch.Tensor,
-                            next_obs_all_seq: torch.Tensor,
-                            next_act_all_seq: torch.Tensor,
-                            rewards: torch.Tensor,
-                            dones: torch.Tensor,
-                            mask: torch.Tensor):
+    def compute_critic_loss(self, obs_all_seq, act_all_seq,
+                            next_obs_all_seq, next_act_all_seq,
+                            rewards, dones, mask):
         """
         Recurrent TD(0) critic loss with Huber robustification.
 
-        Returns
-        -------
-        (loss: Tensor scalar, q_masked_mean: float, valid_steps: float)
+        [N3-2] NOTE on the loss: F.smooth_l1_loss(beta=huber_beta) equals
+        huber_loss(delta=huber_beta) / huber_beta. Its per-element gradient is
+        bounded at 1.0 (NOT at huber_beta), and that 1.0 is deliberately matched
+        to gradient_clip=1.0 in train.py. (The earlier audit's claim that the
+        cap is `beta` was wrong; the behaviour is fine, the explanation was not.)
 
-        Notes
-        -----
-        * `dones` is the per-agent status AFTER the step. True terminals
-          (collision / goal) zero the bootstrap. Timeout truncation keeps
-          done=False on the last real step and bootstraps through the
-          explicitly stored next_obs (correct time-limit handling).
-        * `mask` must already exclude burn-in is NOT required — burn-in is
-          sliced off here — but it MUST exclude post-death steps and pad
-          steps (constructed in train.py).
+        [N3-7] If self.twin_critic, the bootstrap target uses
+        min(Q1_target, Q2_target) and the loss regresses BOTH online critics
+        toward that shared target; train.py steps both optimizers.
+
+        Returns (loss, q_masked_mean(float), valid_steps(float)).
         """
         batch_size, total_seq_len = mask.shape
         learn_start = self.burn_in
 
-        # Current Q over the full window (LSTM warmed up over burn-in)
-        q, _ = self.critic(obs_all_seq, act_all_seq, hidden=None,
-                           seq_len=total_seq_len)
-        q = q.view(batch_size, total_seq_len)
+        q1, _ = self.critic(obs_all_seq, act_all_seq, hidden=None,
+                            seq_len=total_seq_len)
+        q1 = q1.view(batch_size, total_seq_len)
+        if self.twin_critic:
+            q2, _ = self.critic2(obs_all_seq, act_all_seq, hidden=None,
+                                 seq_len=total_seq_len)
+            q2 = q2.view(batch_size, total_seq_len)
 
-        # Target Q
         with torch.no_grad():
-            q_next, _ = self.critic_target(next_obs_all_seq, next_act_all_seq,
-                                           hidden=None, seq_len=total_seq_len)
-            q_next = q_next.view(batch_size, total_seq_len)
+            q1_next, _ = self.critic_target(next_obs_all_seq, next_act_all_seq,
+                                            hidden=None, seq_len=total_seq_len)
+            q1_next = q1_next.view(batch_size, total_seq_len)
+            if self.twin_critic:
+                q2_next, _ = self.critic2_target(next_obs_all_seq, next_act_all_seq,
+                                                 hidden=None, seq_len=total_seq_len)
+                q2_next = q2_next.view(batch_size, total_seq_len)
+                q_next = torch.min(q1_next, q2_next)
+            else:
+                q_next = q1_next
             y = rewards + self.gamma * q_next * (~dones)
 
-        q_learn    = q[:, learn_start:]
         y_learn    = y[:, learn_start:].detach()
         mask_learn = mask[:, learn_start:].float()
-
         valid_steps = mask_learn.sum()
         if valid_steps < 1.0:
-            zero = (q_learn * mask_learn).sum() * 0.0
+            zero = (q1[:, learn_start:] * mask_learn).sum() * 0.0
             return zero, 0.0, 0.0
 
-        # [I1] Huber instead of MSE: bounds per-element gradient at beta,
-        # robust to the heavy-tailed TD errors caused by terminal penalties.
-        elem_loss   = F.smooth_l1_loss(q_learn, y_learn,
-                                       beta=self.huber_beta, reduction='none')
-        critic_loss = (elem_loss * mask_learn).sum() / valid_steps
+        q1_learn = q1[:, learn_start:]
+        elem1 = F.smooth_l1_loss(q1_learn, y_learn, beta=self.huber_beta, reduction='none')
+        critic_loss = (elem1 * mask_learn).sum() / valid_steps
+        if self.twin_critic:
+            q2_learn = q2[:, learn_start:]
+            elem2 = F.smooth_l1_loss(q2_learn, y_learn, beta=self.huber_beta, reduction='none')
+            critic_loss = critic_loss + (elem2 * mask_learn).sum() / valid_steps
 
-        q_masked_mean = ((q_learn.detach() * mask_learn).sum()
-                         / valid_steps).item()
+        q_masked_mean = ((q1_learn.detach() * mask_learn).sum() / valid_steps).item()
         return critic_loss, q_masked_mean, valid_steps.item()
 
     # ------------------------------------------------------------------

@@ -7,7 +7,7 @@ import numpy as np
 from typing import Tuple, Dict, List, Optional
 from .dynamics import QuadcopterDynamics
 from .obstacles import SceneGenerator, Obstacle
-from .sensors import Rangefinder, GoalSensor
+from .sensors import Rangefinder
 from .rewards import RewardFunction
 
 
@@ -33,9 +33,9 @@ class MultiUAVEnv(gym.Env):
         self.scene_gen = SceneGenerator(
             seed=config.get('seed', None)
         )
-        self.rangefinder = Rangefinder(range_max=config['sensor_range'])
-        env_diag = float(np.sqrt(sum(s**2 for s in config['env_size'])))
-        self.goal_sensor = GoalSensor(arena_diag=env_diag)
+        self.rangefinder = Rangefinder(range_max=config['sensor_range'],
+                                       seed=config.get('seed', None))   # [N3-5]
+        # GoalSensor removed (N3-6): goal block is computed inline below.
         self.reward_fn = RewardFunction(
             alpha=config['reward']['alpha'],
             lambda_col=config['reward']['lambda_col'],
@@ -48,11 +48,14 @@ class MultiUAVEnv(gym.Env):
             range_max=config['sensor_range']
         )
         
-        # Spaces
-        # [N-1/N-9] 4 attitude + 25 lidar + 5 goal(sin/cos bearing) + 8 neighbors(K=2) + 1 alive
-        self.n_neighbors = 2
-        self.obs_dim = 4 + 25 + 5 + 4 * self.n_neighbors + 1  # = 43
-        self.action_dim = 2  # [rho, tau]
+        # [N3-1] Neighbor block: K nearest LIVE neighbors, each encoded as
+        # body-frame rel position(3) + body-frame rel velocity(3) + presence(1).
+        self.n_neighbors   = 2
+        self.nbr_feats     = 7
+        self.nbr_pos_scale = float(config.get('neighbor_pos_scale', 20.0))
+        # attitude(4) + lidar(25) + goal(5) + neighbors(7K) + alive(1)
+        self.obs_dim    = 4 + 25 + 5 + self.nbr_feats * self.n_neighbors + 1  # = 49
+        self.action_dim = 2
         
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf,
@@ -83,7 +86,6 @@ class MultiUAVEnv(gym.Env):
         self.dynamics.env_size = new_env_size
         self.dynamics.max_altitude = new_env_size[2]
         self.scene_gen.env_size = new_env_size
-        self.goal_sensor.arena_diag = float(np.sqrt(sum(s**2 for s in new_env_size)))
         
         # Generate Obstacles
         self.obstacles = self.scene_gen.generate_stage(stage_cfg)
@@ -159,6 +161,17 @@ class MultiUAVEnv(gym.Env):
         self.safe_inter_uav_steps = 0  # Track safe steps for Stage 2 metric
         
         return self._get_observations()
+
+    def _world_to_body(self, vec: np.ndarray, theta: float, phi: float) -> np.ndarray:
+        """[N3-1] Rotate a world-frame vector into the UAV body frame.
+        Transpose of the body->world rotation used by the rangefinder, so goal
+        bearing and neighbor features now live in the SAME (body) frame."""
+        cy, sy = np.cos(theta), np.sin(theta)
+        cp, sp = np.cos(phi),   np.sin(phi)
+        Rt = np.array([[ cy*cp,  sy*cp,  sp ],
+                       [-sy,      cy,     0.0],
+                       [-cy*sp, -sy*sp,  cp ]], dtype=np.float32)
+        return (Rt @ vec.astype(np.float32)).astype(np.float32)
 
     def _update_obstacle_caches(self):
         """Helper to refresh bounding boxes for lidar when objects move."""
@@ -418,18 +431,34 @@ class MultiUAVEnv(gym.Env):
                                np.sin(varpi),   np.cos(varpi),
                                np.sin(varpi_z), np.cos(varpi_z)], dtype=np.float32)
 
-        # ---- Neighbor block: K nearest LIVE neighbors, normalized world-frame
-        # displacement + presence flag [N-1]. Done agents are invisible. ----
+        # ---- Neighbor block (N3-1): K nearest LIVE neighbors in BODY frame.
+        # rel position scaled by a LOCAL metric scale (not the arena diagonal),
+        # plus relative velocity (derived from constant-speed headings) so the
+        # closing rate is directly observable rather than only inferable. ----
         done = getattr(self, 'agent_done', np.zeros(self.n_agents, dtype=bool))
         cand = [(np.linalg.norm(self.agents_state[j, :3] - pos), j)
                 for j in range(self.n_agents) if j != i and not done[j]]
         cand.sort(key=lambda t: t[0])
-        nbr = np.zeros(4 * self.n_neighbors, dtype=np.float32)
+
+        v_speed = float(self.dynamics.v)
+        vi = v_speed * np.array([np.cos(theta) * np.cos(phi),
+                                 np.sin(theta) * np.cos(phi),
+                                 np.sin(phi)], dtype=np.float32)
+
+        nbr = np.zeros(self.nbr_feats * self.n_neighbors, dtype=np.float32)
         for k in range(min(self.n_neighbors, len(cand))):
             _, j = cand[k]
-            rel = (self.agents_state[j, :3] - pos) / arena_diag
-            nbr[4 * k:4 * k + 3] = rel
-            nbr[4 * k + 3]       = 1.0  # presence flag
+            rel_world = (self.agents_state[j, :3] - pos).astype(np.float32)
+            rel_body  = self._world_to_body(rel_world, theta, phi)
+            tj, pj    = self.agents_state[j, 3], self.agents_state[j, 4]
+            vj = v_speed * np.array([np.cos(tj) * np.cos(pj),
+                                     np.sin(tj) * np.cos(pj),
+                                     np.sin(pj)], dtype=np.float32)
+            relv_body = self._world_to_body(vj - vi, theta, phi)
+            base = self.nbr_feats * k
+            nbr[base:base + 3]     = np.clip(rel_body / self.nbr_pos_scale, -1.0, 1.0)
+            nbr[base + 3:base + 6] = np.clip(relv_body / (2.0 * v_speed), -1.0, 1.0)
+            nbr[base + 6]          = 1.0  # presence flag
 
         alive = 1.0 if not done[i] else 0.0
 
@@ -437,8 +466,8 @@ class MultiUAVEnv(gym.Env):
             [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],  # 0:4
             lidar_norm.flatten(),                                      # 4:29
             goal_block,                                                # 29:34
-            nbr,                                                       # 34:42
-            [alive],                                                   # 42
+            nbr,                                                       # 34:34+7K
+            [alive],                                                   # last
         ]).astype(np.float32)
         assert obs.shape == (self.obs_dim,), f"obs shape mismatch: {obs.shape}"
         return obs

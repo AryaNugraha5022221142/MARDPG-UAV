@@ -11,12 +11,14 @@ environment:
   env_size: [100.0, 100.0, 60.0]
   max_steps_per_episode: 1500
   goal_threshold: 1.0
-  goal_min_sep: 4.0           # [N-4] min goal-to-goal distance; must exceed
-                              # 2*goal_threshold + inter_uav_min_dist (=3.0) so
-                              # two agents cannot satisfy their goal thresholds
-                              # while inside each other's collision radius.
+  goal_min_sep: 8.0
 
-  # Obstacle generation
+  # [N3-1] Local metric scale for body-frame neighbor positions (metres).
+  # Neighbor displacements are expressed in the observer's body frame and
+  # divided by this scale (then clipped to [-1,1]), instead of the old
+  # arena-diagonal (~125 m) normalization that drove a 1 m separation to a
+  # ~0.008 feature — below the lidar noise floor.
+  neighbor_pos_scale: 20.0
 
   # Reward parameters (Eq 4)
   reward:
@@ -63,25 +65,36 @@ algorithm:
                                # right when the distribution shift is largest.
 
   # ---- New (audit fixes) -------------------------------------------------
-  huber_beta: 10.0             # [I1] Huber transition point for critic loss.
-                               # TD errors below this behave as MSE/2;
-                               # above it, per-element gradient is capped.
-  grad_steps_per_update: 1     # [I4] raise to 2-4 on T4 if benchmark shows
-                               # the env (CPU) dominates — converts idle GPU
-                               # into sample efficiency without touching the
-                               # data-collection rate.
-  deterministic_cudnn: false   # [I4] true only for strict-repro debug runs;
-                               # deterministic LSTM kernels are slow on GPU.
-  eval_every: 200              # [I3] run a noise-free eval block every N
-                               # in-stage episodes...
-  eval_episodes: 50            # ...of this many episodes; promotion is
-                               # decided on these stats, not noisy rollouts.
-  promotion_min_episodes: 200  # minimum episodes in a stage before the
-                               # first promotion eval.
-  promotion_consecutive_evals: 2 # consecutive passing evals needed to promote
-  save_replay_on_checkpoint: false  # [C3] replay is always saved on
-                               # KeyboardInterrupt; enable this to also save
-                               # it on periodic checkpoints (~100-300 MB).
+  huber_beta: 10.0
+
+  # [N3-3] Raised 1 -> 8. update_freq=100 with 1 grad step gave a replay ratio
+  # of ~0.01; DDPG-family baselines run 0.25-1.0. Run benchmark.py first; if the
+  # env (CPU) dominates, this converts idle GPU into sample efficiency without
+  # changing the data-collection rate. Watch critic_grad / q_mean for instability
+  # as you raise it.
+  grad_steps_per_update: 8
+
+  deterministic_cudnn: false
+  eval_every: 200
+  eval_episodes: 50
+  promotion_min_episodes: 200
+  promotion_consecutive_evals: 2
+  save_replay_on_checkpoint: false
+
+  # [N3-4] Fraction of the OLDEST valid replay windows to invalidate on each
+  # curriculum promotion. 0.0 = off (baseline). After a promotion the buffer is
+  # dominated by previous-stage data for hundreds of episodes, exactly when
+  # sigma is re-boosted and the obs distribution shifts; a partial flush de-
+  # emphasises off-distribution targets. Try 0.5 if you see post-promotion
+  # regressions in eval stats.
+  replay_flush_frac_on_promotion: 0.0
+
+  # [N3-7] Overestimation control. Both default OFF -> identical critic learning
+  # to the validated baseline. Enable for later (sparse-success, -30 terminal)
+  # stages if q_mean detaches from realized return (now logged at eval).
+  twin_critic: false           # TD3-style clipped double-Q (min of two targets)
+  target_policy_noise: 0.0     # std of clipped noise added to target actions
+  target_noise_clip: 0.2       # clip range for that noise (only used if >0)
 
 network:
   fc_angle_units:  8

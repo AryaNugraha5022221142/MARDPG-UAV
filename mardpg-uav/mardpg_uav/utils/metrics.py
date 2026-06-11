@@ -35,6 +35,14 @@ class MetricsTracker:
         self.path_efficiencies = []
         self.safe_inter_uav    = []
 
+    def soft_reset(self):
+        """[N3-6] Clear the rolling windows (call on curriculum promotion) so
+        smoothed/window stats reflect only the current stage."""
+        for lst in (self.episode_rewards, self.episode_lengths, self.successes,
+                    self.collisions, self.dyn_collisions, self.trapped,
+                    self.timeouts, self.path_efficiencies, self.safe_inter_uav):
+            lst.clear()
+
     def record_episode(self, length, info, start_pos, goal_pos,
                        path_history, rewards=None):
         n = len(info['reached'])

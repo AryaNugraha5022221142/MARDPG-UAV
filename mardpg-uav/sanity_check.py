@@ -156,12 +156,13 @@ def main():
     o4 = e4.reset({'env_size': [100., 100., 60.], 'static_obs': 0,
                    'min_sep': 15., 'max_steps': 50, 'min_start_sep': 12.})
     K = e4.n_neighbors
-    pres0 = o4[0][34 + 3: 34 + 4 * K: 4]  # presence flags of agent 0's neighbor slots
+    F = e4.nbr_feats                       # 7
+    pres0 = o4[0][34 + (F - 1): 34 + F * K: F]   # presence flags, new layout
     assert pres0.sum() == min(K, e4.n_agents - 1), "Neighbor presence flags wrong at reset."
     e4.agent_done[:] = True          # kill everyone except agent 0's perspective
     e4.agent_done[0] = False
     o4b = e4._get_observations()
-    pres0b = o4b[0][34 + 3: 34 + 4 * K: 4]
+    pres0b = o4b[0][34 + (F - 1): 34 + F * K: F]
     assert pres0b.sum() == 0, "CRITICAL (N-1): done agents still appear in neighbor block."
     print("[PASS] Neighbor block excludes done agents.")
 

@@ -35,6 +35,7 @@ import os
 print("Loading ML libraries…")
 import time
 import yaml, torch, numpy as np, random, datetime
+from collections import deque
 import wandb
 from typing import List
 
@@ -189,18 +190,18 @@ def select_actions_batch(agents, obs_all, prev_actions, noise_val,
 # Does NOT write to the replay buffer, training hidden states, training
 # metrics, or the noise schedule.
 # ---------------------------------------------------------------------------
-def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents):
+def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
     em = MetricsTracker()
+    disc_returns = []
     for _ in range(n_episodes):
         obs = env.reset(stage_cfg)
         for ag in agents:
             ag.reset_hidden(batch_size=1, eval_mode=True)
-        prev_actions = [np.zeros(action_dim, dtype=np.float32)
-                        for _ in range(n_agents)]
+        prev_actions = [np.zeros(action_dim, dtype=np.float32) for _ in range(n_agents)]
         path_history = [env.agents_state[:, :3].copy()]
-        ep_reward, ep_len = 0.0, 0
+        ep_reward, ep_len, disc = 0.0, 0, 0.0
         info = {}
-        for _ in range(stage_cfg['max_steps']):
+        for t in range(stage_cfg['max_steps']):
             acts = []
             for i, ag in enumerate(agents):
                 if env.agent_done[i]:
@@ -211,17 +212,24 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents):
             acts = np.array(acts, dtype=np.float32)
             obs, rewards, done, info = env.step(acts)
             prev_actions = acts.copy()
-            ep_reward += float(sum(rewards))
-            ep_len    += 1
+            step_team = float(sum(rewards))
+            ep_reward += step_team
+            disc += (gamma ** t) * (step_team / n_agents)   # per-agent discounted return
+            ep_len += 1
             path_history.append(env.agents_state[:, :3].copy())
             if done:
                 break
+        disc_returns.append(disc)
         em.record_episode(
             length=ep_len, info=info,
             start_pos=[path_history[0][i] for i in range(n_agents)],
             goal_pos=[env.goals[i] for i in range(n_agents)],
             path_history=path_history, rewards=[ep_reward])
-    return em.get_window_stats(n_episodes)
+    stats = em.get_window_stats(n_episodes)
+    # [N3-7] Realized discounted return — compare against training q_mean to
+    # detect critic overestimation before it spirals.
+    stats['realized_return'] = float(np.mean(disc_returns)) if disc_returns else 0.0
+    return stats
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +284,7 @@ def train(config_path: str = "config/default.yaml",
             gradient_clip=algo_cfg['gradient_clip'],
             burn_in=algo_cfg['burn_in'],
             huber_beta=algo_cfg.get('huber_beta', 10.0),
+            twin_critic=bool(algo_cfg.get('twin_critic', False)),   # [N3-7]
             device=device)
         agents.append(ag)
 
@@ -298,6 +307,17 @@ def train(config_path: str = "config/default.yaml",
                             decay=algo_cfg.get('noise_decay', 0.9995))
     metrics = MetricsTracker()
     cl      = CurriculumManager(CURRICULUM, required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2))
+
+    flush_frac     = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))  # N3-4
+    tgt_noise      = float(algo_cfg.get('target_policy_noise', 0.0))             # N3-7
+    tgt_noise_clip = float(algo_cfg.get('target_noise_clip', 0.2))              # N3-7
+
+    # [N3-6b] Rolling windows so CSV/console grad columns reflect the logging
+    # window, not just the most recent episode's 1-3 updates.
+    GRAD_WIN = 200
+    grad_window = {k: deque(maxlen=GRAD_WIN) for k in
+                   ["actor_loss", "critic_loss", "q_vals",
+                    "critic_grad_norm", "shared_grad_norm", "actor_grad_norm"]}
 
     # --- Optional resume (C3: full training state) ---
     start_episode = 0
@@ -341,6 +361,11 @@ def train(config_path: str = "config/default.yaml",
                     ckpt.get('critic_target', ckpt['critic']))
             if 'critic_opt' in ckpt:
                 ag.critic_optimizer.load_state_dict(ckpt['critic_opt'])
+            if getattr(ag, 'twin_critic', False) and 'critic2' in ckpt:
+                ag.critic2.load_state_dict(ckpt['critic2'])
+                ag.critic2_target.load_state_dict(ckpt.get('critic2_target', ckpt['critic2']))
+                if 'critic2_opt' in ckpt:
+                    ag.critic2_optimizer.load_state_dict(ckpt['critic2_opt'])
             for tp, sp in zip(ag.actor_target.parameters(), ag.actor.parameters()):
                 tp.data.copy_(sp.data)
 
@@ -436,12 +461,6 @@ def train(config_path: str = "config/default.yaml",
                     "stage": cl.current_stage_idx,
                 }, step=global_step)
 
-            # ---- Update --------------------------------------------------
-            grad_metrics = {k: [] for k in
-                            ["actor_loss", "critic_loss", "q_vals",
-                             "critic_grad_norm", "shared_grad_norm",
-                             "actor_grad_norm"]}
-
             skip_update = (global_step < algo_cfg.get('warmup_steps', 2000) or
                            len(buffer) < algo_cfg['batch_size'])
             if skip_update:
@@ -489,9 +508,15 @@ def train(config_path: str = "config/default.yaml",
                             xn = torch.cat([all_nf[:, i],
                                             batch_actions[:, :, i, :]], dim=-1)
                             hn, _ = ag.actor_target.lstm(xn, None)
-                            target_actions.append(
-                                ag.actor_target.tanh(ag.actor_target.fc_out(hn))
-                                * ag.actor_target.action_bound)
+                            a = (ag.actor_target.tanh(ag.actor_target.fc_out(hn))
+                                 * ag.actor_target.action_bound)
+                            # [N3-7] clipped target-policy smoothing (off if 0)
+                            if tgt_noise > 0.0:
+                                eps = (torch.randn_like(a) * tgt_noise).clamp(
+                                    -tgt_noise_clip, tgt_noise_clip)
+                                a = (a + eps).clamp(-ag.actor_target.action_bound,
+                                                    ag.actor_target.action_bound)
+                            target_actions.append(a)
 
                     next_act_all = torch.stack(
                         [a.reshape(b_sz * seq_len, -1) for a in target_actions], dim=1)
@@ -504,6 +529,8 @@ def train(config_path: str = "config/default.yaml",
 
                     for i, ag in enumerate(agents):
                         ag.critic_optimizer.zero_grad()
+                        if ag.twin_critic:
+                            ag.critic2_optimizer.zero_grad()
                         cl_i, q_mean_i, valid_steps = ag.compute_critic_loss(
                             obs_all, act_all, next_obs_all, next_act_all,
                             batch_rewards[:, :, i], batch_dones[:, :, i],
@@ -513,6 +540,10 @@ def train(config_path: str = "config/default.yaml",
                             c_grad_i = torch.nn.utils.clip_grad_norm_(
                                 ag.critic.parameters(), algo_cfg['gradient_clip'])
                             ag.critic_optimizer.step()
+                            if ag.twin_critic:
+                                torch.nn.utils.clip_grad_norm_(
+                                    ag.critic2.parameters(), algo_cfg['gradient_clip'])
+                                ag.critic2_optimizer.step()
                             c_loss_vals.append(cl_i.item())
                             q_mean_list.append(q_mean_i)
                             c_grads.append(c_grad_i.item())
@@ -525,6 +556,9 @@ def train(config_path: str = "config/default.yaml",
                     for ag in agents:
                         for p in ag.critic.parameters():
                             p.requires_grad = False
+                        if ag.twin_critic:
+                            for p in ag.critic2.parameters():
+                                p.requires_grad = False
 
                     shared_optimizer.zero_grad()
                     for ag in agents:
@@ -562,6 +596,9 @@ def train(config_path: str = "config/default.yaml",
                     for ag in agents:
                         for p in ag.critic.parameters():
                             p.requires_grad = True
+                        if ag.twin_critic:
+                            for p in ag.critic2.parameters():
+                                p.requires_grad = True
 
                     # ---- Soft target updates ----------------------------
                     agents[0]._soft_update(agents[0].actor_target.shared,
@@ -570,29 +607,39 @@ def train(config_path: str = "config/default.yaml",
                         ag._soft_update(ag.actor_target.lstm,   ag.actor.lstm)
                         ag._soft_update(ag.actor_target.fc_out, ag.actor.fc_out)
                         ag._soft_update(ag.critic_target, ag.critic)
+                        if ag.twin_critic:
+                            ag._soft_update(ag.critic2_target, ag.critic2)
 
                     # ---- Accumulate grad metrics -------------------------
-                    grad_metrics["actor_loss"].append(total_actor_loss.item())
-                    grad_metrics["critic_loss"].append(c_loss_mean)
-                    grad_metrics["q_vals"].append(q_mean)
-                    grad_metrics["critic_grad_norm"].append(c_grad)
-                    grad_metrics["shared_grad_norm"].append(sh_grad.item())
-                    grad_metrics["actor_grad_norm"].append(float(np.mean(ag_grads)))
+                    grad_window["actor_loss"].append(total_actor_loss.item())
+                    grad_window["critic_loss"].append(c_loss_mean)
+                    grad_window["q_vals"].append(q_mean)
+                    grad_window["critic_grad_norm"].append(c_grad)
+                    grad_window["shared_grad_norm"].append(sh_grad.item())
+                    grad_window["actor_grad_norm"].append(float(np.mean(ag_grads)))
 
-                if grad_metrics["actor_loss"]:
-                    wandb.log({k: np.mean(v) for k, v in grad_metrics.items()},
-                              step=global_step)
+                if grad_window["actor_loss"]:
+                    wandb.log({k: float(np.mean(v)) for k, v in grad_window.items()
+                               if len(v) > 0}, step=global_step)
 
             # ---- Periodic NOISE-FREE eval & curriculum promotion (I3) ----
             if (cl.episodes_in_stage >= promo_min_eps and
                     cl.episodes_in_stage % eval_every == 0 and
                     global_step >= algo_cfg.get('warmup_steps', 2000)):
-                # [N-7] run_eval advances env.scene_gen.rng; snapshot/restore it so
-                # eval cadence does not change which training scenes are generated.
-                _rng_state = env.scene_gen.rng.get_state()
+                # [N3-5] Snapshot ALL stochastic state eval touches: scene RNG,
+                # the rangefinder's private RNG, and the global numpy stream.
+                _scene_state  = env.scene_gen.rng.get_state()
+                _lidar_state  = env.rangefinder.rng.get_state()
+                _global_state = np.random.get_state()
+
                 eval_stats = run_eval(env, agents, stage_cfg,
-                                      eval_episodes, action_dim, n_agents)
-                env.scene_gen.rng.set_state(_rng_state)
+                                      eval_episodes, action_dim, n_agents,
+                                      algo_cfg['gamma'])
+
+                env.scene_gen.rng.set_state(_scene_state)
+                env.rangefinder.rng.set_state(_lidar_state)
+                np.random.set_state(_global_state)
+
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx
                 wandb.log(log_payload, step=global_step)
@@ -601,10 +648,16 @@ def train(config_path: str = "config/default.yaml",
                       f"collision {eval_stats['collision_rate']:.2%} | "
                       f"trapped {eval_stats['trapped_rate']:.2%} | "
                       f"path_eff {eval_stats['path_efficiency']:.2f} | "
-                      f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f}", flush=True)
-                
+                      f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f} | "
+                      f"realized_return {eval_stats['realized_return']:.2f} | "
+                      f"q_mean {q_mean:.2f}", flush=True)
+
                 promoted = cl.evaluate_promotion(eval_stats)
                 if promoted:
+                    metrics.soft_reset()                      # [N3-6] no cross-stage blend
+                    dropped = buffer.invalidate_oldest(flush_frac)   # [N3-4]
+                    if dropped:
+                        print(f"[N3-4] Flushed {dropped} stale windows on promotion.", flush=True)
                     reboost = float(algo_cfg.get('noise_reboost', 0.15))
                     if noise.sigma < reboost:
                         noise.sigma = reboost
@@ -645,7 +698,7 @@ def train(config_path: str = "config/default.yaml",
             # ---- CSV every 100 episodes ---------------------------------
             if episode % 100 == 0 and episode > 0:
                 _write_csv(f"checkpoints/training_log_{run_id}.csv",
-                           episode, stats, grad_metrics)
+                           episode, stats, grad_window)
 
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Saving emergency checkpoint (incl. replay buffer)…")
@@ -682,20 +735,24 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
     for i, ag in enumerate(agents):
         private = {k: v for k, v in ag.actor.state_dict().items()
                    if k.startswith(('lstm.', 'fc_out.'))}
-        torch.save({'actor_private': private,
+        save_obj = {'actor_private': private,
                     'actor_opt':     ag.actor_optimizer.state_dict(),
                     'critic':        ag.critic.state_dict(),
                     'critic_target': ag.critic_target.state_dict(),
-                    'critic_opt':    ag.critic_optimizer.state_dict()},
-                   f"{save_dir}/agent_{i}.pt")
+                    'critic_opt':    ag.critic_optimizer.state_dict()}
+        if getattr(ag, 'twin_critic', False):
+            save_obj.update({'critic2':        ag.critic2.state_dict(),
+                             'critic2_target': ag.critic2_target.state_dict(),
+                             'critic2_opt':    ag.critic2_optimizer.state_dict()})
+        torch.save(save_obj, f"{save_dir}/agent_{i}.pt")
     if save_buffer and buffer is not None:
         buffer.save(f"{save_dir}/replay.npz")
 
 
-def _write_csv(path, episode, stats, grad_metrics):
+def _write_csv(path, episode, stats, grad_window):
     os.makedirs("checkpoints", exist_ok=True)
     is_new = not os.path.exists(path)
-    gm = {k: (float(np.mean(v)) if v else 0.0) for k, v in grad_metrics.items()}
+    gm = {k: (float(np.mean(v)) if len(v) else 0.0) for k, v in grad_window.items()}
     with open(path, 'a') as f:
         if is_new:
             f.write("episode,avg_reward,success_rate,collision_rate,"

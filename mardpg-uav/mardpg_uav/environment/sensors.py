@@ -7,10 +7,13 @@ from typing import List, Tuple
 from .obstacles import Obstacle
 
 class Rangefinder:
-    def __init__(self, range_max: float = 10.0):
+    def __init__(self, range_max: float = 10.0, seed: int = None):
         self.range_max = range_max
         self.n_h = 5
         self.n_v = 5
+        # [N3-5] Private stream: lidar noise no longer perturbs the global
+        # np.random stream that exploration/scene generation depend on.
+        self.rng = np.random.RandomState(seed)
 
         yaw_angles = np.linspace(-np.pi/3, np.pi/3, self.n_h)
         # Pitch: -30 degrees to +30 degrees (-pi/6 to pi/6)
@@ -99,7 +102,7 @@ class Rangefinder:
 
         distances = min_dists.reshape(self.n_v, self.n_h)
         noisy_norm = np.clip(distances / self.range_max
-                             + np.random.normal(0.0, sigma_l, distances.shape).astype(np.float32),
+                             + self.rng.normal(0.0, sigma_l, distances.shape).astype(np.float32),
                              0.0, 1.0)
         return distances, noisy_norm
 
@@ -166,18 +169,3 @@ class Rangefinder:
         dist[mask_in] = t_exit[mask_in]
         
         return dist
-
-
-class GoalSensor:
-    def __init__(self, arena_diag=89.4):
-        self.arena_diag = arena_diag
-        # No heading noise — no heading in model
-
-    def compute(self, position: np.ndarray, goal: np.ndarray) -> np.ndarray:
-        """
-        Returns normalised world-frame displacement [dx/D, dy/D, dz/D]
-        Each component ∈ (-1, 1); zero vector when at goal.
-        """
-        diff = goal - position
-        return (diff / self.arena_diag).astype(np.float32)  # shape (3,)
-

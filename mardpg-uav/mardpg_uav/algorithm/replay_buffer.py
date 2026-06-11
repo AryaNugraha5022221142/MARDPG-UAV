@@ -182,3 +182,22 @@ class SequenceReplayBuffer:
 
     def __len__(self):
         return self.size
+
+    def invalidate_oldest(self, frac: float) -> int:
+        """[N3-4] Mark the OLDEST `frac` of currently-valid windows unsampleable.
+        Used on curriculum promotion to de-emphasise stale previous-stage data
+        (the slots are reclaimed normally as new transitions overwrite them).
+        Returns the number of windows invalidated."""
+        if frac <= 0.0:
+            return 0
+        valid = np.nonzero(self.valid_mask)[0]
+        if len(valid) == 0:
+            return 0
+        k = int(len(valid) * float(frac))
+        if k <= 0:
+            return 0
+        # Age = steps back from the write pointer in circular order.
+        age = (self.ptr - 1 - valid) % self.capacity
+        oldest = valid[np.argsort(-age)[:k]]
+        self.valid_mask[oldest] = False
+        return int(k)
