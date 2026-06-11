@@ -266,6 +266,7 @@ def train(config_path: str = "config/default.yaml",
                config=cfg)
 
     env        = MultiUAVEnv(env_cfg)
+    env.action_space.seed(seed)          # [C5] reproducible warmup-phase actions
     n_agents   = env_cfg['n_agents']
     obs_dim    = env.obs_dim
     action_dim = env.action_dim
@@ -299,7 +300,8 @@ def train(config_path: str = "config/default.yaml",
     buffer = SequenceReplayBuffer(
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len'] + algo_cfg.get('burn_in', 10),
-        n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim)
+        n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim,
+        tail_pad=algo_cfg.get('tail_pad', None))   # [B1] None -> full coverage
 
     noise   = GaussianNoise(n_agents=n_agents, action_dim=action_dim,
                             sigma=algo_cfg.get('noise_std', 0.3),
@@ -390,6 +392,9 @@ def train(config_path: str = "config/default.yaml",
     print(f"MARDPG-NAV Training  |  Agents: {n_agents}  |  Device: {device}")
     print(f"Stage: {cl.current_stage_idx + 1}/{N_STAGES}")
     print("=" * 60, flush=True)
+
+    q_mean = c_loss_mean = c_grad = 0.0   # [C6] defined before any eval print
+    q_div_streak = 0                       # [B3] overestimation-divergence streak
 
     episode = start_episode
     try:
@@ -639,6 +644,22 @@ def train(config_path: str = "config/default.yaml",
                 env.scene_gen.rng.set_state(_scene_state)
                 env.rangefinder.rng.set_state(_lidar_state)
                 np.random.set_state(_global_state)
+
+                # [B3] Flag critic overestimation early: q_mean is the last
+                # update burst's masked Q; realized_return is the eval-measured
+                # per-agent discounted return. Persistent divergence => lower
+                # grad_steps_per_update or enable twin_critic and restart stage.
+                q_div     = abs(q_mean - eval_stats.get('realized_return', 0.0))
+                div_warn  = float(algo_cfg.get('q_divergence_warn', 15.0))
+                if q_div > div_warn:
+                    q_div_streak += 1
+                    print(f"[B3 WARNING] |q_mean - realized_return| = {q_div:.2f} "
+                          f"> {div_warn} ({q_div_streak} consecutive eval(s)). "
+                          f"Possible critic overestimation.", flush=True)
+                else:
+                    q_div_streak = 0
+                wandb.log({"eval/q_divergence": q_div,
+                           "eval/q_div_streak": q_div_streak}, step=global_step)
 
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx

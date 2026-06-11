@@ -46,12 +46,20 @@ import torch
 
 class SequenceReplayBuffer:
     def __init__(self, capacity: int = 100_000, seq_len: int = 90,
-                 n_agents: int = 5, obs_dim: int = 43, action_dim: int = 2):
+                 n_agents: int = 5, obs_dim: int = 49, action_dim: int = 2,
+                 tail_pad: int = None):
         self.capacity   = capacity
         self.seq_len    = seq_len
         self.n_agents   = n_agents
         self.obs_dim    = obs_dim
         self.action_dim = action_dim
+        # [B1] Steps to append after each episode's last real transition so that
+        # the terminal step reaches the learn region across many windows (uniform
+        # per-transition coverage). None -> seq_len-1 (full coverage). Pads are
+        # masked from every loss. NOTE: this increases buffer churn; it is paired
+        # with the replay_capacity increase (B2). Lower it to trade coverage for
+        # more retained episodes.
+        self.tail_pad   = tail_pad if tail_pad is not None else (seq_len - 1)
 
         # Circular buffer over transitions
         self.obs          = np.zeros((capacity, n_agents, obs_dim),    dtype=np.float32)
@@ -108,21 +116,24 @@ class SequenceReplayBuffer:
 
     # ------------------------------------------------------------------
     def end_episode(self):
-        """Close the current episode. Short episodes are padded to seq_len
-        with inert copies of their final transition so they produce exactly
-        one valid window (pad steps are masked out of all losses)."""
+        """Close the current episode and append tail-pad steps (inert copies of the
+        last transition, pad=True) so every real transition — including the terminal
+        step that ends the episode — appears across the full window-position range,
+        not just once. Short episodes are still guaranteed >= 1 window."""
         ep_len = self._current_ep_len
-        if 0 < ep_len < self.seq_len and self.size > 0:
-            last     = (self.ptr - 1) % self.capacity
-            obs_pad  = self.obs[last].copy()
-            nobs_pad = self.next_obs[last].copy()
-            pact_pad = self.actions[last].copy()          # masked anyway
-            zero_a   = np.zeros((self.n_agents, self.action_dim), dtype=np.float32)
-            zero_r   = np.zeros(self.n_agents, dtype=np.float32)
-            all_done = np.ones(self.n_agents, dtype=bool)
-            for _ in range(self.seq_len - ep_len):
-                self.add_transition(obs_pad, pact_pad, zero_a, zero_r,
-                                    nobs_pad, all_done, pad=True)
+        if ep_len > 0 and self.size > 0:
+            n_pad = max(self.tail_pad, self.seq_len - ep_len)   # >=1 window for short eps
+            if n_pad > 0:
+                last     = (self.ptr - 1) % self.capacity
+                obs_pad  = self.obs[last].copy()
+                nobs_pad = self.next_obs[last].copy()
+                pact_pad = self.actions[last].copy()            # masked anyway
+                zero_a   = np.zeros((self.n_agents, self.action_dim), dtype=np.float32)
+                zero_r   = np.zeros(self.n_agents, dtype=np.float32)
+                all_done = np.ones(self.n_agents, dtype=bool)
+                for _ in range(n_pad):
+                    self.add_transition(obs_pad, pact_pad, zero_a, zero_r,
+                                        nobs_pad, all_done, pad=True)
         self._ep_count       += 1
         self._current_ep_len  = 0
 

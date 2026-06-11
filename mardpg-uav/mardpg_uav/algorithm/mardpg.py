@@ -188,25 +188,31 @@ class MARDPGAgent:
                            prev_act_all_seq: torch.Tensor,
                            mask: torch.Tensor):
         """DPG actor loss: maximize own critic at own action; other agents'
-        actions are taken from the replay batch and detached."""
+        actions come from the replay batch and are detached."""
         batch_size, total_seq_len = mask.shape
-
-        joint_actions = act_all_seq.clone().detach()
+        learn_start = self.burn_in
 
         my_obs = obs_all_seq[:, self.agent_id, :].view(batch_size, total_seq_len, -1)
         my_pa  = prev_act_all_seq[:, self.agent_id, :].view(batch_size, total_seq_len, -1)
+        my_acts, _ = self.actor(my_obs, my_pa, hidden=None)            # (B, T, A)
 
-        my_acts, _ = self.actor(my_obs, my_pa, hidden=None)
-        joint_actions[:, self.agent_id, :] = my_acts.reshape(-1, my_acts.shape[-1])
+        # [B4] Burn-in uses STORED behavior actions (matches what the critic's
+        # recurrent state was trained on); only the learn region uses current-policy
+        # actions, which carry the policy gradient.
+        stored_my = act_all_seq.view(batch_size, total_seq_len,
+                                     self.n_agents, -1)[:, :, self.agent_id, :].detach()
+        t_idx    = torch.arange(total_seq_len, device=my_acts.device).view(1, -1, 1)
+        mixed_my = torch.where(t_idx >= learn_start, my_acts, stored_my)   # (B, T, A)
+
+        joint_actions = act_all_seq.clone().detach()                  # (B*T, N, A)
+        joint_actions[:, self.agent_id, :] = mixed_my.reshape(batch_size * total_seq_len, -1)
 
         q_flat, _ = self.critic(obs_all_seq, joint_actions, hidden=None,
                                 seq_len=total_seq_len)
         q_full = q_flat.view(batch_size, total_seq_len)
 
-        learn_start = self.burn_in
         q_learn     = q_full[:, learn_start:]
         mask_learn  = mask[:, learn_start:].float()
-
         valid_steps = mask_learn.sum()
         if valid_steps < 1.0:
             return (q_learn * mask_learn).sum() * 0.0, 0.0

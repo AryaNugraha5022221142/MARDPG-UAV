@@ -24,7 +24,8 @@ environment:
   reward:
     alpha:    3.0
     lambda_col: 5.0
-    sigma_col: 3.0             # ~1m warning band
+    sigma_col: 3.0             # ~1m warning band (obstacles)
+    sigma_col_uav: 1.5         # [C1] wider inter-UAV band (~2m) for anticipatory avoidance
     r_free:  0.1
     r_step: -1.0
     r_goal: 10.0               # terminal success anchor
@@ -41,15 +42,21 @@ environment:
 
 algorithm:
   device: cuda
-  gamma:        0.99
-  tau:          0.01
+  gamma:        0.99           # [B5] horizon ~100 steps. If stages 4-6 stall with
+                               # high trapped_rate, the contingency is gamma->0.995,
+                               # which rescales Q and changes the MDP (retrain from
+                               # scratch). Do NOT change mid-curriculum.
+  tau:          0.01           # [B3] tuned at low replay ratio; if q_divergence
+                               # warns persistently at grad_steps=8, try 0.005.
   lr_actor:     0.001
   lr_critic:    0.001
   lr_shared_actor: 0.002
   batch_size:   128
   seq_len:      80
   burn_in:      10
-  replay_capacity: 100000
+  replay_capacity: 300000      # [B2] was 100000 (~66-100 episodes at stage 6-7);
+                               # 300k ~= 200-300 late-stage episodes. ~0.6 GB host
+                               # RAM, zero GPU cost. Pairs with tail_pad churn (B1).
   update_freq:  100
   warmup_steps: 2000
   gradient_clip: 1.0
@@ -76,7 +83,7 @@ algorithm:
 
   deterministic_cudnn: false
   eval_every: 200
-  eval_episodes: 50
+  eval_episodes: 30            # [C4] was 50. SE at n=30 ~ +-9pp; keep >= 25.
   promotion_min_episodes: 200
   promotion_consecutive_evals: 2
   save_replay_on_checkpoint: false
@@ -95,6 +102,10 @@ algorithm:
   twin_critic: false           # TD3-style clipped double-Q (min of two targets)
   target_policy_noise: 0.0     # std of clipped noise added to target actions
   target_noise_clip: 0.2       # clip range for that noise (only used if >0)
+
+  tail_pad: null               # [B1] null -> seq_len+burn_in-1 (uniform coverage).
+                               # Lower (e.g. 40) to retain more episodes if churn hurts.
+  q_divergence_warn: 15.0      # [B3] |q_mean - realized_return| warn threshold
 
 network:
   fc_angle_units:  8

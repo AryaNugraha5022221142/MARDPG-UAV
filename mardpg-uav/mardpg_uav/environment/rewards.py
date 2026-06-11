@@ -4,7 +4,7 @@ from typing import List, Tuple
 
 class RewardFunction:
     def __init__(self, alpha: float = 3.0, lambda_col: float = 5.0,
-                 sigma_col: float = 15.0,
+                 sigma_col: float = 15.0, sigma_col_uav: float = None,
                  r_free: float = 0.1, r_step: float = -0.6,
                  delta: Tuple[float, float, float, float] = (0.45, 0.30, 0.15, 0.10),
                  collision_radius: float = 0.5,
@@ -13,6 +13,9 @@ class RewardFunction:
         self.alpha = alpha
         self.lambda_col = lambda_col
         self.sigma_col = sigma_col
+        # [C1] Separate (wider) band for the inter-UAV term so anticipatory
+        # avoidance gets meaningful shaping before the sparse -30 terminal.
+        self.sigma_col_uav = sigma_col_uav if sigma_col_uav is not None else sigma_col
         self.r_free = r_free
         self.r_step = r_step
         self.delta = delta
@@ -51,10 +54,13 @@ class RewardFunction:
         # wide; measuring clearance from the body edge keeps meaningful shaping near walls
         # instead of collapsing to ~0 inside the 0.5 m termination radius.)
         d_obs_clear = d_obs - self.collision_radius
-        d_min = min(d_obs_clear, d_uav - self.inter_uav_min)
-        d_min = max(0.0, d_min)
+        d_obs_clear = max(0.0, d_obs_clear)
+        d_uav_clear = max(0.0, d_uav - self.inter_uav_min)
 
-        r_col = -self.lambda_col * np.exp(-self.sigma_col * d_min)   # paper Eq.(3)
+        # [C1] Independent bands; take the more negative (closer hazard dominates).
+        r_col_obs = -self.lambda_col * np.exp(-self.sigma_col     * d_obs_clear)
+        r_col_uav = -self.lambda_col * np.exp(-self.sigma_col_uav * d_uav_clear)
+        r_col = min(r_col_obs, r_col_uav)
 
         # --- Free space reward ---
         # The rangefinder is a 5x5 grid. Indices:

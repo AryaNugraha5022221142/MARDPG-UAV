@@ -1,7 +1,9 @@
 """
-Centralised recurrent critic with late action injection (N3-3).
+Centralised recurrent critic with late action injection.
 Action enters at the second FC layer so the policy gradient dQ/da is not
 diluted by the high-dimensional joint observation at the input.
+(Implements the N3-3 *critic-redesign* half; the replay-ratio half of N3-3
+lives in config as grad_steps_per_update.)
 """
 import torch
 import torch.nn as nn

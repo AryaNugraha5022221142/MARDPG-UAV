@@ -40,6 +40,8 @@ class MultiUAVEnv(gym.Env):
             alpha=config['reward']['alpha'],
             lambda_col=config['reward']['lambda_col'],
             sigma_col=config['reward']['sigma_col'],
+            sigma_col_uav=config['reward'].get('sigma_col_uav',
+                                               config['reward']['sigma_col']),
             r_free=config['reward']['r_free'],
             r_step=config['reward']['r_step'],
             delta=tuple(config['reward']['delta']),
@@ -439,6 +441,11 @@ class MultiUAVEnv(gym.Env):
         cand = [(np.linalg.norm(self.agents_state[j, :3] - pos), j)
                 for j in range(self.n_agents) if j != i and not done[j]]
         cand.sort(key=lambda t: t[0])
+        # [C2] Take K nearest, then assign to slots by stable agent index so a
+        # distance swap between the two nearest doesn't discontinuously permute
+        # the feature slots step-to-step. (Set-membership changes still jump;
+        # this only removes intra-set churn.)
+        nearest = sorted(cand[:self.n_neighbors], key=lambda t: t[1])
 
         v_speed = float(self.dynamics.v)
         vi = v_speed * np.array([np.cos(theta) * np.cos(phi),
@@ -446,8 +453,8 @@ class MultiUAVEnv(gym.Env):
                                  np.sin(phi)], dtype=np.float32)
 
         nbr = np.zeros(self.nbr_feats * self.n_neighbors, dtype=np.float32)
-        for k in range(min(self.n_neighbors, len(cand))):
-            _, j = cand[k]
+        for k in range(len(nearest)):
+            _, j = nearest[k]
             rel_world = (self.agents_state[j, :3] - pos).astype(np.float32)
             rel_body  = self._world_to_body(rel_world, theta, phi)
             tj, pj    = self.agents_state[j, 3], self.agents_state[j, 4]
