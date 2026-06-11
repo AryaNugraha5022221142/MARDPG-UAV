@@ -42,12 +42,20 @@ environment:
 
 algorithm:
   device: cuda
+  # [N4-4] Make CPU fallback fatal. The 2026-06-11 run silently executed on
+  # CPU at 0.01-0.03 ep/s (ETA 330-450 h); stages 4-7 are 2.5-3.75x longer
+  # per episode. Set true for any run you intend to take past stage 2.
+  abort_if_cpu: false
+
   gamma:        0.99           # [B5] horizon ~100 steps. If stages 4-6 stall with
                                # high trapped_rate, the contingency is gamma->0.995,
                                # which rescales Q and changes the MDP (retrain from
                                # scratch). Do NOT change mid-curriculum.
-  tau:          0.01           # [B3] tuned at low replay ratio; if q_divergence
-                               # warns persistently at grad_steps=8, try 0.005.
+                               # [N4 audit] Stage-1 evidence does NOT implicate
+                               # gamma (dense r_trans carried the 150-400 step
+                               # horizon fine). Trigger unchanged.
+  tau:          0.01           # [B3] tuned at low replay ratio; if q_gap_signed
+                               # warns persistently POSITIVE at grad_steps=8, try 0.005.
   lr_actor:     0.001
   lr_critic:    0.001
   lr_shared_actor: 0.002
@@ -57,6 +65,12 @@ algorithm:
   replay_capacity: 300000      # [B2] was 100000 (~66-100 episodes at stage 6-7);
                                # 300k ~= 200-300 late-stage episodes. ~0.6 GB host
                                # RAM, zero GPU cost. Pairs with tail_pad churn (B1).
+                               # [N4 audit] NOTE: at stage-1 episode lengths,
+                               # tail_pad (89/episode) means ~20-30% of slots are
+                               # pads; effective real-transition capacity ~230k.
+                               # `Buf:` in the console counts slots, not real
+                               # transitions. Working as designed — just don't
+                               # misread the number.
   update_freq:  100
   warmup_steps: 2000
   gradient_clip: 1.0
@@ -79,33 +93,59 @@ algorithm:
   # env (CPU) dominates, this converts idle GPU into sample efficiency without
   # changing the data-collection rate. Watch critic_grad / q_mean for instability
   # as you raise it.
+  # [N4 audit] Verified stable through stage 1: critic_grad settled ~0.2 vs
+  # clip 1.0, no q oscillation. Keep at 8.
   grad_steps_per_update: 8
 
   deterministic_cudnn: false
   eval_every: 200
-  eval_episodes: 30            # [C4] was 50. SE at n=30 ~ +-9pp; keep >= 25.
+  eval_episodes: 30            # [C4] SE at n=30 ~ +-9pp; keep >= 25.
+  # [N4-3] Stages whose success bar >= the threshold below use the larger
+  # eval set. Rationale: at n=30, +-9pp around bars of 0.55-0.60 (stages 4-6)
+  # causes pass/fail flapping that resets the consecutive-pass counter —
+  # promotion latency easily misread as a learning stall. n=50 gives ~+-7pp;
+  # the extra eval cost only applies where the gate is tight.
+  eval_episodes_late: 50
+  eval_episodes_late_threshold: 0.50
   promotion_min_episodes: 200
   promotion_consecutive_evals: 2
   save_replay_on_checkpoint: false
 
   # [N3-4] Fraction of the OLDEST valid replay windows to invalidate on each
-  # curriculum promotion. 0.0 = off (baseline). After a promotion the buffer is
-  # dominated by previous-stage data for hundreds of episodes, exactly when
-  # sigma is re-boosted and the obs distribution shifts; a partial flush de-
-  # emphasises off-distribution targets. Try 0.5 if you see post-promotion
-  # regressions in eval stats.
+  # curriculum promotion. 0.0 = off (baseline). Applies to ALL promotions.
   replay_flush_frac_on_promotion: 0.0
+
+  # [N4-2] PRE-REGISTERED flush for hazard-distribution shifts: applied
+  # (max'd with the value above) when promotion ENTERS a stage with MORE
+  # static obstacles than the previous stage, or where dynamic obstacles
+  # first appear. Rationale: entering stage 3 with ~300k transitions of
+  # obstacle-free flight means the lidar block was uniformly maxed in the
+  # data dominating the buffer — the critic and the shared lidar conv would
+  # train mostly on a constant feature exactly when it becomes informative.
+  # This decision is registered NOW (before stage 3 is reached) so a
+  # post-promotion dip gets a planned response, not an ad-hoc one.
+  # Set 0.0 to disable and recover exact v3 behavior.
+  replay_flush_frac_on_obstacle_shift: 0.5
 
   # [N3-7] Overestimation control. Both default OFF -> identical critic learning
   # to the validated baseline. Enable for later (sparse-success, -30 terminal)
-  # stages if q_mean detaches from realized return (now logged at eval).
+  # stages if eval/q_gap_signed is persistently POSITIVE beyond
+  # q_divergence_warn (see [N4-1] in train.py).
   twin_critic: false           # TD3-style clipped double-Q (min of two targets)
   target_policy_noise: 0.0     # std of clipped noise added to target actions
   target_noise_clip: 0.2       # clip range for that noise (only used if >0)
 
   tail_pad: null               # [B1] null -> seq_len+burn_in-1 (uniform coverage).
                                # Lower (e.g. 40) to retain more episodes if churn hurts.
-  q_divergence_warn: 15.0      # [B3] |q_mean - realized_return| warn threshold
+
+  # [N4-1] Threshold on the SIGNED, state-matched gap
+  # (q_eval_start - realized_return). Escalation/warning fires ONLY on the
+  # positive side (overestimation). Large NEGATIVE gaps are logged as info:
+  # they indicate the critic lagging a fast-improving policy, which the
+  # 2026-06-11 stage-1 run demonstrated is the normal transient (gap was
+  # -18.9 at ep 199 while the old abs() diagnostic mislabelled it
+  # "overestimation").
+  q_divergence_warn: 15.0
 
 network:
   fc_angle_units:  8

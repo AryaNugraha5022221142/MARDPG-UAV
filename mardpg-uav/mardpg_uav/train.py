@@ -1,12 +1,43 @@
 """
-Main training loop for MARDPG-NAV (v3 — post-audit fixes).
+Main training loop for MARDPG-NAV (v4 — final-audit fixes).
 
 Architecture: independent centralized critic per agent (own critic, target
 critic, optimizer) + shared actor feature extractor + private actor
 LSTM/head per agent.
 
-Changes vs v2
--------------
+Changes vs v3 (final audit, 2026-06-11)
+---------------------------------------
+[N4-1] Critic calibration is now SIGNED and STATE-MATCHED. The old B3
+       diagnostic compared abs(q_mean - realized_return), where q_mean is
+       averaged over REPLAY batches (old data, old policy, exploratory
+       actions) and realized_return is the CURRENT noise-free policy's
+       eval return — incommensurable distributions, and abs() discards
+       the only information that matters (overestimation vs benign lag).
+       It fired a false "overestimation" warning at ep 199 when the critic
+       was in fact UNDERestimating (-1.18 vs +17.75). run_eval now probes
+       Q_i(s0, a0) on the eval episodes themselves (zero LSTM state, which
+       is in-distribution: training windows also start from zero hidden),
+       and the warning escalates ONLY on persistent POSITIVE gap.
+[N4-2] Pre-registered replay-flush policy at promotions that shift the
+       hazard distribution (static_obs increases, or dynamic obstacles
+       first appear). Until v3 this was a manual knob defaulting to 0.0;
+       the stage 2->3 transition would otherwise train the lidar conv on
+       ~300k transitions in which the lidar block is uniformly maxed.
+[N4-3] Adaptive eval size at tight promotion gates: n=30 gives SE ~ ±9pp
+       at p=0.5; stages gating at 0.55-0.60 success would flap pass/fail
+       and reset the consecutive-pass counter (promotion latency).
+       Gates with success bars >= threshold now use eval_episodes_late.
+[N4-4] CPU runs now warn loudly (or abort, if configured) with the
+       measured stage-1 throughput. The 2026-06-11 run executed on CPU at
+       0.01-0.03 ep/s (ETA 330-450 h) despite config device: cuda.
+[not changed] Episode-granular update bursts (audit item C2) are left
+       as-is deliberately: the validated learning dynamics were produced
+       under this schedule, no metric implicates it, and interleaving
+       updates into the rollout changes data/update ordering for zero
+       demonstrated benefit. Revisit only alongside env parallelisation.
+
+Changes vs v2 (retained)
+------------------------
 [C1] The fake "episode-end padding transition" (zero action, zero reward,
      dones=True) is no longer appended; it was sampled and trained on as a
      genuine terminal, regressing Q(s_T, 0) -> 0 for every timed-out agent.
@@ -148,6 +179,20 @@ class CurriculumManager:
 
 
 # ---------------------------------------------------------------------------
+# [N4-2] Hazard-distribution shift predicate (module-level so it is testable)
+# ---------------------------------------------------------------------------
+def hazard_shift(prev_stage_cfg: dict, new_stage_cfg: dict) -> bool:
+    """True iff the promotion ENTERS a stage whose hazard distribution shifts
+    relative to the stage just trained: more static obstacles, or dynamic
+    obstacles appearing for the first time. Used to pick the larger replay
+    flush fraction at promotion."""
+    return (new_stage_cfg.get('static_obs', 0) >
+            prev_stage_cfg.get('static_obs', 0)) or \
+           ('dynamic_obs' in new_stage_cfg and
+            'dynamic_obs' not in prev_stage_cfg)
+
+
+# ---------------------------------------------------------------------------
 # Config loader
 # ---------------------------------------------------------------------------
 def load_config(path: str = "config/default.yaml") -> dict:
@@ -189,10 +234,13 @@ def select_actions_batch(agents, obs_all, prev_actions, noise_val,
 # Noise-free evaluation block (I3) — used for curriculum promotion.
 # Does NOT write to the replay buffer, training hidden states, training
 # metrics, or the noise schedule.
+# [N4-1] Additionally probes Q_i(s0, a0) on each eval episode for a signed,
+# state- and policy-matched critic-calibration metric (q_eval_start).
 # ---------------------------------------------------------------------------
 def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
     em = MetricsTracker()
     disc_returns = []
+    q0_means     = []   # [N4-1] critic Q(s0, a0) on the EVAL distribution
     for _ in range(n_episodes):
         obs = env.reset(stage_cfg)
         for ag in agents:
@@ -210,6 +258,23 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
                     a = ag.select_action(obs[i], prev_actions[i], evaluate=True)
                     acts.append(np.clip(a, -ag.action_bound, ag.action_bound))
             acts = np.array(acts, dtype=np.float32)
+
+            # [N4-1] Calibration probe at episode start. Zero LSTM state is
+            # in-distribution for the critic (training windows also start
+            # from zero hidden), the state is the CURRENT policy's visit
+            # distribution, and the action is the noise-free policy action —
+            # so Q_i(s0, a0) is directly comparable to the realized per-agent
+            # discounted return of the same episode, unlike the replay-batch
+            # q_mean (old data, old policy, exploratory actions).
+            if t == 0:
+                with torch.no_grad():
+                    o_t = torch.FloatTensor(obs).unsqueeze(0).to(agents[0].device)
+                    a_t = torch.FloatTensor(acts).unsqueeze(0).to(agents[0].device)
+                    q0 = [float(ag.critic(o_t, a_t, hidden=None,
+                                          seq_len=1)[0].item())
+                          for ag in agents]
+                q0_means.append(float(np.mean(q0)))
+
             obs, rewards, done, info = env.step(acts)
             prev_actions = acts.copy()
             step_team = float(sum(rewards))
@@ -226,9 +291,10 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
             goal_pos=[env.goals[i] for i in range(n_agents)],
             path_history=path_history, rewards=[ep_reward])
     stats = em.get_window_stats(n_episodes)
-    # [N3-7] Realized discounted return — compare against training q_mean to
+    # [N3-7] Realized discounted return — compare against q_eval_start to
     # detect critic overestimation before it spirals.
     stats['realized_return'] = float(np.mean(disc_returns)) if disc_returns else 0.0
+    stats['q_eval_start']    = float(np.mean(q0_means))     if q0_means     else 0.0  # [N4-1]
     return stats
 
 
@@ -259,6 +325,22 @@ def train(config_path: str = "config/default.yaml",
     if device == 'cuda' and not torch.cuda.is_available():
         print("Warning: CUDA not available — falling back to CPU.", flush=True)
         device = 'cpu'
+
+    # [N4-4] CPU guard. Measured on the 2026-06-11 run: stage 1 (the easiest
+    # stage: 400-step cap, 0 obstacles) ran at 0.01-0.03 ep/s on CPU with
+    # grad_steps_per_update=8 — ETA 330-450 h for n_episodes=20000, and
+    # stages 4-7 are 2.5-3.75x longer per episode. A full curriculum run on
+    # CPU is not a realistic plan; this is the single biggest practical
+    # blocker found by the final audit.
+    if device == 'cpu':
+        msg = ("Running on CPU. Measured stage-1 throughput was 0.01-0.03 ep/s "
+               "(ETA 330-450 h at n_episodes=20000); later stages are 2.5-3.75x "
+               "longer per episode. Run benchmark.py to confirm the bottleneck, "
+               "move to a GPU instance, or set algorithm.abort_if_cpu: true to "
+               "make this fatal.")
+        if bool(algo_cfg.get('abort_if_cpu', False)):
+            raise RuntimeError(f"[N4-4] {msg}")
+        print(f"[N4-4 WARNING] {msg}", flush=True)
 
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     wandb.init(project="mardpg-uav",
@@ -310,9 +392,10 @@ def train(config_path: str = "config/default.yaml",
     metrics = MetricsTracker()
     cl      = CurriculumManager(CURRICULUM, required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2))
 
-    flush_frac     = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))  # N3-4
-    tgt_noise      = float(algo_cfg.get('target_policy_noise', 0.0))             # N3-7
-    tgt_noise_clip = float(algo_cfg.get('target_noise_clip', 0.2))              # N3-7
+    flush_frac       = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))      # N3-4
+    flush_frac_shift = float(algo_cfg.get('replay_flush_frac_on_obstacle_shift', 0.5)) # [N4-2]
+    tgt_noise        = float(algo_cfg.get('target_policy_noise', 0.0))                 # N3-7
+    tgt_noise_clip   = float(algo_cfg.get('target_noise_clip', 0.2))                   # N3-7
 
     # [N3-6b] Rolling windows so CSV/console grad columns reflect the logging
     # window, not just the most recent episode's 1-3 updates.
@@ -384,7 +467,13 @@ def train(config_path: str = "config/default.yaml",
     window_start_episode = start_episode
 
     eval_every       = int(algo_cfg.get('eval_every', 200))
-    eval_episodes    = int(algo_cfg.get('eval_episodes', 20))
+    eval_episodes    = int(algo_cfg.get('eval_episodes', 30))
+    # [N4-3] Promotion gates with success bars >= this threshold get a larger
+    # eval set. At n=30, SE ~ ±9pp at p=0.5; stages 4-6 gate at 0.55-0.60,
+    # where ±9pp causes pass/fail flapping and consecutive-pass resets
+    # (promotion latency, easily misread as a learning failure).
+    eval_late_thresh   = float(algo_cfg.get('eval_episodes_late_threshold', 0.50))
+    eval_episodes_late = int(algo_cfg.get('eval_episodes_late', max(eval_episodes, 50)))
     promo_min_eps    = int(algo_cfg.get('promotion_min_episodes', 200))
     save_replay_flag = bool(algo_cfg.get('save_replay_on_checkpoint', False))
 
@@ -394,7 +483,7 @@ def train(config_path: str = "config/default.yaml",
     print("=" * 60, flush=True)
 
     q_mean = c_loss_mean = c_grad = 0.0   # [C6] defined before any eval print
-    q_div_streak = 0                       # [B3] overestimation-divergence streak
+    q_div_streak = 0                       # [B3/N4-1] POSITIVE-gap streak only
 
     episode = start_episode
     try:
@@ -525,7 +614,7 @@ def train(config_path: str = "config/default.yaml",
 
                     next_act_all = torch.stack(
                         [a.reshape(b_sz * seq_len, -1) for a in target_actions], dim=1)
-                    
+
                     # Zero target actions for agents that are done
                     next_act_all = next_act_all.masked_fill(batch_dones.reshape(b_sz * seq_len, n_agents, 1), 0.0)
 
@@ -637,48 +726,93 @@ def train(config_path: str = "config/default.yaml",
                 _lidar_state  = env.rangefinder.rng.get_state()
                 _global_state = np.random.get_state()
 
+                # [N4-3] adaptive eval size near tight promotion gates
+                bar = float(stage_cfg['criteria'].get('success_rate', 0.0))
+                n_eval_now = (eval_episodes_late if bar >= eval_late_thresh
+                              else eval_episodes)
+
                 eval_stats = run_eval(env, agents, stage_cfg,
-                                      eval_episodes, action_dim, n_agents,
+                                      n_eval_now, action_dim, n_agents,
                                       algo_cfg['gamma'])
 
                 env.scene_gen.rng.set_state(_scene_state)
                 env.rangefinder.rng.set_state(_lidar_state)
                 np.random.set_state(_global_state)
 
-                # [B3] Flag critic overestimation early: q_mean is the last
-                # update burst's masked Q; realized_return is the eval-measured
-                # per-agent discounted return. Persistent divergence => lower
-                # grad_steps_per_update or enable twin_critic and restart stage.
-                q_div     = abs(q_mean - eval_stats.get('realized_return', 0.0))
+                # [N4-1/B3] Critic calibration — signed and state-matched.
+                # q_eval_start = mean_i Q_i(s0, a0) on the eval episodes just
+                # run (current noise-free policy, zero hidden), directly
+                # comparable to realized_return (per-agent discounted return
+                # of the SAME episodes).
+                #   gap > +warn : on-distribution OVERestimation — the
+                #                 dangerous direction; escalate.
+                #   gap < -warn : critic lagging an improving policy —
+                #                 expected during fast learning; benign.
+                # The old abs(q_mean - realized_return) compared replay-batch
+                # Q (old data/policy/noise) against current-policy eval return
+                # and fired a false "overestimation" warning while the critic
+                # was underestimating by 19. q_gap_replay is kept as a
+                # secondary, clearly-labelled diagnostic only.
+                rr        = eval_stats.get('realized_return', 0.0)
+                q_cal     = eval_stats.get('q_eval_start', 0.0)
+                q_gap     = q_cal - rr
+                q_gap_rep = q_mean - rr
                 div_warn  = float(algo_cfg.get('q_divergence_warn', 15.0))
-                if q_div > div_warn:
+                if q_gap > div_warn:
                     q_div_streak += 1
-                    print(f"[B3 WARNING] |q_mean - realized_return| = {q_div:.2f} "
-                          f"> {div_warn} ({q_div_streak} consecutive eval(s)). "
-                          f"Possible critic overestimation.", flush=True)
+                    print(f"[B3 WARNING] q_eval_start - realized_return = "
+                          f"+{q_gap:.2f} > {div_warn} ({q_div_streak} consecutive "
+                          f"eval(s)): critic OVERestimation on the eval "
+                          f"distribution. Contingency (documented in config): "
+                          f"lower grad_steps_per_update and/or enable "
+                          f"twin_critic, then restart the stage.", flush=True)
                 else:
+                    if q_gap < -div_warn:
+                        print(f"[B3 info] q_eval_start - realized_return = "
+                              f"{q_gap:.2f}: critic lagging an improving policy "
+                              f"(benign; expected during fast learning).",
+                              flush=True)
                     q_div_streak = 0
-                wandb.log({"eval/q_divergence": q_div,
+                wandb.log({"eval/q_gap_signed": q_gap,          # [N4-1] primary
+                           "eval/q_eval_start": q_cal,          # [N4-1]
+                           "eval/q_gap_replay": q_gap_rep,      # legacy, signed
+                           "eval/q_divergence": abs(q_gap_rep), # legacy key (dashboards)
                            "eval/q_div_streak": q_div_streak}, step=global_step)
 
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx
                 wandb.log(log_payload, step=global_step)
                 print(f"[EVAL @ ep {episode}] stage {cl.current_stage_idx + 1} | "
+                      f"n_eval {n_eval_now} | "
                       f"success {eval_stats['success_rate']:.2%} | "
                       f"collision {eval_stats['collision_rate']:.2%} | "
                       f"trapped {eval_stats['trapped_rate']:.2%} | "
                       f"path_eff {eval_stats['path_efficiency']:.2f} | "
                       f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f} | "
                       f"realized_return {eval_stats['realized_return']:.2f} | "
-                      f"q_mean {q_mean:.2f}", flush=True)
+                      f"q_eval_start {eval_stats['q_eval_start']:.2f} | "
+                      f"q_mean(replay) {q_mean:.2f}", flush=True)
 
                 promoted = cl.evaluate_promotion(eval_stats)
                 if promoted:
                     metrics.soft_reset()                      # [N3-6] no cross-stage blend
-                    dropped = buffer.invalidate_oldest(flush_frac)   # [N3-4]
+                    # [N4-2] Pre-registered flush policy. If the NEW stage
+                    # shifts the hazard distribution — static obstacle count
+                    # increases (e.g. stage 2->3: lidar goes from uniformly
+                    # maxed to informative) or dynamic obstacles first appear
+                    # (stage 6->7) — the buffer is dominated by transitions in
+                    # which the new hazard channel carries no signal. Flush
+                    # the larger of the two configured fractions; same-
+                    # geometry promotions (1->2) keep the base fraction.
+                    new_stage_cfg = cl.get_current_config()
+                    shift = hazard_shift(stage_cfg, new_stage_cfg)
+                    frac = max(flush_frac, flush_frac_shift) if shift \
+                        else flush_frac
+                    dropped = buffer.invalidate_oldest(frac)   # [N3-4]/[N4-2]
                     if dropped:
-                        print(f"[N3-4] Flushed {dropped} stale windows on promotion.", flush=True)
+                        print(f"[N4-2] Flushed {dropped} stale windows on "
+                              f"promotion (frac={frac:.2f}, "
+                              f"hazard_shift={shift}).", flush=True)
                     reboost = float(algo_cfg.get('noise_reboost', 0.15))
                     if noise.sigma < reboost:
                         noise.sigma = reboost
