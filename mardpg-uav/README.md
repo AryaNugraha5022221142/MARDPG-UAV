@@ -4,7 +4,7 @@
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 
-This repository implements a **decentralised multi‑agent path planning system** for fixed‑wing‑style UAVs operating in a partially observable 3D environment with static obstacles. The framework uses **Multi‑Agent Recurrent Deterministic Policy Gradient (MARDPG)** under the Centralised Training with Decentralised Execution (CTDE) paradigm, featuring:
+This repository implements a **decentralised multi‑agent path planning system** for quadcopters operating in a partially observable 3D environment with static obstacles. The framework uses **Multi‑Agent Recurrent Deterministic Policy Gradient (MARDPG)** under the Centralised Training with Decentralised Execution (CTDE) paradigm, featuring:
 
 - Per‑agent LSTM belief approximation
 - Recurrent FC->LSTM centralized critic
@@ -39,7 +39,7 @@ All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathe
 Key sections:
 
 - **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
-- **Observation space** (43‑dim: sin/cos attitude (4) + 25‑beam lidar + goal bearing (5) + neighbors (8) + alive flag (1))
+- **Observation space** (49-dim): sin/cos attitude (4) + 25-beam lidar + goal bearing (5) + neighbors (14: body-frame rel-pos ×3, rel-vel ×3, presence ×1, per neighbor, K=2) + alive flag (1).
 - **Reward function** (progress + collision penalty + separation penalty + free‑space bonus)
 - **Centralised critic** (concatenated ordered observations)
 - **Per‑agent termination & validity masking** (for BPTT)
