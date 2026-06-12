@@ -456,8 +456,12 @@ def train(config_path: str = "config/default.yaml",
 
         replay_path = f"{resume_dir}/replay.npz"
         if os.path.exists(replay_path):
-            buffer.load(replay_path)
-            print(f"  Replay buffer restored ({len(buffer)} transitions)")
+            try:
+                buffer.load(replay_path)
+                print(f"  Replay buffer restored ({len(buffer)} transitions)")
+            except Exception as e:
+                print(f"  [Warning] Could not load replay buffer from {replay_path}: {e}")
+                print("  Starting with an empty replay buffer instead.")
 
         print(f"  Resumed at episode {start_episode}, global_step {global_step}, "
               f"stage {cl.current_stage_idx + 1}, noise {noise.sigma:.3f}")
