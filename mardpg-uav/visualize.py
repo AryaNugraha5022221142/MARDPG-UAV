@@ -60,8 +60,9 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         agents[i].share_parameters(agents[0])
     
        
-    stage_cfg = {'env_size': [100.0, 100.0, 60.0], 'static_obs': 8,
-                 'min_sep': 30.0, 'max_steps': 1500}
+    stage_cfg = {'env_size': [100.0, 100.0, 60.0], 'static_obs': 16,
+                 'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
+                 'min_sep': 40.0, 'max_steps': 1500}
     obs = env.reset(stage_cfg)
     for agent in agents:
         agent.actor.eval()

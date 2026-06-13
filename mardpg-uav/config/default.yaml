@@ -98,7 +98,7 @@ algorithm:
   grad_steps_per_update: 8
 
   deterministic_cudnn: false
-  eval_every: 200
+  eval_every: 100
   eval_episodes: 30            # [C4] SE at n=30 ~ +-9pp; keep >= 25.
   # [N4-3] Stages whose success bar >= the threshold below use the larger
   # eval set. Rationale: at n=30, +-9pp around bars of 0.55-0.60 (stages 4-6)
@@ -107,9 +107,11 @@ algorithm:
   # the extra eval cost only applies where the gate is tight.
   eval_episodes_late: 50
   eval_episodes_late_threshold: 0.50
-  promotion_min_episodes: 200
+  promotion_min_episodes: 100
   promotion_consecutive_evals: 2
-  save_replay_on_checkpoint: false
+  promotion_fast_consecutive_evals: 1
+  promotion_margin: 0.10
+  save_replay_on_checkpoint: true
 
   # [N3-4] Fraction of the OLDEST valid replay windows to invalidate on each
   # curriculum promotion. 0.0 = off (baseline). Applies to ALL promotions.
@@ -125,7 +127,7 @@ algorithm:
   # This decision is registered NOW (before stage 3 is reached) so a
   # post-promotion dip gets a planned response, not an ad-hoc one.
   # Set 0.0 to disable and recover exact v3 behavior.
-  replay_flush_frac_on_obstacle_shift: 0.5
+  replay_flush_frac_on_obstacle_shift: 0.0
 
   # [N3-7] Overestimation control. Both default OFF -> identical critic learning
   # to the validated baseline. Enable for later (sparse-success, -30 terminal)

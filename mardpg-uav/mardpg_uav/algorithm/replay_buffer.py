@@ -165,15 +165,34 @@ class SequenceReplayBuffer:
     # Persistence (audit fix C3 — needed for full resume of long runs)
     # ------------------------------------------------------------------
     def save(self, path: str):
-        np.savez_compressed(
-            path,
-            obs=self.obs[:self.size], next_obs=self.next_obs[:self.size],
-            prev_actions=self.prev_actions[:self.size],
-            actions=self.actions[:self.size], rewards=self.rewards[:self.size],
-            dones=self.dones[:self.size], pads=self.pads[:self.size],
-            ep_ids=self.ep_ids[:self.size], valid_mask=self.valid_mask[:self.size],
-            ptr=self.ptr, size=self.size,
-            ep_count=self._ep_count, current_ep_len=self._current_ep_len)
+        import os, tempfile
+        # Atomic write: serialize to a temp file, fsync, then os.replace() into
+        # place. A crash mid-write leaves the temp file (cleaned up), never a
+        # half-written target — so a resume always loads a complete buffer or
+        # the previous complete one, never a corrupt "not a zip file".
+        d = os.path.dirname(os.path.abspath(path)) or "."
+        os.makedirs(d, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(suffix=".tmp", dir=d)
+        try:
+            with os.fdopen(fd, "wb") as f:
+                # Passing a file object stops numpy appending ".npz".
+                np.savez_compressed(
+                    f,
+                    obs=self.obs[:self.size], next_obs=self.next_obs[:self.size],
+                    prev_actions=self.prev_actions[:self.size],
+                    actions=self.actions[:self.size], rewards=self.rewards[:self.size],
+                    dones=self.dones[:self.size], pads=self.pads[:self.size],
+                    ep_ids=self.ep_ids[:self.size], valid_mask=self.valid_mask[:self.size],
+                    ptr=self.ptr, size=self.size,
+                    ep_count=self._ep_count, current_ep_len=self._current_ep_len)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, path)
+        except BaseException:
+            if os.path.exists(tmp):
+                try: os.remove(tmp)
+                except OSError: pass
+            raise
 
     def load(self, path: str):
         d = np.load(path)

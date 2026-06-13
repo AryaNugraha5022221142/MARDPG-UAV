@@ -65,6 +65,7 @@ Changes vs v2 (retained)
 import os
 print("Loading ML libraries…")
 import time
+import itertools
 import yaml, torch, numpy as np, random, datetime
 from collections import deque
 import wandb
@@ -132,49 +133,85 @@ N_STAGES = len(CURRICULUM)
 # Curriculum manager  (promotion now driven by noise-free eval stats — I3)
 # ---------------------------------------------------------------------------
 class CurriculumManager:
-    def __init__(self, stages, required_consecutive_passes=2):
-        self.stages            = stages
-        self.current_stage_idx = 0
-        self.episodes_in_stage = 0
+    def __init__(self, stages,
+                 required_consecutive_passes=2,
+                 fast_consecutive_passes=1,
+                 promotion_margin=0.0):
+        self.stages             = stages
+        self.current_stage_idx  = 0
+        self.episodes_in_stage  = 0
         self.consecutive_passes = 0
-        self.required_consecutive_passes = required_consecutive_passes
+        self.required_consecutive_passes = int(required_consecutive_passes)
+        # Fast path: promote after this many consecutive passes when the LATEST
+        # eval clears every active criterion by `promotion_margin`. Easy stages
+        # (which beat the bar by a wide margin) promote immediately; marginal
+        # stages still require the full count for robustness.
+        self.fast_consecutive_passes = max(1, int(fast_consecutive_passes))
+        self.promotion_margin        = float(promotion_margin)
 
     def get_current_config(self):
         return self.stages[self.current_stage_idx]
 
-    def evaluate_promotion(self, stats):
-        """stats: dict from a NOISE-FREE eval block. Caller gates how often
-        and after how many in-stage episodes this is invoked."""
+    def _check(self, stats):
+        """Return (passed, margin_ok).
+        `passed`    : meets every active criterion at the exact bar.
+        `margin_ok` : meets every active criterion with `promotion_margin` to spare.
+        direction +1 => 'value >= bar' (higher better); -1 => 'value <= bar' (lower better).
+        """
         c  = self.stages[self.current_stage_idx]['criteria']
         op = c.get('operator', 'standard')
-        passed = (stats['success_rate']             >= c['success_rate'] and
-                  stats.get('path_efficiency', 0.0) >= c.get('path_efficiency', 0.0))
+        m  = self.promotion_margin
+
+        checks = [(stats['success_rate'], c['success_rate'], +1)]
+        if 'path_efficiency' in c:
+            checks.append((stats.get('path_efficiency', 0.0), c['path_efficiency'], +1))
         if op == 'less_col':
-            passed = passed and stats['collision_rate'] <= c['collision_rate']
+            checks.append((stats['collision_rate'], c['collision_rate'], -1))
         elif op == 'less_trap':
-            passed = passed and stats['trapped_rate']   <= c['trapped_rate']
+            checks.append((stats['trapped_rate'], c['trapped_rate'], -1))
         elif op == 'less_col_greater_safe':
-            passed = (passed and
-                      stats['collision_rate'] <= c['collision_rate'] and
-                      stats['inter_uav_safe'] >= c['inter_uav_safe'])
+            checks.append((stats['collision_rate'], c['collision_rate'], -1))
+            checks.append((stats['inter_uav_safe'], c['inter_uav_safe'], +1))
         elif op == 'less_dyn':
-            passed = passed and stats['dyn_collision_rate'] <= c['dyn_collision_rate']
+            checks.append((stats['dyn_collision_rate'], c['dyn_collision_rate'], -1))
+
+        passed = margin = True
+        for val, bar, direction in checks:
+            if direction > 0:
+                passed &= (val >= bar)
+                margin &= (val >= bar + m)
+            else:
+                passed &= (val <= bar)
+                margin &= (val <= bar - m)
+        return bool(passed), bool(passed and margin)
+
+    def evaluate_promotion(self, stats):
+        passed, margin_ok = self._check(stats)
 
         if passed:
             self.consecutive_passes += 1
         else:
             self.consecutive_passes = 0
 
-        if self.consecutive_passes >= self.required_consecutive_passes and self.current_stage_idx < len(self.stages) - 1:
+        # Fewer passes required when the margin is comfortable (statistically
+        # safe to move sooner); the full count when it only just cleared.
+        needed = (self.fast_consecutive_passes if margin_ok
+                  else self.required_consecutive_passes)
+        is_last = self.current_stage_idx >= len(self.stages) - 1
+
+        if passed and self.consecutive_passes >= needed and not is_last:
             self.current_stage_idx += 1
             self.episodes_in_stage  = 0
             self.consecutive_passes = 0
             name = self.stages[self.current_stage_idx]['name']
             print(f"\n🚀 PROMOTED TO STAGE {self.current_stage_idx + 1}/{N_STAGES}: "
-                  f"{name} 🚀\n", flush=True)
+                  f"{name} 🚀  [{'fast' if margin_ok else 'standard'} promote, "
+                  f"{needed} consecutive pass(es)]\n", flush=True)
             return True
         elif passed:
-            print(f"\n⏳ QUALIFIED FOR PROMOTION: {self.consecutive_passes}/{self.required_consecutive_passes} consecutive passes.\n", flush=True)
+            print(f"\n⏳ QUALIFIED FOR PROMOTION: {self.consecutive_passes}/{needed} "
+                  f"consecutive passes (margin={'yes' if margin_ok else 'no'}).\n",
+                  flush=True)
         return False
 
 
@@ -390,7 +427,11 @@ def train(config_path: str = "config/default.yaml",
                             sigma_min=algo_cfg.get('noise_min', 0.05),
                             decay=algo_cfg.get('noise_decay', 0.9995))
     metrics = MetricsTracker()
-    cl      = CurriculumManager(CURRICULUM, required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2))
+    cl = CurriculumManager(
+        CURRICULUM,
+        required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2),
+        fast_consecutive_passes=algo_cfg.get('promotion_fast_consecutive_evals', 1),
+        promotion_margin=algo_cfg.get('promotion_margin', 0.10))
 
     flush_frac       = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))      # N3-4
     flush_frac_shift = float(algo_cfg.get('replay_flush_frac_on_obstacle_shift', 0.5)) # [N4-2]
@@ -491,7 +532,7 @@ def train(config_path: str = "config/default.yaml",
 
     episode = start_episode
     try:
-        for episode in range(start_episode, algo_cfg['n_episodes']):
+        for episode in itertools.count(start_episode):
             stage_cfg = cl.get_current_config()
             obs = env.reset(stage_cfg)
             cl.episodes_in_stage += 1
@@ -800,6 +841,15 @@ def train(config_path: str = "config/default.yaml",
                 promoted = cl.evaluate_promotion(eval_stats)
                 if promoted:
                     metrics.soft_reset()                      # [N3-6] no cross-stage blend
+                    # Best-per-stage insurance: snapshot the policy that just
+                    # CLEARED the previous stage, before the harder stage can
+                    # degrade it. Independent of the every-1000-ep cadence, so a
+                    # later collapse can never cost you the good model.
+                    _save_checkpoint(
+                        f"checkpoints/stage_{cl.current_stage_idx}_cleared",
+                        agents, shared_optimizer, global_step, episode,
+                        cl, noise, buffer=buffer, save_buffer=False)
+
                     # [N4-2] Pre-registered flush policy. If the NEW stage
                     # shifts the hazard distribution — static obstacle count
                     # increases (e.g. stage 2->3: lidar goes from uniformly
@@ -828,12 +878,11 @@ def train(config_path: str = "config/default.yaml",
                 now     = time.time()
                 elapsed = max(now - window_start_time, 1e-6)
                 eps_ps  = (episode - window_start_episode) / elapsed
-                eta_h   = (algo_cfg['n_episodes'] - episode) / max(eps_ps * 3600, 1e-6)
                 window_start_time    = now
                 window_start_episode = episode
 
                 print(
-                    f"Ep {episode:6d}/{algo_cfg['n_episodes']} | "
+                    f"Ep {episode:6d} (open-ended) | "
                     f"Stage {cl.current_stage_idx + 1}/{N_STAGES} "
                     f"({cl.episodes_in_stage:4d} eps) | "
                     f"Reward: {stats['avg_reward']:7.2f} | "
@@ -844,7 +893,7 @@ def train(config_path: str = "config/default.yaml",
                     f"Len: {stats['avg_episode_length']:5.1f} | "
                     f"Buf: {len(buffer):6d} | "
                     f"Noise: {noise.sigma:.3f} | "
-                    f"{eps_ps:.2f} ep/s | ETA: {eta_h:.1f}h",
+                    f"{eps_ps:.2f} ep/s",
                     flush=True)
 
             # ---- Checkpoint every 1000 episodes -------------------------

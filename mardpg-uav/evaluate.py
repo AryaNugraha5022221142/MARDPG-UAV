@@ -70,10 +70,18 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
     
     metrics = MetricsTracker()
     
-    final_stage_cfg = {
-        'env_size': [100.0, 100.0, 60.0], 'static_obs': static_obs,
-        'min_sep': 40.0, 'max_steps': 1500
-    }
+    if static_obs == 16:
+        # Default to stage 7 (Dynamic Threats) if using the final density
+        final_stage_cfg = {
+            'env_size': [100.0, 100.0, 60.0], 'static_obs': static_obs,
+            'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
+            'min_sep': 40.0, 'max_steps': 1500
+        }
+    else:
+        final_stage_cfg = {
+            'env_size': [100.0, 100.0, 60.0], 'static_obs': static_obs,
+            'min_sep': 40.0, 'max_steps': 1500
+        }
     
     for ep in range(n_eval_episodes):
         obs = env.reset(final_stage_cfg)
