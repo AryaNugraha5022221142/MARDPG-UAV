@@ -43,7 +43,6 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
     print(f"Success Rate:  {stats['success_rate']:.2%}")
     print(f"Collision Rate: {stats['collision_rate']:.2%}")
     print(f"Trapped Rate:   {stats['trapped_rate']:.2%}")
-    print(f"Avg Reward:     {stats['avg_reward']:.2f}")
     if 'path_efficiency' in stats:
         print(f"Path Efficiency: {stats['path_efficiency']:.3f}")
     print("=" * 50)
