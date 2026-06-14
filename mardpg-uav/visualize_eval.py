@@ -96,7 +96,7 @@ def _draw_static_obstacles(ax, env, max_z=60.0):
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
         # Color based on relative height
-        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        h = ob.size[1] if ob.type == 'cylinder' else (ob.size[2] * 2 if ob.type == 'box' else ob.size[0] * 2)
         p_z = h / max_z
         c = cmap(np.clip(p_z, 0, 1))
 
@@ -209,7 +209,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
                       edgecolor='k', linewidth=0.5)
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
-        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        h = ob.size[1] if ob.type == 'cylinder' else (ob.size[2] * 2 if ob.type == 'box' else ob.size[0] * 2)
         p_z = h / ez
         c = cmap(np.clip(p_z, 0, 1))
         if ob.type == 'cylinder':
@@ -283,7 +283,7 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
     # background circles/boxes
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
-        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        h = ob.size[1] if ob.type == 'cylinder' else (ob.size[2] * 2 if ob.type == 'box' else ob.size[0] * 2)
         p_z = h / ez
         c = cmap(np.clip(p_z, 0, 1))
         if ob.type == 'cylinder':
