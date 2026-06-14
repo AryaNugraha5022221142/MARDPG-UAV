@@ -13,8 +13,8 @@ import numpy as np
 
 from mardpg_uav.train import load_config, CURRICULUM
 from mardpg_uav.environment.uav_env import MultiUAVEnv
-from mardpg_uav.utils.metrics import MetricsTracker
 from mardpg_uav.apf import APFController
+from mardpg_uav.eval_rollout import run_eval, make_apf_act_fn
 
 
 def main():
@@ -27,34 +27,14 @@ def main():
 
     cfg = load_config(a.config)
     env_cfg = cfg["environment"]
-    env_cfg["seed"] = a.seed
-    np.random.seed(a.seed)
 
     env = MultiUAVEnv(env_cfg)
-    env.action_space.seed(a.seed)
     stage_cfg = CURRICULUM[a.stage - 1]
     ctrl = APFController(env)
-    m = MetricsTracker()
+    act_fn = make_apf_act_fn(env, ctrl)
 
-    for _ in range(a.episodes):
-        env.reset(stage_cfg)
-        ph = [env.agents_state[:, :3].copy()]
-        info = {}
-        ep_r, L = 0.0, 0
-        for _t in range(stage_cfg["max_steps"]):
-            acts = ctrl.act()
-            _, r, done, info = env.step(acts)
-            ep_r += float(sum(r))
-            L += 1
-            ph.append(env.agents_state[:, :3].copy())
-            if done:
-                break
-        m.record_episode(length=L, info=info,
-                         start_pos=[ph[0][i] for i in range(env.n_agents)],
-                         goal_pos=[env.goals[i] for i in range(env.n_agents)],
-                         path_history=ph, rewards=[ep_r])
+    s, _ = run_eval(env, stage_cfg, act_fn, n_episodes=a.episodes, base_seed=a.seed)
 
-    s = m.get_window_stats(a.episodes)
     print(f"APF | stage {a.stage} | seed {a.seed} | n={a.episodes} | "
           f"success {s['success_rate']:.2%} | "
           f"collision {s['collision_rate']:.2%} | "

@@ -8,65 +8,41 @@ This repository implements a **decentralised multi‑agent path planning system*
 
 - Per‑agent LSTM belief approximation
 - Recurrent FC->LSTM centralized critic
-- Uncorrelated Gaussian noise (constant σ)
+- Uncorrelated Gaussian noise
 - Per‑agent episode termination (no global collision truncation)
 - Sin/cos attitude encoding (wrap‑free)
 - Action rate limiting for smooth trajectories
 
-Full mathematical derivations, stability analysis, and hyperparameter justifications are provided in the accompanying PDF.
-
 ---
 
-## Table of Contents
+## Technical Details
 
-- [Mathematical Formulation](#mathematical-formulation)
-- [Key Features](#key-features)
-- [Installation](#installation)
-- [Usage](#usage)
-  - [Training](#training)
-  - [Evaluation](#evaluation)
-- [Repository Structure](#repository-structure)
-- [Hyperparameters](#hyperparameters)
-- [Results (Expected)](#results-expected)
-- [Citation](#citation)
-- [License](#license)
+- **Observation space**: 49-dim
+- **Critic architecture**: Recurrent FC $\to$ LSTM centralized critic
+- **Exploration**: Gaussian noise
+- **BPTT**: length 80
 
----
-
-## Mathematical Formulation
-
-All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathematical_Formulation_Revised.pdf`](MARDPG_UAV_Mathematical_Formulation_Revised.pdf).  
-Key sections:
-
-- **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
-- **Observation space** (49-dim): sin/cos attitude (4) + 25-beam lidar + goal bearing (5) + neighbors (14: body-frame rel-pos ×3, rel-vel ×3, presence ×1, per neighbor, K=2) + alive flag (1).
-- **Reward function** (progress + collision penalty + separation penalty + free‑space bonus)
-- **Centralised critic** (concatenated ordered observations)
-- **Per‑agent termination & validity masking** (for BPTT)
-
----
-
-## Key Features
-
-| Feature | Implementation |
-|---------|----------------|
-| Multi‑agent RL | MARDPG (deterministic policy gradient, CTDE) |
-| Partial observability | LSTM (hidden size 128) as belief state |
-| Coordination | Recurrent FC->LSTM centralized critic |
-| Exploration | Uncorrelated Gaussian noise (constant σ) |
-| Termination | Per‑agent flags, episode ends only when all agents are done |
-| Observation encoding | Sin/cos for yaw/pitch |
-| Rate limiting | `δ_max = 0.5236 rad/step` for smooth commands |
-| Replay buffer | Episode‑based (capacity 10^5 transitions), stores explicit next-obs; short episodes padded, BPTT length 80 (+10 burn-in) |
+**Note on Stage-7 Difficulty**: 
+Please note that generating an evaluation scene harder than stage-7 (dense static obstacles) is currently bounded by the maximum possible 16 grid spawns. Requesting static_obs > 16 prints a warning and is clamped by the env. Genuine Out-Of-Distribution evaluation comes from increasing goal distance and denser/faster dynamic threats.
 
 ---
 
 ## Installation
 
-**Requirements**: Python 3.9+, PyTorch 2.0+, NumPy, Gymnasium (or custom environment)
+**Requirements**: Python 3.9+, PyTorch 2.0+, NumPy, Matplotlib, pandas, W&B
 
 ```bash
-git clone https://github.com/your-org/mardpg-uav.git
-cd mardpg-uav
 pip install -r requirements.txt
 ```
+
+## Training Hyperparameters
+*(Confirm)*
+- Actor Learning Rate: 1e-4
+- Critic Learning Rate: 1e-3
+- Batch Size: 64
+- BPTT Length: 80
+- Burn-in Length: 10
+- Discount Factor (Gamma): 0.99
+- Soft Update (Tau): 0.005
+- Noise Sigma: 0.1
+

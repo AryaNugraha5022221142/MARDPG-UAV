@@ -1,6 +1,0 @@
-{
-  "name": "MARDPG UAV Project",
-  "description": "Repo structure for Multi-Agent Reinforcement Learning for UAVs",
-  "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
-}

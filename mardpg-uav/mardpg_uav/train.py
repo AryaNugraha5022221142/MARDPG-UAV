@@ -69,6 +69,7 @@ import itertools
 import yaml, torch, numpy as np, random, datetime
 from collections import deque
 import wandb
+from mardpg_uav.wandb_logger import WandbLogger
 from typing import List
 
 from .environment.uav_env     import MultiUAVEnv
@@ -393,10 +394,7 @@ def train(config_path: str = "config/default.yaml",
         print(f"[N4-4 WARNING] {msg}", flush=True)
 
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    if use_wandb:
-        wandb.init(project="mardpg-uav",
-                   name=run_name if run_name else f"run_{run_id}_seed_{seed}",
-                   config=cfg)
+    logger = WandbLogger(use_wandb=use_wandb, project="mardpg-uav", name=run_name if run_name else f"run_{run_id}_seed_{seed}", config=cfg)
 
     env        = MultiUAVEnv(env_cfg)
     env.action_space.seed(seed)          # [C5] reproducible warmup-phase actions
@@ -605,7 +603,7 @@ def train(config_path: str = "config/default.yaml",
             stats = metrics.get_stats()
 
             if episode % 10 == 0:
-                wandb.log({
+                logger.log({
                     "episode": episode,
                     "ep_reward_raw": float(episode_reward),
                     "ep_length_raw": ep_len,
@@ -777,7 +775,7 @@ def train(config_path: str = "config/default.yaml",
                     grad_window["actor_grad_norm"].append(float(np.mean(ag_grads)))
 
                 if grad_window["actor_loss"]:
-                    wandb.log({k: float(np.mean(v)) for k, v in grad_window.items()
+                    logger.log({k: float(np.mean(v)) for k, v in grad_window.items()
                                if len(v) > 0}, step=global_step)
 
             # ---- Periodic NOISE-FREE eval & curriculum promotion (I3) ----
@@ -837,7 +835,7 @@ def train(config_path: str = "config/default.yaml",
                               f"(benign; expected during fast learning).",
                               flush=True)
                     q_div_streak = 0
-                wandb.log({"eval/q_gap_signed": q_gap,          # [N4-1] primary
+                logger.log({"eval/q_gap_signed": q_gap,          # [N4-1] primary
                            "eval/q_eval_start": q_cal,          # [N4-1]
                            "eval/q_gap_replay": q_gap_rep,      # legacy, signed
                            "eval/q_divergence": abs(q_gap_rep), # legacy key (dashboards)
@@ -845,7 +843,7 @@ def train(config_path: str = "config/default.yaml",
 
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx
-                wandb.log(log_payload, step=global_step)
+                logger.log(log_payload, step=global_step)
                 print(f"[EVAL @ ep {episode}] stage {cl.current_stage_idx + 1} | "
                       f"n_eval {n_eval_now} | "
                       f"success {eval_stats['success_rate']:.2%} | "
@@ -933,12 +931,14 @@ def train(config_path: str = "config/default.yaml",
                          agents, shared_optimizer, global_step,
                          episode, cl, noise, buffer=buffer, save_buffer=True)
         print("Done.")
+        logger.finish()
         return agents
 
     print("\nTraining complete.")
     _save_checkpoint(f"{out_dir}/final", agents, shared_optimizer,
                      global_step, episode, cl, noise,
                      buffer=buffer, save_buffer=save_replay_flag)
+    logger.finish()
     return agents
 
 

@@ -12,88 +12,24 @@ def visualize(checkpoint_dir, config_path="config/default.yaml", device="cpu"):
         fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_path)
         if os.path.exists(fallback):
             config_path = fallback
-    cfg = yaml.safe_load(open(config_path))
+    from mardpg_uav.eval_rollout import load_agents
+    agents, cfg = load_agents(checkpoint_dir, config_path, device)
     env_cfg = cfg['environment']
-    net_cfg = cfg['network']
-    algo_cfg = cfg['algorithm']
     
     env = MultiUAVEnv(env_cfg)
     n_agents = env_cfg['n_agents']
     
-    # Load agents
-    agents = []
-    for i in range(n_agents):
-        agent = MARDPGAgent(
-            agent_id=i, 
-            n_agents=n_agents,
-            obs_dim=env.obs_dim,
-            action_dim=env.action_dim,
-            action_bound=env_cfg.get('max_delta_angle', 0.5236),
-            lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
-            fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
-            lr_actor=algo_cfg['lr_actor'],
-            lr_critic=algo_cfg['lr_critic'],
-            tau=algo_cfg['tau'], gamma=algo_cfg['gamma'],
-            burn_in=algo_cfg['burn_in'],
-            gradient_clip=algo_cfg['gradient_clip'],
-            device=device
-        )
-        try:
-            ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
-            
-            # FIX: Handle split shared/private dictionaries
-            if 'actor_private' in ckpt:
-                if i == 0:
-                    shared_ckpt = torch.load(f"{checkpoint_dir}/shared_actor.pt", map_location=device)
-                    agent.shared_extractor.load_state_dict(shared_ckpt['shared_actor'])
-                agent.actor.load_state_dict(ckpt['actor_private'], strict=False)
-            else:
-                agent.actor.load_state_dict(ckpt['actor'])
-                
-            print(f"Loaded agent {i} weights")
-        except Exception as e:
-            print(f"Warning: Failed to load agent {i}: {e}. Using untrained weights.")
-        agents.append(agent)
-    
-    # FIX: Enforce parameter sharing for inference
-    for i in range(1, n_agents):
-        agents[i].share_parameters(agents[0])
-    
+    from mardpg_uav.eval_rollout import run_eval, make_learned_act_fn
        
     stage_cfg = {'env_size': [100.0, 100.0, 60.0], 'static_obs': 16,
                  'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
                  'min_sep': 40.0, 'max_steps': 1500}
     obs = env.reset(stage_cfg)
-    for agent in agents:
-        agent.actor.eval()
-        agent.reset_hidden(batch_size=1, eval_mode=True)
     
-    # Simpan histori [step, agent, koordinat]
-    # Batch function
-    def select_actions_batch_eval(agents, obs_all, v_max, agent_done, prev_actions, action_dim=2):
-        actions = []
-        for i, agent in enumerate(agents):
-            if agent_done[i]:
-                actions.append(np.zeros(action_dim))
-            else:
-                action = agent.select_action(obs_all[i], prev_actions[i], evaluate=True)
-                action = np.clip(action, -agent.actor.action_bound, agent.actor.action_bound)
-                actions.append(action)
-        return actions
-        
-    prev_actions = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
-    path_history = [env.agents_state[:, :3].copy()]
-    for step in range(env_cfg['max_steps_per_episode']):
-        actions = select_actions_batch_eval(agents, obs, env_cfg.get('v_max', 3.0), env.agent_done, prev_actions, env.action_dim)
-        
-        obs, rewards, done, info = env.step(actions)
-        prev_actions = actions.copy()
-        
-        path_history.append(env.agents_state[:, :3].copy())
-        
-        if done:
-            break
-            
+    act_fn, on_start = make_learned_act_fn(agents, env)
+    _, m = run_eval(env, stage_cfg, act_fn, n_episodes=1, base_seed=42, on_episode_start=on_start, collect_paths=True)
+    
+    path_history = m.episodes[0]['path_history']
     path_history = np.array(path_history) # shape: (T, N, 3)
 
     # Plotting 3D Trajectory

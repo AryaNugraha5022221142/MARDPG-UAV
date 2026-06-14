@@ -147,45 +147,6 @@ def _load_agents(checkpoint_dir, env, env_cfg, net_cfg, algo_cfg, device):
 
 
 # ---------------------------------------------------------------------------
-# Rollout (records path + dynamic-obstacle swept positions)
-# ---------------------------------------------------------------------------
-def _rollout(env, agents, stage_cfg, env_cfg):
-    n_agents = env_cfg['n_agents']
-    obs = env.reset(stage_cfg)
-    for ag in agents:
-        ag.actor.eval()
-        ag.reset_hidden(batch_size=1, eval_mode=True)
-
-    prev = [np.zeros(env.action_dim, dtype=np.float32) for _ in range(n_agents)]
-    path = [env.agents_state[:, :3].copy()]
-    dyn = getattr(env, 'dynamic_obstacles', [])
-    dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
-    dyn_r = [d.size[0] for d in dyn] if dyn else []
-
-    for _ in range(stage_cfg['max_steps']):
-        acts = []
-        for i, ag in enumerate(agents):
-            if env.agent_done[i]:
-                acts.append(np.zeros(env.action_dim, dtype=np.float32))
-            else:
-                a = ag.select_action(obs[i], prev[i], evaluate=True)
-                acts.append(np.clip(a, -ag.actor.action_bound, ag.actor.action_bound))
-        acts = np.array(acts, dtype=np.float32)
-        obs, _, done, info = env.step(acts)
-        prev = acts.copy()
-        path.append(env.agents_state[:, :3].copy())
-        if dyn:
-            dyn_path.append([d.position.copy() for d in dyn])
-        if done:
-            break
-
-    return (np.array(path),
-            (np.array(dyn_path) if dyn else None),
-            dyn_r,
-            env.agent_reached.copy(), env.agent_collided.copy(),
-            env.goals.copy())
-
-
 # ---------------------------------------------------------------------------
 # Static multi-panel figure
 # ---------------------------------------------------------------------------
@@ -431,21 +392,36 @@ def main():
     p.add_argument('--animate', action='store_true')
     args = p.parse_args()
 
+    from mardpg_uav.eval_rollout import load_agents
+    
     if not os.path.exists(args.config):
         fb = os.path.join(os.path.dirname(os.path.abspath(__file__)), args.config)
         if os.path.exists(fb):
             args.config = fb
-    cfg = yaml.safe_load(open(args.config))
-    env_cfg, net_cfg, algo_cfg = cfg['environment'], cfg['network'], cfg['algorithm']
+    
+    agents, cfg = load_agents(args.checkpoint, args.config, args.device)
+    env_cfg = cfg['environment']
 
     env = MultiUAVEnv(env_cfg)
-    agents = _load_agents(args.checkpoint, env, env_cfg, net_cfg, algo_cfg, args.device)
 
+    from mardpg_uav.eval_rollout import run_eval, make_learned_act_fn
+    
     stage_cfg = dict(CURRICULUM[max(0, min(args.stage, len(CURRICULUM)) - 1)])
     stage_cfg['max_steps'] = env_cfg.get('max_steps_per_episode', stage_cfg.get('max_steps', 1500))
     stage_name = stage_cfg.get('name', f'stage {args.stage}')
 
-    path, dyn_path, dyn_r, reached, collided, goals = _rollout(env, agents, stage_cfg, env_cfg)
+    act_fn, on_start = make_learned_act_fn(agents, env)
+    _, m = run_eval(env, stage_cfg, act_fn, n_episodes=1, base_seed=42, on_episode_start=on_start, collect_paths=True)
+    
+    info = m.episodes[0]['info']
+    path = np.array(m.episodes[0]['path_history'])
+    
+    dyn_path = info.get('dyn_path', None)
+    dyn_r = info.get('dyn_r', [])
+    reached = info.get('reached', np.zeros(env.n_agents))
+    collided = info.get('collisions', np.zeros(env.n_agents))
+    goals = env.goals.copy()
+
     plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
                 stage_name, args.out)
     if args.animate:

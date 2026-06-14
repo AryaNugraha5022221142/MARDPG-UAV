@@ -11,17 +11,7 @@ which is what `n_agents` controls here.
 """
 import torch
 import torch.nn as nn
-
-
-class _FFCore(nn.Module):
-    def __init__(self, in_dim: int, hidden: int):
-        super().__init__()
-        self.hidden_size = hidden
-        self.net = nn.Sequential(nn.Linear(in_dim, hidden), nn.ReLU(),
-                                 nn.Linear(hidden, hidden), nn.ReLU())
-
-    def forward(self, x, hidden=None):
-        return self.net(x), None
+from mardpg_uav.algorithm.nn_blocks import _FFCore
 
 
 class RecurrentCritic(nn.Module):

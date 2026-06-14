@@ -48,9 +48,10 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
+from mardpg_uav.eval_rollout import load_agents
 
-# Reuse loader + corrected renderer from the improved visualizer.
-from visualize_eval import _load_agents, plot_trajectory_3d, AGENT_COLORS, HAZARD_COLOR
+# Reuse corrected renderer from the improved visualizer.
+from visualize_eval import plot_trajectory_3d, AGENT_COLORS, HAZARD_COLOR
 
 
 # ---------------------------------------------------------------------------
@@ -248,7 +249,7 @@ def evaluate_suite(checkpoint, config, episodes, device, outdir,
 
     os.makedirs(outdir, exist_ok=True)
     env = MultiUAVEnv(env_cfg)
-    agents = _load_agents(checkpoint, env, env_cfg, net_cfg, algo_cfg, device)
+    agents, _ = load_agents(checkpoint, config, device)
 
     # warmup so the first timed inference isn't penalised by lazy init
     _ = agents[0].select_action(np.zeros(env.obs_dim, np.float32),

@@ -144,28 +144,3 @@ class Rangefinder:
             final_mask[mask] = valid
             dist[final_mask] = d_mask[valid]
         return dist
-
-    def _ray_box_vec(self, o: np.ndarray, d: np.ndarray, c: np.ndarray, s: np.ndarray) -> np.ndarray:
-        with np.errstate(divide='ignore', invalid='ignore'):
-            t1 = (c - s - o) / d
-            t2 = (c + s - o) / d
-            
-        # Replace NaN with +/- inf before slab test
-        t1 = np.where(np.isnan(t1), -np.inf, t1)
-        t2 = np.where(np.isnan(t2), np.inf, t2)
-            
-        t_min = np.minimum(t1, t2)
-        t_max = np.maximum(t1, t2)
-        
-        t_enter = np.max(t_min, axis=-1)
-        t_exit = np.min(t_max, axis=-1)
-        
-        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
-        mask = (t_exit >= t_enter) & (t_enter > 0)
-        dist[mask] = t_enter[mask]
-        
-        # inside case
-        mask_in = (t_exit >= t_enter) & (t_enter <= 0) & (t_exit > 0)
-        dist[mask_in] = t_exit[mask_in]
-        
-        return dist

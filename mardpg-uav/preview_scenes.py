@@ -41,12 +41,11 @@ def plot_scene(ax, env, title):
             ax.plot_surface(x_grid, y_grid, z_grid, color='gray', alpha=0.6, shade=True)
             
     ax.set_title(title, pad=0)
-    ax.set_xlim(0, 50)
-    ax.set_ylim(0, 50)
-    ax.set_zlim(0, 60)
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
+
+from mardpg_uav.train import CURRICULUM
 
 def main():
     import os
@@ -57,24 +56,21 @@ def main():
     env = MultiUAVEnv(cfg['environment'])
     
     fig = plt.figure(figsize=(15, 12))
-    scenes = [
-        (1, "Scene 1: Square Columns"),
-        (2, "Scene 2: Cylinders"),
-        (3, "Scene 3: Forest (Thin Cylinders)"),
-        (4, "Scene 4: Circular Rings")
-    ]
     
-    stage_cfgs = {
-        1: {'env_size': [100., 100., 60.], 'static_obs': 4,  'min_sep': 20., 'max_steps': 500},
-        2: {'env_size': [100., 100., 60.], 'static_obs': 8,  'min_sep': 30., 'max_steps': 500},
-        3: {'env_size': [100., 100., 60.], 'static_obs': 12, 'min_sep': 40., 'max_steps': 500},
-        4: {'env_size': [100., 100., 60.], 'static_obs': 16, 'min_sep': 40., 'max_steps': 500},
-    }
+    # We will preview stage 1, 3, 5, 7 from the curriculum
+    stages_to_preview = [1, 3, 5, min(7, len(CURRICULUM))]
     
-    for i, (scene_type, title) in enumerate(scenes):
+    for i, stage_idx in enumerate(stages_to_preview):
         ax = fig.add_subplot(2, 2, i+1, projection='3d')
-        env.reset(stage_cfgs[scene_type])
+        stage_cfg = CURRICULUM[stage_idx - 1]
+        title = stage_cfg.get('name', f"Stage {stage_idx}")
+        env.reset(stage_cfg)
         plot_scene(ax, env, title)
+        
+        ex, ey, ez = stage_cfg["env_size"]
+        ax.set_xlim(0, ex)
+        ax.set_ylim(0, ey)
+        ax.set_zlim(0, ez)
         
     plt.tight_layout()
     plt.savefig("scenes_preview.png", dpi=200, bbox_inches='tight')
