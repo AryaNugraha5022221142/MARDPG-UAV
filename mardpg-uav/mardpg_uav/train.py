@@ -136,9 +136,12 @@ class CurriculumManager:
     def __init__(self, stages,
                  required_consecutive_passes=2,
                  fast_consecutive_passes=1,
-                 promotion_margin=0.0):
+                 promotion_margin=0.0,
+                 start_stage_idx=0,
+                 freeze=False):
         self.stages             = stages
-        self.current_stage_idx  = 0
+        self.current_stage_idx  = start_stage_idx
+        self.freeze             = freeze
         self.episodes_in_stage  = 0
         self.consecutive_passes = 0
         self.required_consecutive_passes = int(required_consecutive_passes)
@@ -186,6 +189,8 @@ class CurriculumManager:
         return bool(passed), bool(passed and margin)
 
     def evaluate_promotion(self, stats):
+        if self.freeze:
+            return False
         passed, margin_ok = self._check(stats)
 
         if passed:
@@ -307,9 +312,10 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
                 with torch.no_grad():
                     o_t = torch.FloatTensor(obs).unsqueeze(0).to(agents[0].device)
                     a_t = torch.FloatTensor(acts).unsqueeze(0).to(agents[0].device)
-                    q0 = [float(ag.critic(o_t, a_t, hidden=None,
-                                          seq_len=1)[0].item())
-                          for ag in agents]
+                    q0 = []
+                    for ag in agents:
+                        oi, ai = ag._critic_inputs(o_t, a_t)
+                        q0.append(float(ag.critic(oi, ai, hidden=None, seq_len=1)[0].item()))
                 q0_means.append(float(np.mean(q0)))
 
             obs, rewards, done, info = env.step(acts)
@@ -341,7 +347,14 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
 def train(config_path: str = "config/default.yaml",
           device: str = None,
           resume_dir: str = None,
-          seed: int = 42):
+          seed: int = 42,
+          out_dir: str = "checkpoints",
+          run_name: str = None,
+          max_episodes: int = -1,
+          use_wandb: bool = True,
+          recurrent: bool = True,
+          centralized: bool = True,
+          no_curriculum: bool = False):
 
     cfg      = load_config(config_path)
     env_cfg  = cfg['environment']; env_cfg['seed'] = seed
@@ -380,9 +393,10 @@ def train(config_path: str = "config/default.yaml",
         print(f"[N4-4 WARNING] {msg}", flush=True)
 
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
-    wandb.init(project="mardpg-uav",
-               name=f"run_{run_id}_seed_{seed}",
-               config=cfg)
+    if use_wandb:
+        wandb.init(project="mardpg-uav",
+                   name=run_name if run_name else f"run_{run_id}_seed_{seed}",
+                   config=cfg)
 
     env        = MultiUAVEnv(env_cfg)
     env.action_space.seed(seed)          # [C5] reproducible warmup-phase actions
@@ -405,6 +419,7 @@ def train(config_path: str = "config/default.yaml",
             burn_in=algo_cfg['burn_in'],
             huber_beta=algo_cfg.get('huber_beta', 10.0),
             twin_critic=bool(algo_cfg.get('twin_critic', False)),   # [N3-7]
+            recurrent=recurrent, centralized=centralized,
             device=device)
         agents.append(ag)
 
@@ -431,7 +446,9 @@ def train(config_path: str = "config/default.yaml",
         CURRICULUM,
         required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2),
         fast_consecutive_passes=algo_cfg.get('promotion_fast_consecutive_evals', 1),
-        promotion_margin=algo_cfg.get('promotion_margin', 0.10))
+        promotion_margin=algo_cfg.get('promotion_margin', 0.10),
+        start_stage_idx=(N_STAGES - 1 if no_curriculum else 0),
+        freeze=no_curriculum)
 
     flush_frac       = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))      # N3-4
     flush_frac_shift = float(algo_cfg.get('replay_flush_frac_on_obstacle_shift', 0.5)) # [N4-2]
@@ -533,6 +550,8 @@ def train(config_path: str = "config/default.yaml",
     episode = start_episode
     try:
         for episode in itertools.count(start_episode):
+            if max_episodes != -1 and episode >= max_episodes:
+                break
             stage_cfg = cl.get_current_config()
             obs = env.reset(stage_cfg)
             cl.episodes_in_stage += 1
@@ -898,26 +917,26 @@ def train(config_path: str = "config/default.yaml",
 
             # ---- Checkpoint every 1000 episodes -------------------------
             if episode % 1000 == 0 and episode > 0:
-                _save_checkpoint(f"checkpoints/episode_{episode}",
+                _save_checkpoint(f"{out_dir}/episode_{episode}",
                                  agents, shared_optimizer, global_step,
                                  episode, cl, noise,
                                  buffer=buffer, save_buffer=save_replay_flag)
 
             # ---- CSV every 100 episodes ---------------------------------
             if episode % 100 == 0 and episode > 0:
-                _write_csv(f"checkpoints/training_log_{run_id}.csv",
+                _write_csv(f"{out_dir}/training_log_{run_id}.csv",
                            episode, stats, grad_window)
 
     except KeyboardInterrupt:
         print("\n[INTERRUPT] Saving emergency checkpoint (incl. replay buffer)…")
-        _save_checkpoint(f"checkpoints/interrupted_episode_{episode}",
+        _save_checkpoint(f"{out_dir}/interrupted_episode_{episode}",
                          agents, shared_optimizer, global_step,
                          episode, cl, noise, buffer=buffer, save_buffer=True)
         print("Done.")
         return agents
 
     print("\nTraining complete.")
-    _save_checkpoint("checkpoints/final", agents, shared_optimizer,
+    _save_checkpoint(f"{out_dir}/final", agents, shared_optimizer,
                      global_step, episode, cl, noise,
                      buffer=buffer, save_buffer=save_replay_flag)
     return agents
@@ -958,7 +977,7 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
 
 
 def _write_csv(path, episode, stats, grad_window):
-    os.makedirs("checkpoints", exist_ok=True)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     is_new = not os.path.exists(path)
     gm = {k: (float(np.mean(v)) if len(v) else 0.0) for k, v in grad_window.items()}
     with open(path, 'a') as f:
@@ -982,5 +1001,17 @@ if __name__ == "__main__":
     p.add_argument('--device',  default=None, choices=['cpu', 'cuda'])
     p.add_argument('--resume',  default=None)
     p.add_argument('--seed',    type=int, default=42)
+    p.add_argument('--out-dir', default='checkpoints')
+    p.add_argument('--run-name', default=None)
+    p.add_argument('--max-episodes', type=int, default=-1)
+    p.add_argument('--no-wandb', action='store_true')
+    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg'])
+    p.add_argument('--no-curriculum', action='store_true')
     a = p.parse_args()
-    train(a.config, a.device, a.resume, a.seed)
+    
+    rec, cen = {'mardpg': (True, True), 'maddpg': (False, True),
+                'iddpg': (False, False)}[a.variant]
+    train(a.config, a.device, a.resume, a.seed,
+          out_dir=a.out_dir, run_name=a.run_name,
+          max_episodes=a.max_episodes, use_wandb=not a.no_wandb,
+          recurrent=rec, centralized=cen, no_curriculum=a.no_curriculum)

@@ -41,36 +41,43 @@ class MARDPGAgent:
                  gradient_clip: float = 1.0, burn_in: int = 10,
                  huber_beta: float = 10.0,
                  twin_critic: bool = False,                        # [N3-7]
+                 recurrent: bool = True, centralized: bool = True,
                  device: str = 'cpu'):
 
-        self.agent_id      = agent_id
-        self.n_agents      = n_agents
-        self.gamma         = gamma
-        self.tau           = tau
-        self.gradient_clip = gradient_clip
-        self.burn_in       = burn_in
-        self.huber_beta    = huber_beta
-        self.twin_critic   = twin_critic
-        self.device        = torch.device(device)
-        self.action_bound  = action_bound
+        self.agent_id           = agent_id
+        self.n_agents           = n_agents
+        self.gamma              = gamma
+        self.tau                = tau
+        self.gradient_clip      = gradient_clip
+        self.burn_in            = burn_in
+        self.huber_beta         = huber_beta
+        self.twin_critic        = twin_critic
+        self.recurrent          = recurrent
+        self.centralized        = centralized
+        self.device             = torch.device(device)
+        self.action_bound       = action_bound
 
-        # Actor (shared encoder + private LSTM + head)
+        # Actor (shared encoder + private core + head)
         self.shared_extractor = SharedFeatureExtractor().to(self.device)
         self.actor            = Actor(self.shared_extractor, lstm_hidden,
-                                      max_delta_angle=action_bound).to(self.device)
+                                      max_delta_angle=action_bound,
+                                      recurrent=recurrent).to(self.device)
         self.actor_target     = copy.deepcopy(self.actor).to(self.device)
         self.actor_target.eval()
 
-        # Critic: independent instance per agent (centralized input)
-        self.critic        = RecurrentCritic(n_agents, obs_dim, action_dim,
-                                             fc_hidden, lstm_hidden).to(self.device)
+        # Critic
+        n_critic = n_agents if centralized else 1
+        self.critic        = RecurrentCritic(n_critic, obs_dim, action_dim,
+                                             fc_hidden, lstm_hidden,
+                                             recurrent=recurrent).to(self.device)
         self.critic_target = copy.deepcopy(self.critic).to(self.device)
         self.critic_target.eval()
 
         # [N3-7] Optional second critic for clipped double-Q.
         if self.twin_critic:
-            self.critic2        = RecurrentCritic(n_agents, obs_dim, action_dim,
-                                                  fc_hidden, lstm_hidden).to(self.device)
+            self.critic2        = RecurrentCritic(n_critic, obs_dim, action_dim,
+                                                  fc_hidden, lstm_hidden,
+                                                  recurrent=recurrent).to(self.device)
             self.critic2_target = copy.deepcopy(self.critic2).to(self.device)
             self.critic2_target.eval()
             self.critic2_optimizer = optim.Adam(self.critic2.parameters(), lr=lr_critic)
@@ -117,6 +124,13 @@ class MARDPGAgent:
         h = torch.zeros(1, batch_size, self.actor.lstm.hidden_size).to(self.device)
         return (h, h.clone())
 
+    def _critic_inputs(self, obs, act):
+        """Own-vs-all slicing for the critic. obs/act: (X, N, dim)."""
+        if self.centralized:
+            return obs, act
+        aid = self.agent_id
+        return obs[:, aid:aid + 1, :], act[:, aid:aid + 1, :]
+
     # ------------------------------------------------------------------
     # Critic loss
     # ------------------------------------------------------------------
@@ -141,20 +155,22 @@ class MARDPGAgent:
         batch_size, total_seq_len = mask.shape
         learn_start = self.burn_in
 
-        q1, _ = self.critic(obs_all_seq, act_all_seq, hidden=None,
+        c_obs, c_act = self._critic_inputs(obs_all_seq, act_all_seq)
+        q1, _ = self.critic(c_obs, c_act, hidden=None,
                             seq_len=total_seq_len)
         q1 = q1.view(batch_size, total_seq_len)
         if self.twin_critic:
-            q2, _ = self.critic2(obs_all_seq, act_all_seq, hidden=None,
+            q2, _ = self.critic2(c_obs, c_act, hidden=None,
                                  seq_len=total_seq_len)
             q2 = q2.view(batch_size, total_seq_len)
 
         with torch.no_grad():
-            q1_next, _ = self.critic_target(next_obs_all_seq, next_act_all_seq,
+            c_next_obs, c_next_act = self._critic_inputs(next_obs_all_seq, next_act_all_seq)
+            q1_next, _ = self.critic_target(c_next_obs, c_next_act,
                                             hidden=None, seq_len=total_seq_len)
             q1_next = q1_next.view(batch_size, total_seq_len)
             if self.twin_critic:
-                q2_next, _ = self.critic2_target(next_obs_all_seq, next_act_all_seq,
+                q2_next, _ = self.critic2_target(c_next_obs, c_next_act,
                                                  hidden=None, seq_len=total_seq_len)
                 q2_next = q2_next.view(batch_size, total_seq_len)
                 q_next = torch.min(q1_next, q2_next)
@@ -207,7 +223,8 @@ class MARDPGAgent:
         joint_actions = act_all_seq.clone().detach()                  # (B*T, N, A)
         joint_actions[:, self.agent_id, :] = mixed_my.reshape(batch_size * total_seq_len, -1)
 
-        q_flat, _ = self.critic(obs_all_seq, joint_actions, hidden=None,
+        c_obs, c_joint_acts = self._critic_inputs(obs_all_seq, joint_actions)
+        q_flat, _ = self.critic(c_obs, c_joint_acts, hidden=None,
                                 seq_len=total_seq_len)
         q_full = q_flat.view(batch_size, total_seq_len)
 
