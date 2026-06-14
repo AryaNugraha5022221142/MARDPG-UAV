@@ -93,7 +93,6 @@ def _draw_sphere(ax, center, r, color, alpha=0.5):
 
 def _draw_static_obstacles(ax, env, max_z=60.0):
     # env.obstacles ends with 6 boundary walls; skip them.
-    import matplotlib.pyplot as plt
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
         # Color based on relative height
@@ -208,7 +207,6 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
                       edgecolor='k', linewidth=0.5, label=f'Agent {i+1}')
         axtop.scatter(goals[i, 0], goals[i, 1], color=c, marker='*', s=180,
                       edgecolor='k', linewidth=0.5)
-    import matplotlib.pyplot as plt
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
         h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
@@ -283,7 +281,6 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
     axtop = fig.add_subplot(111)
 
     # background circles/boxes
-    import matplotlib.pyplot as plt
     cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
         h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
