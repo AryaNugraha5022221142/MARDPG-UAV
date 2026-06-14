@@ -90,23 +90,26 @@ def make_apf_act_fn(env, apf_ctrl):
 
 def make_learned_act_fn(agents, env):
     import torch
+    
+    # We need to maintain prev_acts state across steps internally
+    state = {'prev_acts': np.zeros((env.n_agents, env.action_dim), dtype=np.float32)}
+
     def on_start(env):
         for ag in agents:
             ag.hidden = None
+            if hasattr(ag.actor, 'eval'):
+                ag.actor.eval()
+        state['prev_acts'] = np.zeros((env.n_agents, env.action_dim), dtype=np.float32)
 
     def act_fn():
-        obs = env.get_obs()
-        acts = np.zeros((env.n_agents, 2))
+        obs = env._get_observations()
+        acts = np.zeros((env.n_agents, env.action_dim), dtype=np.float32)
         for i, ag in enumerate(agents):
             if env.agent_done[i]: continue
-            o = torch.FloatTensor(obs[i]).unsqueeze(0).to(ag.device)
-            p = torch.FloatTensor(env.agents_state[i, 7:9]).unsqueeze(0).to(ag.device)
-            # Unsqueeze for sequence length -> (1, 1, dim)
-            o = o.unsqueeze(1)
-            p = p.unsqueeze(1)
-            with torch.no_grad():
-                a, ag.hidden = ag.actor(o, p, ag.hidden)
-            acts[i] = a.cpu().numpy()[0]
+            action = ag.select_action(obs[i], state['prev_acts'][i], evaluate=True)
+            action = np.clip(action, -ag.actor.action_bound, ag.actor.action_bound)
+            acts[i] = action
+        state['prev_acts'] = acts.copy()
         return acts
         
     return act_fn, on_start
