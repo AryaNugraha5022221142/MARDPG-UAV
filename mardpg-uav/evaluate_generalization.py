@@ -43,12 +43,14 @@ import yaml
 import numpy as np
 import pandas as pd
 import torch
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 
 # Reuse loader + corrected renderer from the improved visualizer.
-from visualize_eval import _load_agents, plot_static, AGENT_COLORS, HAZARD_COLOR
+from visualize_eval import _load_agents, plot_trajectory_3d, AGENT_COLORS, HAZARD_COLOR
 
 
 # ---------------------------------------------------------------------------
@@ -235,7 +237,7 @@ def _episode_score(ep):
 
 
 def evaluate_suite(checkpoint, config, episodes, device, outdir,
-                   render_config, base_seed, quick):
+                   render, base_seed, quick):
     if not os.path.exists(config):
         fb = os.path.join(os.path.dirname(os.path.abspath(__file__)), config)
         if os.path.exists(fb):
@@ -265,7 +267,7 @@ def evaluate_suite(checkpoint, config, episodes, device, outdir,
         t_cfg = time.time()
         for e in range(episodes):
             seed = base_seed + e
-            ep, arows, render = run_episode(env, agents, stage_cfg, env_cfg, seed)
+            ep, arows, render_data = run_episode(env, agents, stage_cfg, env_cfg, seed)
             ep.update(config_name=name, regime=regime, episode=e)
             ep_records.append(ep)
             for r in arows:
@@ -315,19 +317,23 @@ def evaluate_suite(checkpoint, config, episodes, device, outdir,
     # ---- generalization summary plot ----
     _plot_generalization(df_sum, os.path.join(outdir, 'generalization_summary.png'))
 
-    # ---- render best episode of the chosen config ----
-    if render_config in best_seeds:
-        name = render_config
-        stage_cfg = dict(next(s for n, r, s in suite if n == name))
-        seed = best_seeds[name]
-        print(f"Rendering best episode of '{name}' (seed {seed}) ...")
-        _, _, render = run_episode(env, agents, stage_cfg, env_cfg, seed)
-        plot_static(env, env_cfg, render['path'], render['dyn_path'], render['dyn_r'],
-                    render['reached'], render['collided'], render['goals'],
-                    f"BEST episode | {name} (seed {seed})",
-                    os.path.join(outdir, f'best_episode_{name}.png'))
-    else:
-        print(f"[WARN] render_config '{render_config}' not in suite; skipping render.")
+    # ---- render best episode of EVERY config (3D trajectory only) ----
+    # Side panels (top-down, separation, distance-to-goal) are intentionally
+    # dropped: all of that is reconstructable from eval_episodes.csv /
+    # eval_agents.csv. One focused 3D plot per config instead.
+    if render:
+        suite_cfg = {n: s for n, r, s in suite}
+        for name in df_ep['config_name'].unique():
+            seed = best_seeds[name]
+            stage_cfg = dict(suite_cfg[name])
+            print(f"Rendering best episode of '{name}' (seed {seed}) ...")
+            _, _, rnd = run_episode(env, agents, stage_cfg, env_cfg, seed)
+            plot_trajectory_3d(
+                env, env_cfg, rnd,
+                f"BEST | {name} (seed {seed}) | "
+                f"reached {int(rnd['reached'].sum())}/{n_agents}, "
+                f"collided {int(rnd['collided'].sum())}/{n_agents}",
+                os.path.join(outdir, f'best_3d_{name}.png'))
 
     return df_ep, df_ag, df_sum
 
@@ -360,12 +366,13 @@ def main():
                    help='episodes per config (SE ~ 0.5/sqrt(n) at p=0.5; 50 -> ~7pp)')
     p.add_argument('--device', default='cpu')
     p.add_argument('--outdir', default='eval_results')
-    p.add_argument('--render-config', default='stage7_train')
+    p.add_argument('--no-render', action='store_true',
+                   help='skip the per-config 3D trajectory renders')
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
     a = p.parse_args()
     evaluate_suite(a.checkpoint, a.config, a.episodes, a.device, a.outdir,
-                   a.render_config, a.base_seed, a.suite == 'quick')
+                   not a.no_render, a.base_seed, a.suite == 'quick')
 
 
 if __name__ == "__main__":

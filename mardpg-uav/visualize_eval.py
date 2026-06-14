@@ -32,9 +32,12 @@ import argparse
 import yaml
 import numpy as np
 import torch
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 from matplotlib.collections import LineCollection
+from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
@@ -285,6 +288,92 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     plt.savefig(out_path, dpi=200, bbox_inches='tight')
     print(f"Saved figure -> {out_path}")
+
+
+# ---------------------------------------------------------------------------
+# Focused 3D-only trajectory render (the side panels are derivable from CSV).
+# Legend is split into two parts: agent identity+outcome, and marker semantics.
+# ---------------------------------------------------------------------------
+def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58):
+    n_agents = env_cfg['n_agents']
+    ex, ey, ez = env_cfg['env_size']
+    path = render['path']
+    dyn_path = render['dyn_path']
+    dyn_r = render['dyn_r']
+    reached = render['reached']
+    collided = render['collided']
+    goals = render['goals']
+    T = len(path)
+
+    fig = plt.figure(figsize=(11, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    _draw_static_obstacles(ax, env)
+    if dyn_path is not None:
+        for k in range(dyn_path.shape[1]):
+            dp = dyn_path[:, k, :]
+            ax.plot(dp[:, 0], dp[:, 1], dp[:, 2], color=HAZARD_COLOR,
+                    lw=1.6, alpha=0.6, ls='--')
+            _draw_sphere(ax, dp[-1], dyn_r[k], HAZARD_COLOR, alpha=0.35)
+
+    agent_handles = []
+    for i in range(n_agents):
+        c = AGENT_COLORS[i % len(AGENT_COLORS)]
+        segs = _time_graded_segments(path[:, i, :])
+        lc = Line3DCollection(segs, colors=_alpha_ramp_colors(c, len(segs)), linewidths=2.4)
+        ax.add_collection3d(lc)
+        em = 'o' if reached[i] else ('X' if collided[i] else 'P')
+        ax.scatter(*path[0, i], color=c, marker='s', s=60,
+                   edgecolor='k', linewidth=0.6, depthshade=False)
+        ax.scatter(*path[-1, i], color=c, marker=em, s=85,
+                   edgecolor='k', linewidth=0.7, depthshade=False)
+        ax.scatter(*goals[i], color=c, marker='*', s=260,
+                   edgecolor='k', linewidth=0.7, depthshade=False)
+        ax.plot(path[:, i, 0], path[:, i, 1], np.zeros(T), color=c, ls=':', alpha=0.2, lw=1)
+        status = 'reached' if reached[i] else ('collided' if collided[i] else 'timeout')
+        agent_handles.append(Line2D([0], [0], color=c, lw=2.6, marker=em,
+                                    markersize=9, markeredgecolor='k',
+                                    label=f'Agent {i+1} \u2014 {status}'))
+
+    ax.set_xlim(0, ex); ax.set_ylim(0, ey); ax.set_zlim(0, ez)
+    ax.set_box_aspect((ex, ey, ez))
+    ax.set_xlabel('X (m)'); ax.set_ylabel('Y (m)'); ax.set_zlabel('Z (m)')
+    ax.view_init(elev=elev, azim=azim)
+    ax.set_title(title, fontsize=12, fontweight='bold', pad=14)
+
+    # Legend part 1: agent identity (color) + outcome (end marker).
+    leg1 = ax.legend(handles=agent_handles, loc='upper left',
+                     bbox_to_anchor=(-0.02, 1.0), fontsize=9, framealpha=0.92,
+                     title='Agent (color = identity)')
+    ax.add_artist(leg1)
+
+    # Legend part 2: marker / line semantics (neutral grey).
+    sem = [
+        Line2D([0], [0], color='0.35', marker='s', ls='None', markersize=9,
+               markeredgecolor='k', label='start'),
+        Line2D([0], [0], color='0.35', marker='*', ls='None', markersize=13,
+               markeredgecolor='k', label='goal'),
+        Line2D([0], [0], color='0.35', marker='o', ls='None', markersize=9,
+               markeredgecolor='k', label='end (reached)'),
+        Line2D([0], [0], color='0.35', marker='X', ls='None', markersize=9,
+               markeredgecolor='k', label='end (collided)'),
+        Line2D([0], [0], color='0.7', lw=6, alpha=0.5, label='obstacle'),
+    ]
+    if dyn_path is not None:
+        sem.append(Line2D([0], [0], color=HAZARD_COLOR, lw=1.8, ls='--',
+                          label='dynamic threat path'))
+    ax.legend(handles=sem, loc='upper right', bbox_to_anchor=(1.02, 1.0),
+              fontsize=9, framealpha=0.92, title='Markers')
+
+    fig.text(0.5, 0.015,
+             'Line opacity increases start \u2192 end (direction of travel).  '
+             'Dotted line = ground (X\u2013Y) projection.',
+             ha='center', fontsize=9, color='0.3')
+
+    plt.tight_layout(rect=[0, 0.04, 1, 1])
+    plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+    print(f"Saved {out_path}")
 
 
 # ---------------------------------------------------------------------------

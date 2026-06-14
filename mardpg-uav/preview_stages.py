@@ -1,5 +1,7 @@
 import yaml
 import numpy as np
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
@@ -15,8 +17,8 @@ def plot_all_stages(save_path="stages_preview.png"):
     env = MultiUAVEnv(cfg['environment'])
     
     stages_to_plot = list(range(len(CURRICULUM)))
-    # 6 stages: we can plot in a 3x2 grid
-    fig = plt.figure(figsize=(24, 28))
+    # 7 stages: we can plot in a 4x2 grid
+    fig = plt.figure(figsize=(24, 38))
     fig.patch.set_facecolor('#FAFAFA')
     
     max_z = 60.0 # Most stages have max height around 60m
@@ -24,7 +26,7 @@ def plot_all_stages(save_path="stages_preview.png"):
     all_handles, all_labels = [], []
 
     for i, stage_idx in enumerate(stages_to_plot):
-        ax = fig.add_subplot(3, 2, i + 1, projection='3d')
+        ax = fig.add_subplot(4, 2, i + 1, projection='3d')
         ax.set_facecolor('#FAFAFA')
         
         stage_cfg = CURRICULUM[stage_idx].copy()
