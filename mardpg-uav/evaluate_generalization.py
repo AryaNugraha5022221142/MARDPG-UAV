@@ -51,7 +51,7 @@ from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents
 
 # Reuse corrected renderer from the improved visualizer.
-from visualize_eval import plot_trajectory_3d, AGENT_COLORS, HAZARD_COLOR
+from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, AGENT_COLORS, HAZARD_COLOR
 
 
 # ---------------------------------------------------------------------------
@@ -335,6 +335,12 @@ def evaluate_suite(checkpoint, config, episodes, device, outdir,
                 f"reached {int(rnd['reached'].sum())}/{n_agents}, "
                 f"collided {int(rnd['collided'].sum())}/{n_agents}",
                 os.path.join(outdir, f'best_3d_{name}.png'))
+            plot_trajectory_top_down(
+                env, env_cfg, rnd,
+                f"BEST TOP-DOWN | {name} (seed {seed}) | "
+                f"reached {int(rnd['reached'].sum())}/{n_agents}, "
+                f"collided {int(rnd['collided'].sum())}/{n_agents}",
+                os.path.join(outdir, f'best_top_down_{name}.png'))
 
     return df_ep, df_ag, df_sum
 
@@ -371,9 +377,42 @@ def main():
                    help='skip the per-config 3D trajectory renders')
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
+    p.add_argument('--wandb', action='store_true', help='Use wandb to log evaluation results')
+    p.add_argument('--wandb-project', default='mardpg-uav-eval', help='Wandb project name')
+    p.add_argument('--wandb-name', default=None, help='Wandb run name')
     a = p.parse_args()
-    evaluate_suite(a.checkpoint, a.config, a.episodes, a.device, a.outdir,
+    
+    if a.wandb:
+        import wandb
+        wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
+        
+    df_ep, df_ag, df_sum = evaluate_suite(a.checkpoint, a.config, a.episodes, a.device, a.outdir,
                    not a.no_render, a.base_seed, a.suite == 'quick')
+                   
+    if a.wandb:
+        # Log aggregated summary
+        for _, row in df_sum.iterrows():
+            cfg_name = row['config_name']
+            log_dict = {f"eval/{cfg_name}/{k}": v for k, v in row.items() if isinstance(v, (int, float, np.number))}
+            wandb.log(log_dict)
+            
+        import wandb
+        # Log generalization summary plot
+        img_path = os.path.join(a.outdir, 'generalization_summary.png')
+        if os.path.exists(img_path):
+            wandb.log({"eval/generalization_summary": wandb.Image(img_path)})
+            
+        # Log renders
+        if not a.no_render:
+            for cfg_name in df_ep['config_name'].unique():
+                img_path_3d = os.path.join(a.outdir, f'best_3d_{cfg_name}.png')
+                img_path_td = os.path.join(a.outdir, f'best_top_down_{cfg_name}.png')
+                if os.path.exists(img_path_3d):
+                    wandb.log({f"eval/renders/best_3d_{cfg_name}": wandb.Image(img_path_3d)})
+                if os.path.exists(img_path_td):
+                    wandb.log({f"eval/renders/best_top_down_{cfg_name}": wandb.Image(img_path_td)})
+                    
+        wandb.finish()
 
 
 if __name__ == "__main__":

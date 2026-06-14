@@ -91,13 +91,20 @@ def _draw_sphere(ax, center, r, color, alpha=0.5):
     ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0, shade=True)
 
 
-def _draw_static_obstacles(ax, env):
+def _draw_static_obstacles(ax, env, max_z=60.0):
     # env.obstacles ends with 6 boundary walls; skip them.
+    import matplotlib.pyplot as plt
+    cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
+        # Color based on relative height
+        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        p_z = h / max_z
+        c = cmap(np.clip(p_z, 0, 1))
+
         if ob.type == 'cylinder':
-            _draw_cylinder(ax, ob.position, ob.size[0], ob.size[1])
+            _draw_cylinder(ax, ob.position, ob.size[0], ob.size[1], color=c, alpha=0.45)
         elif ob.type == 'box':
-            _draw_box(ax, ob.position, ob.size)
+            _draw_box(ax, ob.position, ob.size, color=c, alpha=0.45)
         # dynamic spheres are drawn separately along their swept path
 
 
@@ -165,7 +172,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
     axgoal = fig.add_subplot(2, 2, 4)
 
     # ---- 3D isometric ----
-    _draw_static_obstacles(ax3d, env)
+    _draw_static_obstacles(ax3d, env, max_z=ez)
     if dyn_path is not None:
         for k in range(dyn_path.shape[1]):
             dp = dyn_path[:, k, :]
@@ -201,13 +208,18 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
                       edgecolor='k', linewidth=0.5, label=f'Agent {i+1}')
         axtop.scatter(goals[i, 0], goals[i, 1], color=c, marker='*', s=180,
                       edgecolor='k', linewidth=0.5)
+    import matplotlib.pyplot as plt
+    cmap = plt.cm.plasma
     for ob in env.obstacles[:-6]:
+        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        p_z = h / ez
+        c = cmap(np.clip(p_z, 0, 1))
         if ob.type == 'cylinder':
-            axtop.add_patch(plt.Circle(ob.position[:2], ob.size[0], color=OBSTACLE_GRAY, alpha=0.5))
+            axtop.add_patch(plt.Circle(ob.position[:2], ob.size[0], color=c, alpha=0.55))
         elif ob.type == 'box':
             axtop.add_patch(plt.Rectangle(ob.position[:2] - ob.size[:2],
                                           2 * ob.size[0], 2 * ob.size[1],
-                                          color=OBSTACLE_GRAY, alpha=0.5))
+                                          color=c, alpha=0.55))
     if dyn_path is not None:
         for k in range(dyn_path.shape[1]):
             axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5)
@@ -255,6 +267,60 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
 # Focused 3D-only trajectory render (the side panels are derivable from CSV).
 # Legend is split into two parts: agent identity+outcome, and marker semantics.
 # ---------------------------------------------------------------------------
+def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
+    n_agents = env_cfg['n_agents']
+    ex, ey, ez = env_cfg['env_size']
+    path = render['path']
+    dyn_path = render['dyn_path']
+    dyn_r = render['dyn_r']
+    reached = render['reached']
+    collided = render['collided']
+    goals = render['goals']
+    T = len(path)
+
+    fig = plt.figure(figsize=(10, 10))
+    fig.patch.set_facecolor('white')
+    axtop = fig.add_subplot(111)
+
+    # background circles/boxes
+    import matplotlib.pyplot as plt
+    cmap = plt.cm.plasma
+    for ob in env.obstacles[:-6]:
+        h = ob.size[1] if ob.type == 'cylinder' else ob.size[2] * 2
+        p_z = h / ez
+        c = cmap(np.clip(p_z, 0, 1))
+        if ob.type == 'cylinder':
+            circle = plt.Circle((ob.position[0], ob.position[1]), ob.size[0], color=c, alpha=0.55, linewidth=0)
+            axtop.add_patch(circle)
+        elif ob.type == 'box':
+            box = plt.Rectangle((ob.position[0] - ob.size[0], ob.position[1] - ob.size[1]), 
+                                ob.size[0]*2, ob.size[1]*2, color=c, alpha=0.55, linewidth=0)
+            axtop.add_patch(box)
+
+    for i in range(n_agents):
+        c = AGENT_COLORS[i % len(AGENT_COLORS)]
+        # path
+        axtop.plot(path[:, i, 0], path[:, i, 1], color=c, lw=1.8, alpha=0.6)
+        # start
+        axtop.scatter(*path[0, i, :2], color=c, marker='s', s=80, edgecolor='k', linewidth=0.5)
+        # goal
+        axtop.scatter(*goals[i, :2], color=c, marker='*', s=300, edgecolor='k', linewidth=0.5)
+        # end
+        em = 'o' if reached[i] else ('X' if collided[i] else 'P')
+        axtop.scatter(*path[-1, i, :2], color=c, marker=em, s=120, edgecolor='k', linewidth=1.5, zorder=5)
+
+    if dyn_path is not None:
+        for k in range(dyn_path.shape[1]):
+            axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5, lw=2)
+
+    axtop.set_xlim(0, ex); axtop.set_ylim(0, ey); axtop.set_aspect('equal')
+    axtop.set_xlabel('X (m)'); axtop.set_ylabel('Y (m)')
+    axtop.set_title(title, fontsize=12, fontweight='bold', pad=14)
+    axtop.grid(alpha=0.3)
+
+    plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
+
 def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58):
     n_agents = env_cfg['n_agents']
     ex, ey, ez = env_cfg['env_size']
@@ -269,7 +335,7 @@ def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58)
     fig = plt.figure(figsize=(11, 8))
     ax = fig.add_subplot(111, projection='3d')
 
-    _draw_static_obstacles(ax, env)
+    _draw_static_obstacles(ax, env, max_z=ez)
     if dyn_path is not None:
         for k in range(dyn_path.shape[1]):
             dp = dyn_path[:, k, :]
@@ -348,7 +414,7 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
 
     fig = plt.figure(figsize=(10, 8))
     ax = fig.add_subplot(111, projection='3d')
-    _draw_static_obstacles(ax, env)
+    _draw_static_obstacles(ax, env, max_z=ez)
     ax.set_xlim(0, ex); ax.set_ylim(0, ey); ax.set_zlim(0, ez)
     ax.set_box_aspect((ex, ey, ez))
     ax.view_init(elev=22, azim=-58)

@@ -10,7 +10,8 @@ from mardpg_uav.algorithm.mardpg import MARDPGAgent
 from mardpg_uav.eval_rollout import run_eval, make_learned_act_fn, load_agents
 
 def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
-             n_eval_episodes: int = 250, device: str = 'cpu', static_obs: int = 16):
+             n_eval_episodes: int = 250, device: str = 'cpu', static_obs: int = 16,
+             use_wandb: bool = False, wandb_project: str = "mardpg-uav-eval", wandb_name: str = None):
     import os
     if not os.path.exists(config_path):
         fallback = os.path.join(os.path.dirname(os.path.abspath(__file__)), config_path)
@@ -18,6 +19,11 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
             config_path = fallback
             
     agents, cfg = load_agents(checkpoint_dir, config_path, device)
+    
+    if use_wandb:
+        import wandb
+        wandb.init(project=wandb_project, name=wandb_name, config={"checkpoint": checkpoint_dir, "episodes": n_eval_episodes, "static_obs": static_obs})
+        
     env_cfg = cfg['environment']
     env = MultiUAVEnv(env_cfg)
     
@@ -47,6 +53,11 @@ def evaluate(checkpoint_dir: str, config_path: str = "config/default.yaml",
         print(f"Path Efficiency: {stats['path_efficiency']:.3f}")
     print("=" * 50)
     
+    if use_wandb:
+        import wandb
+        wandb.log(stats)
+        wandb.finish()
+        
     return stats
 
 
@@ -60,6 +71,10 @@ if __name__ == "__main__":
     parser.add_argument('--static-obs', type=int, default=16,
                         help='16 = final training stage; 20 = out-of-distribution '
                              'generalization test (report separately).')
+    parser.add_argument('--wandb', action='store_true', help='Use wandb to log evaluation results')
+    parser.add_argument('--wandb-project', default='mardpg-uav-eval', help='Wandb project name')
+    parser.add_argument('--wandb-name', default=None, help='Wandb run name')
     args = parser.parse_args()
     
-    evaluate(args.checkpoint, args.config, args.episodes, args.device, args.static_obs)
+    evaluate(args.checkpoint, args.config, args.episodes, args.device, args.static_obs,
+             args.wandb, args.wandb_project, args.wandb_name)
