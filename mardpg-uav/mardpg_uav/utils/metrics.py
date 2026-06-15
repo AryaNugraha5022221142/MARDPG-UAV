@@ -1,14 +1,22 @@
 """
-Evaluation metrics (v3) — audit fix C4.
+Evaluation metrics (v4) — additive over v3 (audit fix C4 retained).
 
-Change
-------
-Path efficiency is now computed ONLY over agents that reached their goal.
-The previous `min(straight/actual, 1.0)` assigned efficiency ~1.0 to an
-agent that flew 2 m and crashed (actual << straight), which inflated the
-metric exactly when collision rates were high — and path_efficiency gates
-curriculum promotion in stages 1-5. Episodes with zero successful agents
-record NaN and are excluded from window averages (NaN-safe means below).
+v3 change (retained): path_efficiency (the curriculum GATE metric) is computed
+ONLY over agents that reached their goal, with min(straight/actual, 1.0). Crashed
+agents no longer score ~1.0 and inflate the gate.
+
+v4 additions (NON-gating, safe to add — the CurriculumManager reads only the
+specific keys it checks, so extra keys are ignored):
+  * mission_success_rate : fraction of episodes in which ALL agents reached
+    (the paper's "Mission Success", audit M2). Exposed in get_stats /
+    get_window_stats so train.py logs it without changing promotion logic.
+  * path_efficiency_paper : the reference definition (Xue & Chen 2024, Sec.
+    VI.C.e) — ratio of summed straight-line distances to summed actual path
+    lengths over ALL agents in an episode. Reported for comparability with the
+    paper; it is NOT used to gate the curriculum (it is the inflated definition
+    the v3 fix deliberately replaced for gating).
+
+Nothing that the curriculum gate depends on is changed.
 """
 import numpy as np
 from typing import Dict
@@ -32,15 +40,16 @@ class MetricsTracker:
         self.dyn_collisions    = []
         self.trapped           = []
         self.timeouts          = []
-        self.path_efficiencies = []
+        self.path_efficiencies = []          # reached-only (GATE metric)
+        self.path_eff_paper    = []          # [v4] paper definition (non-gating)
+        self.mission_successes = []          # [v4] all-reached per episode
         self.safe_inter_uav    = []
 
     def soft_reset(self):
-        """[N3-6] Clear the rolling windows (call on curriculum promotion) so
-        smoothed/window stats reflect only the current stage."""
         for lst in (self.episode_rewards, self.episode_lengths, self.successes,
                     self.collisions, self.dyn_collisions, self.trapped,
-                    self.timeouts, self.path_efficiencies, self.safe_inter_uav):
+                    self.timeouts, self.path_efficiencies, self.path_eff_paper,
+                    self.mission_successes, self.safe_inter_uav):
             lst.clear()
 
     def record_episode(self, length, info, start_pos, goal_pos,
@@ -56,6 +65,9 @@ class MetricsTracker:
         self.collisions.append(np.mean(info['collisions']))
         self.dyn_collisions.append(np.mean(info.get('dyn_collisions', np.zeros(n))))
 
+        # [v4] Mission success = every agent reached.
+        self.mission_successes.append(float(np.all(info['reached'])))
+
         if 'trapped' in info and info['trapped'] is not None:
             self.trapped.append(np.mean(info['trapped']))
         else:
@@ -66,42 +78,48 @@ class MetricsTracker:
         self.timeouts.append(float(info.get('timeout', False)))
         self.safe_inter_uav.append(info.get('safe_inter_uav_ratio', 1.0))
 
-        # [C4] Efficiency is only meaningful for agents that actually reached
-        # the goal. Crashed agents previously scored ~1.0 (capped), trapped
-        # agents deflated it — both corrupt the curriculum gate.
+        # ---- Path efficiency, two definitions -------------------------------
+        # GATE metric (reached-only, capped): unchanged from v3.
         efficiencies = []
-        if len(path_history) > 1:
+        # Paper metric (ratio of sums over ALL agents): numerator/denominator.
+        sum_straight = 0.0
+        sum_actual   = 0.0
+        if path_history is not None and len(path_history) > 1:
             for i in range(n):
-                if not bool(info['reached'][i]):
-                    continue
                 actual = sum(np.linalg.norm(path_history[t][i] - path_history[t - 1][i])
                              for t in range(1, len(path_history)))
                 straight = np.linalg.norm(goal_pos[i] - start_pos[i])
-                if actual > 1e-8:
+                sum_straight += straight
+                sum_actual   += actual
+                if bool(info['reached'][i]) and actual > 1e-8:
                     efficiencies.append(min(straight / actual, 1.0))
-        # NaN = "no successful agent this episode" -> excluded from window mean
         self.path_efficiencies.append(np.mean(efficiencies) if efficiencies else np.nan)
+        self.path_eff_paper.append(sum_straight / sum_actual if sum_actual > 1e-8 else np.nan)
 
     def get_stats(self) -> Dict[str, float]:
         return {
-            'avg_reward':         _window_mean(self.episode_rewards),
-            'success_rate':       _window_mean(self.successes),
-            'collision_rate':     _window_mean(self.collisions),
-            'dyn_collision_rate': _window_mean(self.dyn_collisions),
-            'trapped_rate':       _window_mean(self.trapped),
-            'timeout_rate':       _window_mean(self.timeouts),
-            'avg_episode_length': _window_mean(self.episode_lengths),
-            'path_efficiency':    _window_mean(self.path_efficiencies),
-            'inter_uav_safe':     _window_mean(self.safe_inter_uav),
+            'avg_reward':            _window_mean(self.episode_rewards),
+            'success_rate':          _window_mean(self.successes),
+            'mission_success_rate':  _window_mean(self.mission_successes),   # [v4]
+            'collision_rate':        _window_mean(self.collisions),
+            'dyn_collision_rate':    _window_mean(self.dyn_collisions),
+            'trapped_rate':          _window_mean(self.trapped),
+            'timeout_rate':          _window_mean(self.timeouts),
+            'avg_episode_length':    _window_mean(self.episode_lengths),
+            'path_efficiency':       _window_mean(self.path_efficiencies),   # gate
+            'path_efficiency_paper': _window_mean(self.path_eff_paper),      # [v4]
+            'inter_uav_safe':        _window_mean(self.safe_inter_uav),
         }
 
     def get_window_stats(self, window=100) -> dict:
         return {
-            'success_rate':       _window_mean(self.successes, window),
-            'collision_rate':     _window_mean(self.collisions, window),
-            'dyn_collision_rate': _window_mean(self.dyn_collisions, window),
-            'trapped_rate':       _window_mean(self.trapped, window),
-            'timeout_rate':       _window_mean(self.timeouts, window),
-            'path_efficiency':    _window_mean(self.path_efficiencies, window),
-            'inter_uav_safe':     _window_mean(self.safe_inter_uav, window),
+            'success_rate':          _window_mean(self.successes, window),
+            'mission_success_rate':  _window_mean(self.mission_successes, window),  # [v4]
+            'collision_rate':        _window_mean(self.collisions, window),
+            'dyn_collision_rate':    _window_mean(self.dyn_collisions, window),
+            'trapped_rate':          _window_mean(self.trapped, window),
+            'timeout_rate':          _window_mean(self.timeouts, window),
+            'path_efficiency':       _window_mean(self.path_efficiencies, window),
+            'path_efficiency_paper': _window_mean(self.path_eff_paper, window),     # [v4]
+            'inter_uav_safe':        _window_mean(self.safe_inter_uav, window),
         }

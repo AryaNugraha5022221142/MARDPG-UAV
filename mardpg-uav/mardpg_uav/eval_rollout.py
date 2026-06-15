@@ -4,12 +4,42 @@ from mardpg_uav.utils.metrics import MetricsTracker
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
 from mardpg_uav.train import load_config
 
-def load_agents(checkpoint_dir, config_path, device='cpu'):
+
+# Map the training --variant names to (recurrent, centralized) so that an
+# evaluation can reconstruct the SAME actor architecture a checkpoint was
+# trained with. This is required to load MADDPG / IDDPG baselines: their actors
+# use a feed-forward core (_FFCore), not an LSTM, so building a recurrent Actor
+# and loading their weights would raise a state_dict mismatch.
+_VARIANT_FLAGS = {
+    'mardpg': (True,  True),    # recurrent + centralized critic
+    'maddpg': (False, True),    # feed-forward + centralized critic
+    'iddpg':  (False, False),   # feed-forward + independent critic
+}
+
+
+def load_agents(checkpoint_dir, config_path, device='cpu',
+                variant='mardpg', recurrent=None, centralized=None):
+    """Load a set of agents for evaluation.
+
+    variant : one of {'mardpg','maddpg','iddpg'} (sets recurrent/centralized).
+    recurrent / centralized : explicit overrides; if given they win over `variant`.
+
+    Only the ACTOR is needed for action selection at eval time, so the critic
+    architecture (centralized vs independent) does not affect rollouts — but we
+    still build it consistently so checkpoints that bundle critic weights load
+    without warnings. `recurrent` DOES matter: it selects LSTM vs feed-forward
+    actor core, and must match how the checkpoint was trained.
+    """
+    if recurrent is None or centralized is None:
+        v_rec, v_cen = _VARIANT_FLAGS.get(variant, (True, True))
+        recurrent = v_rec if recurrent is None else recurrent
+        centralized = v_cen if centralized is None else centralized
+
     cfg = load_config(config_path)
     env_cfg = cfg['environment']
     net_cfg = cfg['network']
     n_agents = env_cfg['n_agents']
-    
+
     agents = []
     for i in range(n_agents):
         ag = MARDPGAgent(
@@ -18,6 +48,7 @@ def load_agents(checkpoint_dir, config_path, device='cpu'):
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
             fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
+            recurrent=recurrent, centralized=centralized,
             device=device
         )
         try:
@@ -32,12 +63,14 @@ def load_agents(checkpoint_dir, config_path, device='cpu'):
         except Exception as e:
             print(f"[WARN] agent {i}: {e}")
         agents.append(ag)
-        
+
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
     return agents, cfg
 
-def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_start=None, collect_paths=True):
+
+def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0,
+             on_episode_start=None, collect_paths=True):
     m = MetricsTracker()
 
     for ep in range(n_episodes):
@@ -48,17 +81,17 @@ def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_star
             env.scene_gen.rng = np.random.RandomState(ep_seed)
         if hasattr(env, 'rangefinder') and hasattr(env.rangefinder, 'rng'):
             env.rangefinder.rng = np.random.RandomState(ep_seed)
-            
+
         env.reset(stage_cfg)
-        
+
         if on_episode_start:
             on_episode_start(env)
-            
+
         ph = [env.agents_state[:, :3].copy()] if collect_paths else []
         dyn = getattr(env, 'dynamic_obstacles', [])
         dyn_path = [[d.position.copy() for d in dyn]] if dyn and collect_paths else []
         dyn_r = [d.size[0] for d in dyn] if dyn else []
-        
+
         info = {}
         ep_r, L = 0.0, 0
         for _t in range(stage_cfg["max_steps"]):
@@ -75,7 +108,7 @@ def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_star
         if collect_paths:
             info['dyn_path'] = np.array(dyn_path) if dyn else None
             info['dyn_r'] = dyn_r
-        
+
         m.record_episode(length=L, info=info,
                          start_pos=[ph[0][i] for i in range(env.n_agents)] if collect_paths else None,
                          goal_pos=[env.goals[i] for i in range(env.n_agents)],
@@ -83,15 +116,14 @@ def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_star
                          rewards=[ep_r])
     return m.get_window_stats(n_episodes), m
 
+
 def make_apf_act_fn(env, apf_ctrl):
     def act_fn():
         return apf_ctrl.act()
     return act_fn
 
+
 def make_learned_act_fn(agents, env):
-    import torch
-    
-    # We need to maintain prev_acts state across steps internally
     state = {'prev_acts': np.zeros((env.n_agents, env.action_dim), dtype=np.float32)}
 
     def on_start(env):
@@ -99,17 +131,19 @@ def make_learned_act_fn(agents, env):
             ag.hidden = None
             if hasattr(ag.actor, 'eval'):
                 ag.actor.eval()
+            ag.reset_hidden(batch_size=1, eval_mode=True)
         state['prev_acts'] = np.zeros((env.n_agents, env.action_dim), dtype=np.float32)
 
     def act_fn():
         obs = env._get_observations()
         acts = np.zeros((env.n_agents, env.action_dim), dtype=np.float32)
         for i, ag in enumerate(agents):
-            if env.agent_done[i]: continue
+            if env.agent_done[i]:
+                continue
             action = ag.select_action(obs[i], state['prev_acts'][i], evaluate=True)
             action = np.clip(action, -ag.actor.action_bound, ag.actor.action_bound)
             acts[i] = action
         state['prev_acts'] = acts.copy()
         return acts
-        
+
     return act_fn, on_start
