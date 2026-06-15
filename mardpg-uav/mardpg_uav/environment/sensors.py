@@ -1,6 +1,15 @@
 """
 25-beam rangefinder (5 horizontal planes x 5 beams) and goal sensing.
 Reference: Section 2.3 and 3.1 of blueprint.
+
+[NO-COMM FIX] scan() now accepts `extra_obstacles`: a short list of Obstacle
+spheres (used to inject OTHER LIVE UAVs into a UAV's own lidar). This lets a UAV
+perceive its neighbours through the SAME onboard sensor it uses for obstacles,
+so inter-UAV avoidance no longer depends on a privileged ground-truth neighbour
+block in the observation. Execution becomes genuinely communication-free, and
+neighbours are subject to the same finite FOV / range / occlusion / noise as any
+obstacle — which is precisely the partial observability the recurrent policy is
+meant to handle.
 """
 import numpy as np
 from typing import List, Tuple
@@ -30,17 +39,21 @@ class Rangefinder:
             np.sin(pitch_grid)
         ], axis=-1).astype(np.float32)   # shape (25, 3)
 
-    def scan(self, position: np.ndarray, theta: float, phi: float, obstacles: List[Obstacle], sigma_l: float = 0.02,
-             obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None) -> Tuple[np.ndarray, np.ndarray]:
+    def scan(self, position: np.ndarray, theta: float, phi: float,
+             obstacles: List[Obstacle], sigma_l: float = 0.02,
+             obs_centers: np.ndarray = None, obs_max_sizes: np.ndarray = None,
+             extra_obstacles: List[Obstacle] = None) -> Tuple[np.ndarray, np.ndarray]:
         """
         Rotate the fixed beam directions by the UAV's current heading (theta, phi).
         theta: yaw in world frame
         phi:   pitch in world frame
+        extra_obstacles: small list of sphere Obstacles (e.g. other UAVs) that are
+                         ray-cast without the bounding-sphere cull (few items).
         """
         # Rotation matrix: yaw then pitch
         cy, sy = np.cos(theta), np.sin(theta)
         cp, sp = np.cos(phi),   np.sin(phi)
-        
+
         # Inverted pitch matrix
         R = np.array([
             [ cy*cp, -sy, -cy*sp],
@@ -96,9 +109,20 @@ class Rangefinder:
                 dist = self._ray_cylinder_vec(position, rotated_dirs, obs.position, obs.size[0], obs.size[1])
             else:
                 continue
-            
+
             mask = dist < min_dists
             min_dists[mask] = dist[mask]
+
+        # [NO-COMM FIX] Inject other live UAVs as sphere returns. They are few
+        # (<= N-1), so no bounding-sphere cull is needed; they are subject to the
+        # same FOV/range/noise as any obstacle.
+        if extra_obstacles:
+            for obs in extra_obstacles:
+                if obs.type != 'sphere':
+                    continue
+                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size[0])
+                mask = dist < min_dists
+                min_dists[mask] = dist[mask]
 
         distances = min_dists.reshape(self.n_v, self.n_h)
         noisy_norm = np.clip(distances / self.range_max
@@ -112,7 +136,7 @@ class Rangefinder:
         b = 2.0 * np.dot(d, oc)
         c_val = np.dot(oc, oc) - r * r
         disc = b * b - 4 * c_val
-        
+
         dist = np.full(d.shape[0], np.inf, dtype=np.float32)
         mask = disc >= 0
         if np.any(mask):
@@ -131,15 +155,15 @@ class Rangefinder:
         b = 2.0 * np.dot(d_xy, oc)
         c_val = np.dot(oc, oc) - r * r
         disc = b * b - 4 * a * c_val
-        
+
         dist = np.full(d.shape[0], np.inf, dtype=np.float32)
         mask = (disc >= 0) & (a > 1e-6)
         if np.any(mask):
             d_mask = (-b[mask] - np.sqrt(disc[mask])) / (2.0 * a[mask])
             z_hit = o[2] + d_mask * d[mask, 2]
-            
+
             valid = (d_mask > 0) & (z_hit >= c[2] - h/2) & (z_hit <= c[2] + h/2)
-            
+
             final_mask = mask.copy()
             final_mask[mask] = valid
             dist[final_mask] = d_mask[valid]

@@ -1,4 +1,10 @@
 environment:
+  # [NO-COMM FIX] Other UAVs are sensed by the rangefinder as spheres of this
+  # radius. Default = inter_uav_min_dist (1.0 m) so a neighbour's 2R safety
+  # bubble is reliably detectable on a 25-beam sensor; lower toward
+  # collision_radius (0.5) for a stricter, harder-to-sense test.
+  uav_sense_radius: 1.0
+
   n_agents: 5
   v: 3.0                      # constant speed m/s (paper: fixed v)
   dt: 0.1

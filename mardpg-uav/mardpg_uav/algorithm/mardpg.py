@@ -33,7 +33,7 @@ from ..networks.critic import RecurrentCritic
 
 class MARDPGAgent:
     def __init__(self, agent_id: int, n_agents: int,
-                 obs_dim: int = 49, action_dim: int = 2,           # 43 -> 49
+                 obs_dim: int = 35, action_dim: int = 2,           # 49 -> 35 (no-comm obs)
                  action_bound: float = 0.5236,
                  lstm_hidden: int = 128, fc_hidden: int = 128,
                  lr_actor: float = 0.001, lr_critic: float = 0.001,

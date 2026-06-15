@@ -50,13 +50,17 @@ class MultiUAVEnv(gym.Env):
             range_max=config['sensor_range']
         )
         
-        # [N3-1] Neighbor block: K nearest LIVE neighbors, each encoded as
-        # body-frame rel position(3) + body-frame rel velocity(3) + presence(1).
-        self.n_neighbors   = 2
-        self.nbr_feats     = 7
-        self.nbr_pos_scale = float(config.get('neighbor_pos_scale', 20.0))
-        # attitude(4) + lidar(25) + goal(5) + neighbors(7K) + alive(1)
-        self.obs_dim    = 4 + 25 + 5 + self.nbr_feats * self.n_neighbors + 1  # = 49
+        # [NO-COMM FIX] Neighbour block REMOVED. Other UAVs are perceived only
+        # through the onboard rangefinder (injected as spheres; see
+        # _other_uav_obstacles), so the policy input is fully decentralized and
+        # communication-free — matching the actor input of Xue & Chen (2024):
+        # attitude + lidar + goal. Other live UAVs are sensed as spheres of this
+        # radius (>= body radius, so a neighbour's safety bubble is detectable
+        # rather than a 0.5 m point that falls between beams).
+        self.uav_sense_radius = float(config.get('uav_sense_radius',
+                                                  config.get('inter_uav_min_dist', 1.0)))
+        # attitude(4) + lidar(25) + goal(5) + alive(1)
+        self.obs_dim    = 4 + 25 + 5 + 1  # = 35
         self.action_dim = 2
         
         self.observation_space = gym.spaces.Box(
@@ -185,6 +189,17 @@ class MultiUAVEnv(gym.Env):
             else: sizes.append(obs.size[0])
         self.obs_max_sizes = np.array(sizes)
 
+    def _other_uav_obstacles(self, i: int):
+        """[NO-COMM FIX] Other LIVE UAVs as spherical lidar targets so a UAV can
+        sense its neighbours onboard (no communication). Radius =
+        uav_sense_radius (>= body radius). SENSING only; physical inter-UAV
+        collision is still tested at inter_uav_min_dist in step()."""
+        r = float(self.uav_sense_radius)
+        done = getattr(self, 'agent_done', np.zeros(self.n_agents, dtype=bool))
+        return [Obstacle('sphere', self.agents_state[j, :3].copy(),
+                         np.array([r], dtype=np.float32))
+                for j in range(self.n_agents) if j != i and not done[j]]
+
     def step(self, actions: np.ndarray) -> Tuple[np.ndarray, np.ndarray, bool, Dict]:
         """
         Args:
@@ -306,10 +321,12 @@ class MultiUAVEnv(gym.Env):
             
             theta = self.agents_state[i, 3]
             phi   = self.agents_state[i, 4]
-            # Sensing
+            # Sensing — other live UAVs injected as spheres so the lidar
+            # perceives them (decentralized, comms-free inter-UAV avoidance).
             rangefinder_raw, rangefinder_norm = self.rangefinder.scan(
                 pos, theta, phi, self.obstacles,
-                obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes
+                obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes,
+                extra_obstacles=self._other_uav_obstacles(i)
             )
             
             # Observe we don't save goal_disp here anymore since observation logic moved to _get_single_observation.
@@ -414,6 +431,7 @@ class MultiUAVEnv(gym.Env):
                 pos, theta, phi, self.obstacles,
                 obs_centers=self.obs_centers,
                 obs_max_sizes=self.obs_max_sizes,
+                extra_obstacles=self._other_uav_obstacles(i),
             )
 
         arena_diag = float(np.sqrt(sum(s**2 for s in self.cfg['env_size'])))
@@ -433,48 +451,17 @@ class MultiUAVEnv(gym.Env):
                                np.sin(varpi),   np.cos(varpi),
                                np.sin(varpi_z), np.cos(varpi_z)], dtype=np.float32)
 
-        # ---- Neighbor block (N3-1): K nearest LIVE neighbors in BODY frame.
-        # rel position scaled by a LOCAL metric scale (not the arena diagonal),
-        # plus relative velocity (derived from constant-speed headings) so the
-        # closing rate is directly observable rather than only inferable. ----
+        # [NO-COMM FIX] Neighbour block removed: other UAVs are perceived only
+        # through the onboard rangefinder (injected as sphere returns in the scan
+        # call above and in step()), so the policy input is communication-free.
         done = getattr(self, 'agent_done', np.zeros(self.n_agents, dtype=bool))
-        cand = [(np.linalg.norm(self.agents_state[j, :3] - pos), j)
-                for j in range(self.n_agents) if j != i and not done[j]]
-        cand.sort(key=lambda t: t[0])
-        # [C2] Take K nearest, then assign to slots by stable agent index so a
-        # distance swap between the two nearest doesn't discontinuously permute
-        # the feature slots step-to-step. (Set-membership changes still jump;
-        # this only removes intra-set churn.)
-        nearest = sorted(cand[:self.n_neighbors], key=lambda t: t[1])
-
-        v_speed = float(self.dynamics.v)
-        vi = v_speed * np.array([np.cos(theta) * np.cos(phi),
-                                 np.sin(theta) * np.cos(phi),
-                                 np.sin(phi)], dtype=np.float32)
-
-        nbr = np.zeros(self.nbr_feats * self.n_neighbors, dtype=np.float32)
-        for k in range(len(nearest)):
-            _, j = nearest[k]
-            rel_world = (self.agents_state[j, :3] - pos).astype(np.float32)
-            rel_body  = self._world_to_body(rel_world, theta, phi)
-            tj, pj    = self.agents_state[j, 3], self.agents_state[j, 4]
-            vj = v_speed * np.array([np.cos(tj) * np.cos(pj),
-                                     np.sin(tj) * np.cos(pj),
-                                     np.sin(pj)], dtype=np.float32)
-            relv_body = self._world_to_body(vj - vi, theta, phi)
-            base = self.nbr_feats * k
-            nbr[base:base + 3]     = np.clip(rel_body / self.nbr_pos_scale, -1.0, 1.0)
-            nbr[base + 3:base + 6] = np.clip(relv_body / (2.0 * v_speed), -1.0, 1.0)
-            nbr[base + 6]          = 1.0  # presence flag
-
         alive = 1.0 if not done[i] else 0.0
 
         obs = np.concatenate([
             [np.sin(theta), np.cos(theta), np.sin(phi), np.cos(phi)],  # 0:4
             lidar_norm.flatten(),                                      # 4:29
             goal_block,                                                # 29:34
-            nbr,                                                       # 34:34+7K
-            [alive],                                                   # last
+            [alive],                                                   # 34
         ]).astype(np.float32)
         assert obs.shape == (self.obs_dim,), f"obs shape mismatch: {obs.shape}"
         return obs

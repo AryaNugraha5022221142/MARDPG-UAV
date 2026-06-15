@@ -538,7 +538,13 @@ def train(config_path: str = "config/default.yaml",
     save_replay_flag = bool(algo_cfg.get('save_replay_on_checkpoint', False))
 
     print("=" * 60)
-    print(f"MARDPG-NAV Training  |  Agents: {n_agents}  |  Device: {device}")
+    _variant = ('MARDPG' if (recurrent and centralized)
+                else 'MADDPG' if (centralized and not recurrent)
+                else 'IDDPG' if (not centralized and not recurrent)
+                else 'custom')
+    _cl = 'OFF (direct stage 7)' if no_curriculum else 'ON'
+    print(f"{_variant}-NAV Training  |  Agents: {n_agents}  |  Device: {device}  "
+          f"|  Curriculum: {_cl}")
     print(f"Stage: {cl.current_stage_idx + 1}/{N_STAGES}")
     print("=" * 60, flush=True)
 

@@ -44,7 +44,7 @@ def load_agents(checkpoint_dir, config_path, device='cpu',
     for i in range(n_agents):
         ag = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
-            obs_dim=env_cfg.get('obs_dim', 49), action_dim=2,
+            obs_dim=env_cfg.get('obs_dim', 35), action_dim=2,   # 49 -> 35 (no-comm obs)
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
             fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
