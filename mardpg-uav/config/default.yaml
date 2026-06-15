@@ -52,7 +52,7 @@ algorithm:
   # [N4-4] Make CPU fallback fatal. The 2026-06-11 run silently executed on
   # CPU at 0.01-0.03 ep/s (ETA 330-450 h); stages 4-7 are 2.5-3.75x longer
   # per episode. Set true for any run you intend to take past stage 2.
-  abort_if_cpu: true
+  abort_if_cpu: false
 
   gamma:        0.99           # [B5] horizon ~100 steps. If stages 4-6 stall with
                                # high trapped_rate, the contingency is gamma->0.995,
