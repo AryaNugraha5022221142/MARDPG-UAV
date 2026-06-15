@@ -112,46 +112,21 @@ class MultiUAVEnv(gym.Env):
         self.obstacles.extend(walls)
         self._update_obstacle_caches()
 
-        # Sample start/goal positions with min_point_separation
-        min_sep = stage_cfg.get('min_sep', 20.0)
+        # [FIX1] Start/goal assignment delegated to assignment.assign_start_goals,
+        # which produces intersecting (crossing) start->goal pairs for a
+        # configurable fraction of agents (stage_cfg['conflict_frac']) so that
+        # straight-line paths cross and genuine inter-UAV avoidance is exercised.
+        # conflict_frac == 0.0 reproduces the legacy scatter behaviour exactly.
+        from .assignment import assign_start_goals
         self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
-        
-        positions = []
-        min_start_sep = stage_cfg.get('min_start_sep', max(self.cfg.get('inter_uav_min_dist', 1.0) * 8, 10.0))
+
+        starts, goals = assign_start_goals(self, stage_cfg)
+        self.agents_state[:, :3] = starts
+        self.goals[:] = goals
         for i in range(self.n_agents):
-            valid_start = False
-            for _ in range(200):
-                pos = self._sample_free_position()
-                # Ensure minimum separation from all already-placed start positions
-                if all(np.linalg.norm(pos - p) >= min_start_sep for p in positions):
-                    valid_start = True
-                    break
-            if not valid_start:
-                print(f"Warning: Failed to place start pos for agent {i} with min_start_sep={min_start_sep}")
-                pos = self._sample_free_position()
-            positions.append(pos)
-            self.agents_state[i, :3] = pos
-            # Random initial heading
-            self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)  # theta
+            self.agents_state[i, 3] = self.scene_gen.rng.uniform(-np.pi, np.pi)      # theta
             self.agents_state[i, 4] = self.scene_gen.rng.uniform(-np.pi/6, np.pi/6)  # phi
-            
-            valid_goal = False
-            for _ in range(200):
-                goal = self._sample_free_position()
-                # Check min separation from own start, other goals, and other starts
-                goal_min_sep = self.cfg.get(
-                    'goal_min_sep',
-                    max(2.0 * self.cfg['goal_threshold'] + self.cfg['inter_uav_min_dist'], 4.0))
-                if (np.linalg.norm(goal - pos) >= min_sep and
-                        all(np.linalg.norm(goal - g) >= goal_min_sep for g in self.goals[:i]) and
-                        all(np.linalg.norm(goal - p) >= min_start_sep for p in positions)):
-                    valid_goal = True
-                    break
-            if not valid_goal:
-                print(f"Warning: Failed to place goal for agent {i} with min_sep={min_sep}")
-                goal = self._sample_free_position()
-            self.goals[i] = goal
 
         self.agent_done = np.zeros(self.n_agents, dtype=bool)
         self.agent_reached = np.zeros(self.n_agents, dtype=bool)
@@ -165,7 +140,11 @@ class MultiUAVEnv(gym.Env):
         self.reward_fn.reset(list(range(self.n_agents)), dists)
         self.steps = 0
         self.safe_inter_uav_steps = 0  # Track safe steps for Stage 2 metric
-        
+        # [FIX5] graded interaction accumulators
+        self.min_pair_dist = np.inf
+        self.near_miss_steps = 0
+        self.agent_uav_collided = np.zeros(self.n_agents, dtype=bool)
+
         return self._get_observations()
 
     def _world_to_body(self, vec: np.ndarray, theta: float, phi: float) -> np.ndarray:
@@ -259,6 +238,8 @@ class MultiUAVEnv(gym.Env):
         dist_for_collision = dist_matrix.copy()
         dist_for_collision[:, ghost] = np.inf
         inter_collisions = np.any(dist_for_collision < self.cfg['inter_uav_min_dist'], axis=1)  # (N,)
+        # [FIX5] flag inter-UAV collisions separately from obstacle collisions
+        self.agent_uav_collided |= (inter_collisions & ~self.agent_done)
 
         for i in range(self.n_agents):
             if self.agent_done[i]: continue
@@ -298,7 +279,12 @@ class MultiUAVEnv(gym.Env):
         active = ~self.agent_done
         n_active = active.sum()
         if n_active >= 2:
-            active_dists = dist_matrix[np.ix_(active, active)]
+            active_dists = dist_matrix[np.ix_(active, active)]  # diagonal is inf
+            md = float(active_dists.min())
+            self.min_pair_dist = min(self.min_pair_dist, md)
+            near_band = float(self.cfg.get('near_miss_band', 3.0))
+            if md < near_band:
+                self.near_miss_steps += 1
             if np.all(active_dists >= 1.0):
                 self.safe_inter_uav_steps += 1
         elif n_active <= 1:
@@ -385,6 +371,11 @@ class MultiUAVEnv(gym.Env):
             'dyn_collisions': dyn_collisions_copy,
             'reached': self.agent_reached.copy(),
             'safe_inter_uav_ratio': self.safe_inter_uav_steps / max(1, self.steps),
+            # [FIX5] graded interaction metrics
+            'min_pair_dist': (float(self.min_pair_dist)
+                              if np.isfinite(self.min_pair_dist) else float('nan')),
+            'near_miss_ratio': self.near_miss_steps / max(1, self.steps),
+            'uav_collisions': self.agent_uav_collided.copy(),
             'step_collisions': collisions.copy(),
             'step_reached': reached.copy(),
             'trapped': trapped_agents,

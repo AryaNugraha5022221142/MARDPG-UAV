@@ -83,45 +83,52 @@ from .utils.metrics           import MetricsTracker
 # Curriculum  (7 stages — difficulty axes separated to avoid cliff)
 # ---------------------------------------------------------------------------
 CURRICULUM = [
-    {   # 1 — Free space, NEAR goals. Goal-seeking + peer avoidance only.
+    {   # 1 — Free space, NEAR goals. Pure goal-seeking, no crossings yet.
         'name': 'Free Space (near)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 400,
         'static_obs': 0, 'min_sep': 15.0, 'min_start_sep': 12.0,
+        'conflict_frac': 0.0, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.35, 'collision_rate': 0.40,
                      'path_efficiency': 0.40, 'operator': 'less_col'}},
-    {   # 2 — Free space, FAR goals. Horizon extension BEFORE obstacles.
-        'name': 'Free Space (far)',
+    {   # 2 — Free space + CROSSINGS. Inter-UAV avoidance before obstacles.
+        'name': 'Free Space (crossings)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 600,
         'static_obs': 0, 'min_sep': 30.0, 'min_start_sep': 12.0,
+        'conflict_frac': 0.6, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.45, 'collision_rate': 0.35,
-                     'path_efficiency': 0.45, 'operator': 'less_col'}},
-    {   # 3 — FEW obstacles at the SHORTER goal distance.
-        'name': 'Sparse Obstacles (near)',
+                     'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}},
+    {   # 3 — Sparse obstacles + crossings.
+        'name': 'Sparse Obstacles (crossings)',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 700,
         'static_obs': 3, 'max_h': 20.0, 'min_sep': 30.0, 'min_start_sep': 12.0,
+        'conflict_frac': 0.6, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.45, 'collision_rate': 0.30,
                      'inter_uav_safe': 0.70, 'operator': 'less_col_greater_safe'}},
-    {   # 4 — Moderate density + longer goals.
+    {   # 4 — Moderate density + more crossings.
         'name': 'Moderate Density',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 1000,
         'static_obs': 7, 'max_h': 20.0, 'min_sep': 40.0,
+        'conflict_frac': 0.8, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.55, 'trapped_rate': 0.15,
                      'path_efficiency': 0.55, 'operator': 'less_trap'}},
-    {   # 5 — Dense urban, tall obstacles, full 3D.
+    {   # 5 — Dense urban, full crossings.
         'name': 'Dense Urban',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 1200,
         'static_obs': 12, 'max_h': 50.0, 'min_sep': 40.0,
+        'conflict_frac': 1.0, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.60, 'collision_rate': 0.20,
                      'path_efficiency': 0.60, 'operator': 'less_col'}},
-    {   # 6 — Max static density.
+    {   # 6 — Max static density, full crossings.
         'name': 'Max Density Stress Test',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
+        'conflict_frac': 1.0, 'ring_frac': 0.35,
         'criteria': {'success_rate': 0.60, 'path_efficiency': 0.55}},
-    {   # 7 — Dynamic threats on top of max static density.
+    {   # 7 — Dynamic threats on top of max static density, full crossings.
         'name': 'Dynamic Threats',
         'env_size': [100.0, 100.0, 60.0], 'max_steps': 1500,
         'static_obs': 16, 'max_h': 50.0, 'min_sep': 40.0,
+        'conflict_frac': 1.0, 'ring_frac': 0.35,
         'dynamic_obs': (1, 2), 'dynamic_radius': 2.0, 'dynamic_speed': (1.0, 2.0),
         'criteria': {'success_rate': 0.55, 'dyn_collision_rate': 0.10,
                      'path_efficiency': 0.50, 'operator': 'less_dyn'}},
@@ -280,11 +287,20 @@ def select_actions_batch(agents, obs_all, prev_actions, noise_val,
 # [N4-1] Additionally probes Q_i(s0, a0) on each eval episode for a signed,
 # state- and policy-matched critic-calibration metric (q_eval_start).
 # ---------------------------------------------------------------------------
-def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma):
+def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
+             base_eval_seed=10_000):
     em = MetricsTracker()
     disc_returns = []
     q0_means     = []   # [N4-1] critic Q(s0, a0) on the EVAL distribution
-    for _ in range(n_episodes):
+    for _ep in range(n_episodes):
+        # [FIX6] Fixed held-out eval scenes: every promotion eval at every
+        # checkpoint sees the SAME n_episodes scenarios (comparable across time,
+        # not drawn from the training stream). Training RNG is restored by the
+        # caller's snapshot/restore around this call.
+        _es = base_eval_seed + _ep
+        env.scene_gen.rng.seed(_es)
+        env.rangefinder.rng.seed(_es)
+        np.random.seed(_es)
         obs = env.reset(stage_cfg)
         for ag in agents:
             ag.reset_hidden(batch_size=1, eval_mode=True)
@@ -425,8 +441,19 @@ def train(config_path: str = "config/default.yaml",
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
 
+    # [FIX3] Independent-critic variants drive the SHARED encoder with N
+    # mutually-inconsistent policy gradients (each from a critic that sees only
+    # its own agent), which destabilises the shared lower layers. Damp the
+    # shared-encoder learning rate and gradient clip for non-centralized variants.
+    # Centralized variants keep the validated values exactly.
+    _shared_lr = algo_cfg.get('lr_shared_actor', algo_cfg['lr_actor'])
+    if not centralized:
+        _shared_lr = min(_shared_lr, algo_cfg['lr_actor'])
     shared_optimizer = torch.optim.Adam(
-        agents[0].shared_extractor.parameters(), lr=algo_cfg.get('lr_shared_actor', algo_cfg['lr_actor']))
+        agents[0].shared_extractor.parameters(), lr=_shared_lr)
+    _shared_clip = float(algo_cfg.get('shared_gradient_clip', algo_cfg['gradient_clip']))
+    if not centralized:
+        _shared_clip = min(_shared_clip, 1.0)
 
     # --- Buffer / noise / metrics / curriculum ---
     buffer = SequenceReplayBuffer(
@@ -540,7 +567,8 @@ def train(config_path: str = "config/default.yaml",
     print("=" * 60)
     _variant = ('MARDPG' if (recurrent and centralized)
                 else 'MADDPG' if (centralized and not recurrent)
-                else 'IDDPG' if (not centralized and not recurrent)
+                else 'IND-RDPG' if (recurrent and not centralized)
+                else 'IDDPG' if (not recurrent and not centralized)
                 else 'custom')
     _cl = 'OFF (direct stage 7)' if no_curriculum else 'ON'
     print(f"{_variant}-NAV Training  |  Agents: {n_agents}  |  Device: {device}  "
@@ -743,7 +771,7 @@ def train(config_path: str = "config/default.yaml",
 
                         sh_grad = torch.nn.utils.clip_grad_norm_(
                             agents[0].shared_extractor.parameters(),
-                            algo_cfg.get('shared_gradient_clip', algo_cfg['gradient_clip']))
+                            _shared_clip)
                         shared_optimizer.step()
 
                         for ag in agents:
@@ -850,16 +878,25 @@ def train(config_path: str = "config/default.yaml",
                 log_payload = {f"eval/{k}": v for k, v in eval_stats.items()}
                 log_payload["stage"] = cl.current_stage_idx
                 logger.log(log_payload, step=global_step)
+                _crr = eval_stats.get('conflict_resolution_rate', float('nan'))
                 print(f"[EVAL @ ep {episode}] stage {cl.current_stage_idx + 1} | "
                       f"n_eval {n_eval_now} | "
                       f"success {eval_stats['success_rate']:.2%} | "
+                      f"mission {eval_stats.get('mission_success_rate', 0.0):.2%} | "
                       f"collision {eval_stats['collision_rate']:.2%} | "
+                      f"uav_col {eval_stats.get('uav_collision_rate', 0.0):.2%} | "
                       f"trapped {eval_stats['trapped_rate']:.2%} | "
                       f"path_eff {eval_stats['path_efficiency']:.2f} | "
-                      f"inter_uav_safe {eval_stats['inter_uav_safe']:.2f} | "
+                      f"min_pair {eval_stats.get('min_pair_dist', float('nan')):.2f} | "
+                      f"near_miss {eval_stats.get('near_miss_ratio', 0.0):.2f} | "
+                      f"conflict_res {_crr:.2f} | "
                       f"realized_return {eval_stats['realized_return']:.2f} | "
                       f"q_eval_start {eval_stats['q_eval_start']:.2f} | "
                       f"q_mean(replay) {q_mean:.2f}", flush=True)
+
+                _write_eval_csv(f"{out_dir}/eval_log_{run_id}.csv",
+                                episode, cl.current_stage_idx + 1, n_eval_now,
+                                eval_stats, q_mean)
 
                 promoted = cl.evaluate_promotion(eval_stats)
                 if promoted:
@@ -869,7 +906,7 @@ def train(config_path: str = "config/default.yaml",
                     # degrade it. Independent of the every-1000-ep cadence, so a
                     # later collapse can never cost you the good model.
                     _save_checkpoint(
-                        f"checkpoints/stage_{cl.current_stage_idx}_cleared",
+                        f"{out_dir}/stage_{cl.current_stage_idx}_cleared",
                         agents, shared_optimizer, global_step, episode,
                         cl, noise, buffer=buffer, save_buffer=False)
 
@@ -982,6 +1019,29 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
         buffer.save(f"{save_dir}/replay.npz")
 
 
+def _write_eval_csv(path, episode, stage_1based, n_eval, s, q_mean_replay):
+    """[FIX6e] One row per promotion eval — the authoritative held-out record
+    used by aggregate_results.py. `s` is the eval_stats dict; `stage_1based` is
+    the stage being evaluated (before any promotion this eval triggers)."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    is_new = not os.path.exists(path)
+    g = lambda k, d=0.0: s.get(k, d)
+    with open(path, 'a') as f:
+        if is_new:
+            f.write("episode,stage,n_eval,success_rate,mission_success_rate,"
+                    "collision_rate,uav_collision_rate,trapped_rate,"
+                    "path_efficiency,inter_uav_safe,min_pair_dist,near_miss_ratio,"
+                    "conflict_resolution_rate,realized_return,q_eval_start,"
+                    "q_mean_replay\n")
+        f.write(f"{episode},{stage_1based},{n_eval},{g('success_rate')},"
+                f"{g('mission_success_rate')},{g('collision_rate')},"
+                f"{g('uav_collision_rate')},{g('trapped_rate')},"
+                f"{g('path_efficiency')},{g('inter_uav_safe')},"
+                f"{g('min_pair_dist', float('nan'))},{g('near_miss_ratio')},"
+                f"{g('conflict_resolution_rate', float('nan'))},"
+                f"{g('realized_return')},{g('q_eval_start')},{q_mean_replay}\n")
+
+
 def _write_csv(path, episode, stats, grad_window):
     os.makedirs(os.path.dirname(path), exist_ok=True)
     is_new = not os.path.exists(path)
@@ -1011,12 +1071,13 @@ if __name__ == "__main__":
     p.add_argument('--run-name', default=None)
     p.add_argument('--max-episodes', type=int, default=-1)
     p.add_argument('--no-wandb', action='store_true')
-    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg'])
+    p.add_argument('--variant', default='mardpg',
+                   choices=['mardpg', 'maddpg', 'ind_rdpg', 'iddpg'])
     p.add_argument('--no-curriculum', action='store_true')
     a = p.parse_args()
     
     rec, cen = {'mardpg': (True, True), 'maddpg': (False, True),
-                'iddpg': (False, False)}[a.variant]
+                'ind_rdpg': (True, False), 'iddpg': (False, False)}[a.variant]
     train(a.config, a.device, a.resume, a.seed,
           out_dir=a.out_dir, run_name=a.run_name,
           max_episodes=a.max_episodes, use_wandb=not a.no_wandb,

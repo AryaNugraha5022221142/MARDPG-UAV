@@ -1,4 +1,5 @@
 environment:
+  near_miss_band: 3.0          # [FIX5] metres; soft band for near-miss counting
   # [NO-COMM FIX] Other UAVs are sensed by the rangefinder as spheres of this
   # radius. Default = inter_uav_min_dist (1.0 m) so a neighbour's 2R safety
   # bubble is reliably detectable on a 25-beam sensor; lower toward
@@ -51,7 +52,7 @@ algorithm:
   # [N4-4] Make CPU fallback fatal. The 2026-06-11 run silently executed on
   # CPU at 0.01-0.03 ep/s (ETA 330-450 h); stages 4-7 are 2.5-3.75x longer
   # per episode. Set true for any run you intend to take past stage 2.
-  abort_if_cpu: false
+  abort_if_cpu: true
 
   gamma:        0.99           # [B5] horizon ~100 steps. If stages 4-6 stall with
                                # high trapped_rate, the contingency is gamma->0.995,
@@ -115,7 +116,7 @@ algorithm:
   eval_episodes_late_threshold: 0.50
   promotion_min_episodes: 100
   promotion_consecutive_evals: 2
-  promotion_fast_consecutive_evals: 1
+  promotion_fast_consecutive_evals: 2
   promotion_margin: 0.10
   save_replay_on_checkpoint: true
 
@@ -133,7 +134,7 @@ algorithm:
   # This decision is registered NOW (before stage 3 is reached) so a
   # post-promotion dip gets a planned response, not an ad-hoc one.
   # Set 0.0 to disable and recover exact v3 behavior.
-  replay_flush_frac_on_obstacle_shift: 0.0
+  replay_flush_frac_on_obstacle_shift: 0.3
 
   # [N3-7] Overestimation control. Both default OFF -> identical critic learning
   # to the validated baseline. Enable for later (sparse-success, -30 terminal)

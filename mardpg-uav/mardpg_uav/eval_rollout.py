@@ -11,9 +11,10 @@ from mardpg_uav.train import load_config
 # use a feed-forward core (_FFCore), not an LSTM, so building a recurrent Actor
 # and loading their weights would raise a state_dict mismatch.
 _VARIANT_FLAGS = {
-    'mardpg': (True,  True),    # recurrent + centralized critic
-    'maddpg': (False, True),    # feed-forward + centralized critic
-    'iddpg':  (False, False),   # feed-forward + independent critic
+    'mardpg':   (True,  True),    # recurrent   + centralized critic  (proposed)
+    'maddpg':   (False, True),    # feed-forward + centralized critic  (paper)
+    'ind_rdpg': (True,  False),   # recurrent   + independent critic   (paper: Ind-RDPG)
+    'iddpg':    (False, False),   # feed-forward + independent critic  (bonus, full 2x2)
 }
 
 
