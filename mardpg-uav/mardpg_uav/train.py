@@ -403,8 +403,8 @@ def train(config_path: str = "config/default.yaml",
         msg = ("Running on CPU. Measured stage-1 throughput was 0.01-0.03 ep/s "
                "(ETA 330-450 h at n_episodes=20000); later stages are 2.5-3.75x "
                "longer per episode. Run benchmark.py to confirm the bottleneck, "
-               "move to a GPU instance, or set algorithm.abort_if_cpu: true to "
-               "make this fatal.")
+               "move to a GPU instance, or set algorithm.abort_if_cpu: false to "
+               "bypass this check.")
         if bool(algo_cfg.get('abort_if_cpu', False)):
             raise RuntimeError(f"[N4-4] {msg}")
         print(f"[N4-4 WARNING] {msg}", flush=True)
