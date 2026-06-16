@@ -102,7 +102,7 @@ algorithm:
   # as you raise it.
   # [N4 audit] Verified stable through stage 1: critic_grad settled ~0.2 vs
   # clip 1.0, no q oscillation. Keep at 8.
-  grad_steps_per_update: 8
+  grad_steps_per_update: 1
 
   deterministic_cudnn: false
   eval_every: 100

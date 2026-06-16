@@ -157,24 +157,3 @@ class MetricsTracker:
             'conflict_resolution_rate': _window_mean(self.resolutions, window,
                                                       default=float('nan')),
         }
-
-
-def _nudge_free(env, pos, max_tries=200):
-    """If a ring/antipodal point lands inside an obstacle, nudge to the nearest
-    free sample while approximately preserving the crossing geometry. Guarantees
-    we never spawn inside geometry (which would be an instant, unavoidable
-    collision and would artificially depress success)."""
-    buf      = env.cfg['collision_radius'] + 0.5
-    env_size = np.asarray(env.cfg['env_size'], dtype=np.float32)
-    min_alt  = float(env.cfg.get('min_altitude', 0.0))
-    pos      = pos.astype(np.float32)
-    if not env._inside_obstacles(pos, buffer=buf):
-        return pos
-    rng = env.scene_gen.rng
-    lo  = np.array([1.0, 1.0, min_alt + 1.0], dtype=np.float32)
-    hi  = env_size - 1.0
-    for _ in range(max_tries):
-        cand = np.clip(pos + rng.uniform(-5.0, 5.0, size=3).astype(np.float32), lo, hi)
-        if not env._inside_obstacles(cand, buffer=buf):
-            return cand.astype(np.float32)
-    return env._sample_free_position()
