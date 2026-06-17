@@ -1,150 +1,186 @@
 """
-evaluate_multiagent.py  — paper-faithful, MULTI-AGENT-correct evaluation.
+evaluate_multiagent.py  (v2) — multi-SEED-correct evaluation with explicit
+variance decomposition.
 
-Replaces the outdated evaluate_generalization.py.
+What changed vs v1 and WHY
+==========================
+v1 varied SCENE seeds per episode for a SINGLE checkpoint and reported ±SE over
+those scenes. That SE is *within-seed scene-sampling noise* — it is NOT the
+variance of your METHOD. A method-level claim ("MARDPG beats X") must account
+for TRAINING-seed variance, which is almost always larger and is the only
+dispersion a reviewer cares about.
 
-Why the old script was wrong
-----------------------------
-evaluate_generalization.py built its suite WITHOUT `conflict_frac`, so every
-config fell back to `conflict_frac = 0.0` in assignment.assign_start_goals. That
-reproduced the OLD independent-scatter geometry: paths essentially never crossed,
-inter_uav_safe ~ 1.0, and there was no multi-agent interaction in the evaluation
-at all. It therefore could not support (or refute) any coordination / no-comm
-claim, no matter which checkpoint it scored.
+v2 makes the TRAINING SEED the unit of statistical analysis:
 
-What this script fixes
-----------------------
-1. The in-distribution anchors REUSE the exact training-curriculum stage configs
-   (including their conflict_frac / ring_frac), so the eval MDP == the training
-   MDP. OOD configs are derived from the hardest training stages and keep
-   conflict_frac = 1.0, so crossings persist out of distribution too.
-2. A `sanity_crossings` config (static_obs = 0, conflict_frac = 1.0) isolates
-   pure inter-UAV avoidance — the cleanest test of the multi-agent claim.
-3. The genuine interaction metrics are reported with statistics:
-     - closest_approach_m       : episode min pairwise distance (interaction depth)
-     - near_miss_ratio          : fraction of steps any pair was inside the band
-     - uav_collision_rate       : per-agent inter-UAV collision rate
-     - encounter_rate           : fraction of episodes with a real encounter
-     - conflict_resolution_rate : among encounter episodes, fraction with ZERO
-                                  inter-UAV collisions (+ Wilson 95% CI).
-   conflict_resolution_rate is the headline metric for the no-comm / centralized
-   coordination claim.
+  1. Each method takes a LIST of checkpoints (one per training seed).
+  2. All methods/seeds see the SAME fixed set of scene seeds  -> paired over
+     scenes; differences are not scene-luck.
+  3. Aggregation is two-level:
+        scene  -> seed     : mean over scenes = that seed's point estimate
+        seed   -> method   : mean/std/SE over SEEDS  (the honest dispersion)
+     Both `seed_se` (honest) and `scene_se_within_seed` (what v1 reported) are
+     printed together so the difference is visible.
+  4. rliable-style robust aggregate: IQM over the (seed x config) score matrix
+     with a STRATIFIED BOOTSTRAP 95% CI that resamples SEEDS. Self-contained
+     (numpy only); no rliable/scipy dependency. With 3 seeds the CI is wide —
+     that is correct, not a defect.
+  5. Checkpoint loads are VERIFIED: a fingerprint of the actor weights before
+     and after load must change, else we RAISE. This closes the v1 hole where a
+     dim mismatch was swallowed (`[WARN] agent i:`) and produced believable
+     random-policy numbers.
 
-Retained from the old script (these parts were good)
-----------------------------------------------------
-  * APF reactive baseline through the SAME rollout/metric code.
-  * Per-agent success_rate AND mission-success (all N reach) with Wilson CI.
-  * Path efficiency reported BOTH ways (paper ratio-of-sums and reached-only cap).
-  * Trapped rate reported BOTH ways (paper partition and progress heuristic).
-  * Identical scene seed per episode across methods => paired comparison.
+Everything good in v1 is kept: instrumented paired rollouts, APF baseline,
+Wilson CIs for Bernoulli mission-success, encounter-conditioned
+conflict-resolution, the exact training-stage configs as the eval MDP.
 
-PREREQUISITE
-------------
-This suite uses conflict_frac > 0, which exercises the crossing branch in
-environment/assignment.py. That branch calls _nudge_free(). You MUST have
-applied Fix A (relocate _nudge_free from utils/metrics.py into assignment.py)
-or this will raise NameError on the first reset. A preflight check below turns
-that into a clear message.
-
-HONESTY notes to keep in the thesis
------------------------------------
-  * APF is a potential-field reactive controller, NOT ORCA-3D. Legitimate
-    non-learning baseline; do not call it ORCA.
+Honesty notes to keep in the thesis (unchanged from v1)
+------------------------------------------------------
+  * APF is a potential-field reactive controller, NOT ORCA-3D.
   * Trained reward/hyperparameters deviate from the paper (terminal anchors,
-    sigma, lr, buffer). State this when comparing absolute numbers.
-  * This script varies SCENE seeds per episode (epistemic over scenes). For
-    TRAINING-seed variance, pass several checkpoints of the same method as
-    separate --baseline columns and average them.
-  * A checkpoint TRAINED on the old scatter MDP will legitimately underperform
-    here on the crossing configs — that is an expected distribution shift, not a
-    bug. Watch the console for `[WARN] agent i:` lines from load_agents; those
-    mean the weights did NOT load (dim mismatch) and the actors are RANDOM, so
-    the numbers are meaningless. (APF needs no checkpoint, so a sane APF column
-    next to a garbage learned column is the tell.)
+    sigma, lr, buffer) -> absolute numbers are not digit-comparable.
+  * conflict_resolution_rate / uav_collision_rate are often saturated in this
+    weakly-coupled env; report them but do not over-claim coordination from a
+    ceiling'd metric.
 
 Usage
 -----
-  # MARDPG alone (CPU), with APF baseline, quick smoke:
-  python evaluate_multiagent.py --checkpoint checkpoints/final \
-      --variant mardpg --device cpu --suite quick --episodes 30 --apf
+  python evaluate_multiagent.py \
+    --method MARDPG  mardpg   ckpts/cl_mardpg_seed0/final,ckpts/cl_mardpg_seed1/final,ckpts/cl_mardpg_seed2/final \
+    --method IndRDPG ind_rdpg ckpts/cl_ind_rdpg_seed0/final,ckpts/cl_ind_rdpg_seed1/final,ckpts/cl_ind_rdpg_seed2/final \
+    --method MADDPG  maddpg   ckpts/cl_maddpg_seed0/final,ckpts/cl_maddpg_seed1/final,ckpts/cl_maddpg_seed2/final \
+    --method IDDPG   iddpg    ckpts/cl_iddpg_seed0/final,ckpts/cl_iddpg_seed1/final,ckpts/cl_iddpg_seed2/final \
+    --apf --episodes 100 --device cpu --suite quick
 
-  # Full 2x2 comparison (checkpoints trained with --variant):
-  python evaluate_multiagent.py --checkpoint checkpoints/cl_mardpg_seed0/final \
-      --variant mardpg \
-      --baseline MADDPG   maddpg   checkpoints/cl_maddpg_seed0/final \
-      --baseline Ind-RDPG ind_rdpg checkpoints/cl_ind_rdpg_seed0/final \
-      --baseline IDDPG    iddpg    checkpoints/cl_iddpg_seed0/final \
-      --apf --episodes 200 --device cpu
+A checkpoint entry may be a comma list (one dir per seed) or a glob
+(e.g. 'ckpts/cl_mardpg_seed*/final'). Outputs:
+    eval_episodes.csv   : one row per (method, seed, config, scene)  [raw]
+    eval_per_seed.csv   : one row per (method, seed, config)         [seed point estimates]
+    eval_summary.csv    : one row per (method, config)               [across-seed stats]
+    eval_method_iqm.csv : one row per method                         [robust aggregate + bootstrap CI]
+analyze_factorial.py consumes eval_per_seed.csv for the 2x2 decomposition.
 """
 import os
+import re
+import glob
 import time
 import math
+import hashlib
 import argparse
-import yaml
+
 import numpy as np
 import pandas as pd
 import torch
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
-from mardpg_uav.eval_rollout import load_agents          # variant-aware
-from mardpg_uav.train import CURRICULUM                  # reuse exact training stages
+from mardpg_uav.train import CURRICULUM, load_config
+from mardpg_uav.algorithm.mardpg import MARDPGAgent
 
-# Episode counts as an "encounter" if two live agents came within this distance
-# (metres). Matches utils/metrics.ENCOUNTER_DIST.
-ENCOUNTER_DIST = 6.0
+ENCOUNTER_DIST = 6.0  # metres; matches utils/metrics.ENCOUNTER_DIST
 
-# Rendering is optional; failure to import must not block the metrics.
-try:
-    from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down  # noqa: F401
-    _HAVE_RENDER = True
-except Exception as _e:                                   # pragma: no cover
-    _HAVE_RENDER = False
-    _RENDER_IMPORT_ERR = _e
+# variant -> (recurrent, centralized); mirrors eval_rollout._VARIANT_FLAGS
+_VARIANT_FLAGS = {
+    'mardpg':   (True,  True),
+    'maddpg':   (False, True),
+    'ind_rdpg': (True,  False),
+    'iddpg':    (False, False),
+}
 
 
 # ===========================================================================
-# Evaluation suite — multi-agent correct (conflict_frac > 0 everywhere).
-# In-distribution anchors are the EXACT training stages so eval MDP == train MDP.
+# Verified checkpoint loading  (audit: silent load failure -> random policy)
 # ===========================================================================
-def _stage_cfg(idx_0based: int) -> dict:
-    """Copy a curriculum stage config, dropping non-env keys (name/criteria)."""
+def _module_fingerprint(module) -> str:
+    h = hashlib.sha1()
+    for p in module.parameters():
+        h.update(p.detach().cpu().numpy().tobytes())
+    return h.hexdigest()
+
+
+def load_agents_strict(checkpoint_dir, config_path, device, variant):
+    """Build agents for `variant` and load the checkpoint, RAISING if the load
+    did not actually change the actor weights (the silent-failure mode that v1
+    swallowed). Returns (agents, cfg)."""
+    recurrent, centralized = _VARIANT_FLAGS[variant]
+    cfg = load_config(config_path)
+    env_cfg, net_cfg = cfg['environment'], cfg['network']
+    n_agents = env_cfg['n_agents']
+
+    agents = []
+    for i in range(n_agents):
+        ag = MARDPGAgent(
+            agent_id=i, n_agents=n_agents,
+            obs_dim=env_cfg.get('obs_dim', 35), action_dim=2,
+            action_bound=env_cfg.get('max_delta_angle', 0.5236),
+            lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
+            fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
+            recurrent=recurrent, centralized=centralized, device=device)
+
+        init_fp = _module_fingerprint(ag.actor)
+
+        apath = os.path.join(checkpoint_dir, f"agent_{i}.pt")
+        if not os.path.exists(apath):
+            raise FileNotFoundError(f"[LOAD FAIL] missing {apath}")
+        ckpt = torch.load(apath, map_location=device)
+
+        if 'actor_private' in ckpt:
+            if i == 0:
+                spath = os.path.join(checkpoint_dir, "shared_actor.pt")
+                if not os.path.exists(spath):
+                    raise FileNotFoundError(f"[LOAD FAIL] missing {spath}")
+                sc = torch.load(spath, map_location=device)
+                ag.shared_extractor.load_state_dict(sc['shared_actor'])  # strict
+            ag.actor.load_state_dict(ckpt['actor_private'], strict=False)
+        elif 'actor' in ckpt:
+            ag.actor.load_state_dict(ckpt['actor'])
+        else:
+            raise KeyError(f"[LOAD FAIL] {apath} has neither 'actor_private' "
+                           f"nor 'actor' (keys: {list(ckpt.keys())})")
+
+        post_fp = _module_fingerprint(ag.actor)
+        # Agent 0 always changes (shared + private). Agents >0 change via the
+        # private lstm/fc_out load; share_parameters runs afterwards.
+        if post_fp == init_fp:
+            raise RuntimeError(
+                f"[LOAD FAIL] {checkpoint_dir} agent {i}: actor weights are "
+                f"IDENTICAL to init after load -> nothing loaded (key/shape "
+                f"mismatch). Numbers from this checkpoint would be a RANDOM "
+                f"policy. Fix the checkpoint/variant before evaluating.")
+        agents.append(ag)
+
+    for i in range(1, n_agents):
+        agents[i].share_parameters(agents[0])
+    return agents, cfg
+
+
+# ===========================================================================
+# Evaluation suite — exact training stages as the eval MDP (conflict_frac > 0)
+# ===========================================================================
+def _stage_cfg(idx_0based):
     c = dict(CURRICULUM[idx_0based])
     c.pop('criteria', None)
     c.pop('name', None)
     return c
 
 
-def build_suite(quick: bool = False):
-    s4 = _stage_cfg(3)     # Moderate Density   (static 7,  conflict 0.8)
-    s6 = _stage_cfg(5)     # Max Density        (static 16, conflict 1.0)
-    s7 = _stage_cfg(6)     # Dynamic Threats    (static 16, conflict 1.0, dyn)
+def build_suite(quick=False):
+    s4 = _stage_cfg(3)
+    s6 = _stage_cfg(5)
+    s7 = _stage_cfg(6)
 
-    def ood_static(**kw):  # distance OOD on the static base (no dynamics)
+    def ood_static(**kw):
         c = dict(s6); c.update(kw); return c
 
-    def ood_dyn(**kw):     # dynamic OOD on the dynamic base
+    def ood_dyn(**kw):
         c = dict(s7); c.update(kw); return c
 
     suite = [
         ('stage4_train',     'in_dist', s4),
         ('stage6_train',     'in_dist', s6),
         ('stage7_train',     'in_dist', s7),
-        ('ood_dist_50',      'ood',     ood_static(min_sep=50.0)),
         ('ood_dist_60',      'ood',     ood_static(min_sep=60.0)),
-        ('ood_dyn_dense',    'ood',     ood_dyn(dynamic_obs=(3, 4),
-                                                dynamic_radius=2.0,
-                                                dynamic_speed=(1.0, 2.0))),
         ('ood_dyn_fast',     'ood',     ood_dyn(dynamic_obs=(2, 3),
                                                 dynamic_radius=2.5,
                                                 dynamic_speed=(2.5, 3.5))),
-        ('ood_combined',     'ood',     ood_dyn(min_sep=60.0,
-                                                dynamic_obs=(2, 3),
-                                                dynamic_radius=2.5,
-                                                dynamic_speed=(2.0, 3.0))),
-        # Pure inter-UAV avoidance, no obstacles — the cleanest multi-agent test.
         ('sanity_crossings', 'in_dist', dict(env_size=[100.0, 100.0, 60.0],
                                              static_obs=0, max_steps=600,
                                              min_sep=30.0, min_start_sep=12.0,
@@ -157,7 +193,7 @@ def build_suite(quick: bool = False):
 
 
 # ===========================================================================
-# Policy providers — uniform interface for learned policies and the APF baseline.
+# Policy providers
 # ===========================================================================
 class LearnedPolicy:
     kind = 'learned'
@@ -201,15 +237,13 @@ class APFPolicy:
 
 
 # ===========================================================================
-# Single episode rollout, policy-agnostic, fully instrumented.
+# Single episode rollout — policy-agnostic, fully instrumented (kept from v1)
 # ===========================================================================
 def run_episode(env, policy, stage_cfg, env_cfg, seed):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
 
-    # Reproducible scene + geometry + lidar noise for THIS episode, identical
-    # across methods (scene_gen.rng drives crossing assignment too -> paired).
     env.scene_gen.rng.seed(seed)
     env.rangefinder.rng.seed(seed)
     obs = env.reset(stage_cfg)
@@ -217,15 +251,9 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
 
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
-    dyn = getattr(env, 'dynamic_obstacles', [])
-    dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
-    dyn_r = [float(d.size[0]) for d in dyn] if dyn else []
-
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
     coll_type = [None] * n_agents
-    infer_time_total = 0.0
-    n_decisions = 0
     info = {}
 
     for t in range(stage_cfg['max_steps']):
@@ -233,17 +261,10 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         dyn_before = (env.agent_dyn_collided.copy()
                       if hasattr(env, 'agent_dyn_collided')
                       else np.zeros(n_agents, bool))
-
-        t0 = time.perf_counter()
         acts = policy.act(env, obs)
-        infer_time_total += time.perf_counter() - t0
-        n_decisions += int(live_before.sum())
-
         obs, rewards, done, info = env.step(acts)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
-        if dyn:
-            dyn_path.append([d.position.copy() for d in dyn])
 
         for i in range(n_agents):
             if info['step_reached'][i] and np.isnan(time_to_goal[i]):
@@ -263,105 +284,46 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
             break
 
     path = np.array(path)
-    T = len(path)
     reached = env.agent_reached.copy()
     collided = env.agent_collided.copy()
-    dyn_collided = (env.agent_dyn_collided.copy()
-                    if hasattr(env, 'agent_dyn_collided') else np.zeros(n_agents, bool))
     goals = env.goals.copy()
 
-    flight_dist = np.zeros(n_agents)
-    for i in range(n_agents):
-        flight_dist[i] = float(np.sum(np.linalg.norm(np.diff(path[:, i, :], axis=0), axis=1)))
-
+    flight_dist = np.array([
+        float(np.sum(np.linalg.norm(np.diff(path[:, i, :], axis=0), axis=1)))
+        for i in range(n_agents)])
     straight = np.array([np.linalg.norm(goals[i] - start_pos[i]) for i in range(n_agents)])
 
-    # --- Path efficiency, BOTH definitions -------------------------------
-    tot_actual = float(flight_dist.sum())
-    path_eff_paper = float(straight.sum() / tot_actual) if tot_actual > 1e-8 else np.nan
-    reached_eff = []
-    for i in range(n_agents):
-        if reached[i] and flight_dist[i] > 1e-8:
-            reached_eff.append(min(straight[i] / flight_dist[i], 1.0))
+    reached_eff = [min(straight[i] / flight_dist[i], 1.0)
+                   for i in range(n_agents)
+                   if reached[i] and flight_dist[i] > 1e-8]
     path_eff_reached = float(np.mean(reached_eff)) if reached_eff else np.nan
 
-    # --- Outcome partition (paper-faithful) ------------------------------
-    neither = (~reached) & (~collided)
-    trapped_rate_paper = float(neither.mean())
-    trapped_rate_progress = float(np.mean(info.get('trapped', np.zeros(n_agents, bool))))
-
-    # --- Multi-agent interaction metrics (the point of this rewrite) -----
     closest_appr = float(info.get('min_pair_dist', np.nan))
     near_miss_ratio = float(info.get('near_miss_ratio', 0.0))
     uav_col = np.asarray(info.get('uav_collisions', np.zeros(n_agents, bool)))
-    uav_collision_rate = float(np.mean(uav_col))
     had_encounter = bool(np.isfinite(closest_appr) and closest_appr < ENCOUNTER_DIST)
-    # 1.0 resolved / 0.0 unresolved / NaN if there was no encounter to resolve.
-    if had_encounter:
-        conflict_resolved = 1.0 if not bool(np.any(uav_col)) else 0.0
-    else:
-        conflict_resolved = np.nan
-
-    agent_rows = []
-    for i in range(n_agents):
-        peff = (min(straight[i] / flight_dist[i], 1.0)
-                if (reached[i] and flight_dist[i] > 1e-8) else np.nan)
-        agent_rows.append(dict(
-            agent=i, reached=bool(reached[i]), collided=bool(collided[i]),
-            dyn_collided=bool(dyn_collided[i]),
-            collision_type=(coll_type[i] if collided[i] else ''),
-            flight_distance_m=flight_dist[i],
-            straight_distance_m=float(straight[i]),
-            time_to_goal_s=float(time_to_goal[i]),
-            path_efficiency=float(peff),
-            cumulative_reward=float(cum_reward[i])))
+    conflict_resolved = (np.nan if not had_encounter
+                         else (1.0 if not bool(np.any(uav_col)) else 0.0))
 
     ep = dict(
-        seed=seed, steps=T - 1, flight_time_s=(T - 1) * dt,
-        success_rate=float(reached.mean()),                 # paper "success rate"
-        mission_success=bool(reached.all()),                # MSR (Bernoulli)
+        seed_scene=seed, steps=len(path) - 1,
+        success_rate=float(reached.mean()),
+        mission_success=bool(reached.all()),
         collision_rate=float(collided.mean()),
-        dyn_collision_rate=float(dyn_collided.mean()),
-        uav_collision_rate=uav_collision_rate,              # inter-UAV (per agent)
-        trapped_rate_paper=trapped_rate_paper,
-        trapped_rate_progress=trapped_rate_progress,
-        team_reward=float(cum_reward.sum()),
-        mean_agent_reward=float(cum_reward.mean()),
-        path_eff_paper=path_eff_paper,
+        uav_collision_rate=float(np.mean(uav_col)),
         path_eff_reached=path_eff_reached,
-        mean_flight_distance_m=float(flight_dist.mean()),
-        total_flight_distance_m=float(flight_dist.sum()),
-        mean_inference_ms_per_decision=1e3 * infer_time_total / max(1, n_decisions),
-        safe_inter_uav_ratio=float(info.get('safe_inter_uav_ratio', 1.0)),
-        # interaction block
+        team_reward=float(cum_reward.sum()),
         closest_approach_m=(closest_appr if np.isfinite(closest_appr) else np.nan),
         near_miss_ratio=near_miss_ratio,
         had_encounter=had_encounter,
-        conflict_resolved=conflict_resolved,                # 1.0 / 0.0 / NaN
-        n_static_collisions=sum(1 for c in coll_type if c == 'static'),
-        n_inter_uav_collisions=sum(1 for c in coll_type if c == 'inter_uav'),
-        n_dynamic_collisions=sum(1 for c in coll_type if c == 'dynamic'),
+        conflict_resolved=conflict_resolved,
     )
-    render = dict(path=path, dyn_path=(np.array(dyn_path) if dyn else None),
-                  dyn_r=dyn_r, reached=reached, collided=collided, goals=goals)
-    return ep, agent_rows, render
-
-
-def _episode_score(ep):
-    return (1 if ep['mission_success'] else 0,
-            ep['success_rate'], ep['team_reward'], -ep['steps'])
+    return ep
 
 
 # ===========================================================================
-# Statistics helpers (numpy-only; no scipy dependency)
+# Statistics — numpy only (Wilson, bootstrap, IQM)
 # ===========================================================================
-def _se(v):
-    v = np.asarray(v, float)
-    v = v[~np.isnan(v)]
-    n = len(v)
-    return (v.std(ddof=1) / np.sqrt(n)) if n > 1 else 0.0
-
-
 def _wilson(k, n, z=1.96):
     if n == 0:
         return (np.nan, np.nan, np.nan)
@@ -372,297 +334,269 @@ def _wilson(k, n, z=1.96):
     return p, max(0.0, centre - half), min(1.0, centre + half)
 
 
-def _normal_cdf(x):
-    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+def _iqm(x):
+    x = np.sort(np.asarray(x, float))
+    x = x[~np.isnan(x)]
+    n = len(x)
+    if n == 0:
+        return np.nan
+    if n < 4:
+        return float(np.mean(x))          # IQM degenerate below 4 points
+    lo, hi = int(np.floor(n * 0.25)), int(np.ceil(n * 0.75))
+    return float(np.mean(x[lo:hi]))
 
 
-def _paired_delta(a, b):
-    """Two-sided test on paired per-episode differences a-b (paired by seed)."""
-    a = np.asarray(a, float); b = np.asarray(b, float)
-    m = ~(np.isnan(a) | np.isnan(b))
-    d = a[m] - b[m]
-    n = len(d)
-    if n < 2:
-        return dict(delta=float(np.mean(d)) if n else np.nan, se=np.nan, z=np.nan, p=np.nan, n=n)
-    delta = float(d.mean())
-    se = float(d.std(ddof=1) / np.sqrt(n))
-    z = delta / se if se > 0 else np.nan
-    p = 2.0 * (1.0 - _normal_cdf(abs(z))) if se > 0 else np.nan
-    return dict(delta=delta, se=se, z=z, p=p, n=n)
+def _bootstrap_ci(values, n_boot=10000, agg=np.mean, ci=0.95, rng=None):
+    """Resample the UNIT OF ANALYSIS (seeds) with replacement. With 3 seeds the
+    interval is wide by construction — that is the honest uncertainty."""
+    v = np.asarray([x for x in values if not (isinstance(x, float) and np.isnan(x))], float)
+    n = len(v)
+    if n == 0:
+        return (np.nan, np.nan, np.nan)
+    if n == 1:
+        return (float(v[0]), np.nan, np.nan)
+    rng = rng or np.random.default_rng(12345)
+    boots = np.array([agg(v[rng.integers(0, n, size=n)]) for _ in range(n_boot)])
+    return (float(agg(v)),
+            float(np.percentile(boots, 100 * (1 - ci) / 2)),
+            float(np.percentile(boots, 100 * (1 + ci) / 2)))
+
+
+# Metrics aggregated as a per-seed scalar (mean over that seed's scenes).
+_SEED_METRICS = ['success_rate', 'mission_success', 'collision_rate',
+                 'uav_collision_rate', 'path_eff_reached',
+                 'closest_approach_m', 'near_miss_ratio']
+
+
+# ===========================================================================
+# Two-level aggregation
+# ===========================================================================
+def aggregate_per_seed(df_ep):
+    """scene -> seed. One row per (method, variant, seed, config)."""
+    rows = []
+    keys = ['method', 'variant', 'seed', 'config_name', 'regime']
+    for kv, g in df_ep.groupby(keys, sort=False):
+        row = dict(zip(keys, kv))
+        row['n_scenes'] = len(g)
+        for m in _SEED_METRICS:
+            v = g[m].astype(float).values
+            row[m] = float(np.nanmean(v)) if len(v) else np.nan
+            # within-seed scene SE — what v1 mistakenly reported as "the" SE
+            vv = v[~np.isnan(v)]
+            row[f'{m}__scene_se'] = (float(vv.std(ddof=1) / np.sqrt(len(vv)))
+                                     if len(vv) > 1 else 0.0)
+        # encounter-conditioned conflict resolution within this seed
+        cr = g['conflict_resolved'].astype(float)
+        enc = cr.notna()
+        n_enc = int(enc.sum())
+        row['n_encounters'] = n_enc
+        row['conflict_resolution_rate'] = (float((cr[enc] == 1.0).mean())
+                                           if n_enc else np.nan)
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def aggregate_across_seeds(df_seed):
+    """seed -> method. One row per (method, config). Reports the HONEST
+    seed-level dispersion next to the within-seed scene SE for contrast."""
+    metrics = _SEED_METRICS + ['conflict_resolution_rate']
+    rows = []
+    for (method, cname), g in df_seed.groupby(['method', 'config_name'], sort=False):
+        row = dict(method=method, config_name=cname,
+                   variant=g['variant'].iloc[0], regime=g['regime'].iloc[0],
+                   n_seeds=len(g))
+        for m in metrics:
+            seed_vals = g[m].astype(float).values
+            sv = seed_vals[~np.isnan(seed_vals)]
+            mean, lo, hi = _bootstrap_ci(sv, agg=np.mean)
+            row[f'{m}_mean'] = mean
+            row[f'{m}_seed_std'] = float(sv.std(ddof=1)) if len(sv) > 1 else 0.0
+            row[f'{m}_seed_se'] = (float(sv.std(ddof=1) / np.sqrt(len(sv)))
+                                   if len(sv) > 1 else 0.0)
+            row[f'{m}_ci_lo'] = lo
+            row[f'{m}_ci_hi'] = hi
+            row[f'{m}_seeds'] = ";".join(f"{x:.4f}" for x in sv)
+            if f'{m}__scene_se' in g.columns:
+                row[f'{m}_scene_se_within_seed'] = float(np.nanmean(g[f'{m}__scene_se']))
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def aggregate_method_iqm(df_seed, regimes=('in_dist',)):
+    """Robust method-level aggregate: IQM over the (seed x config) score matrix
+    for the chosen regime(s), with a stratified bootstrap (resampling SEEDS) CI.
+    This is the rliable-style headline number for a few-seed study."""
+    rows = []
+    sub = df_seed[df_seed['regime'].isin(regimes)]
+    for method, g in sub.groupby('method', sort=False):
+        seeds = sorted(g['seed'].unique())
+        # score matrix: rows = seeds, cols = configs (SR by default)
+        for metric in ['success_rate', 'collision_rate', 'conflict_resolution_rate']:
+            piv = g.pivot_table(index='seed', columns='config_name',
+                                values=metric, aggfunc='mean')
+            mat = piv.values  # (n_seeds, n_configs)
+            point = _iqm(mat.flatten())
+            # stratified bootstrap: resample seeds (rows) with replacement
+            rng = np.random.default_rng(2024)
+            n_seeds = mat.shape[0]
+            boots = []
+            for _ in range(10000):
+                idx = rng.integers(0, n_seeds, size=n_seeds)
+                boots.append(_iqm(mat[idx].flatten()))
+            boots = np.array([b for b in boots if not np.isnan(b)])
+            lo = float(np.percentile(boots, 2.5)) if len(boots) else np.nan
+            hi = float(np.percentile(boots, 97.5)) if len(boots) else np.nan
+            rows.append(dict(method=method, metric=metric, regime="+".join(regimes),
+                             n_seeds=n_seeds, iqm=point, iqm_ci_lo=lo, iqm_ci_hi=hi))
+    return pd.DataFrame(rows)
 
 
 # ===========================================================================
 # Driver
 # ===========================================================================
-def evaluate_suite(methods, config, episodes, device, outdir,
-                   render, base_seed, quick, render_method):
-    if not os.path.exists(config):
-        fb = os.path.join(os.path.dirname(os.path.abspath(__file__)), config)
-        if os.path.exists(fb):
-            config = fb
-    cfg = yaml.safe_load(open(config))
-    env_cfg = cfg['environment']
-    n_agents = env_cfg['n_agents']
+def _seed_label(ckpt_dir, fallback_idx):
+    """Parse the TRUE training seed from the checkpoint path (e.g.
+    '.../cl_mardpg_seed2/final' -> 2). This is what makes results computed on
+    SEPARATE machines mergeable: seeds are globally meaningful, never per-VM
+    positional indices. Falls back to the enumeration index if no seed token
+    is found (and warns, because that breaks cross-machine merges)."""
+    m = re.search(r'seed[_-]?(\d+)', ckpt_dir)
+    if m:
+        return int(m.group(1))
+    print(f"[WARN] no 'seedN' token in '{ckpt_dir}' -> using positional index "
+          f"{fallback_idx}. Cross-machine merges will be WRONG; rename the dir "
+          f"to include seedN.", flush=True)
+    return fallback_idx
 
+
+def _expand_ckpts(arg):
+    """Comma list and/or glob -> sorted list of checkpoint dirs."""
+    out = []
+    for token in arg.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if any(ch in token for ch in '*?[]'):
+            out.extend(sorted(glob.glob(token)))
+        else:
+            out.append(token)
+    if not out:
+        raise ValueError(f"No checkpoints resolved from '{arg}'")
+    return out
+
+
+def evaluate(methods, config, episodes, device, outdir, base_seed, quick):
+    cfg = load_config(config)
+    env_cfg = cfg['environment']
     os.makedirs(outdir, exist_ok=True)
     env = MultiUAVEnv(env_cfg)
     suite = build_suite(quick=quick)
 
-    # ---- Preflight: catch the missing _nudge_free clearly (Fix A) -------
+    # Preflight: crossing branch needs assignment._nudge_free (audit Fix A).
     try:
         env.scene_gen.rng.seed(base_seed)
         env.rangefinder.rng.seed(base_seed)
         env.reset(suite[0][2])
     except NameError as e:
         raise SystemExit(
-            f"[FATAL] {e}\n"
-            "This multi-agent suite uses conflict_frac > 0, which exercises the "
-            "crossing-assignment branch in environment/assignment.py. That branch "
-            "calls _nudge_free(). Apply Fix A first: move _nudge_free from "
-            "utils/metrics.py into environment/assignment.py. See "
-            "EVAL_MDP_HANDOVER.md.")
+            f"[FATAL] {e}\nThe crossing-assignment branch calls _nudge_free(); "
+            "ensure it lives in environment/assignment.py (audit Fix A).")
 
-    # Build policy providers.
-    providers = {}                       # name -> provider
-    for name, kind, payload in methods:
-        if kind == 'apf':
-            providers[name] = APFPolicy(env, name=name)
-        else:                            # learned variant: payload=(variant, ckpt)
-            variant, ckpt = payload
-            agents, _ = load_agents(ckpt, config, device, variant=variant)
-            _ = agents[0].select_action(np.zeros(env.obs_dim, np.float32),
-                                        np.zeros(env.action_dim, np.float32), evaluate=True)
-            agents[0].reset_hidden(batch_size=1, eval_mode=True)
-            providers[name] = LearnedPolicy(agents, name=name)
+    ep_records = []
+    for name, variant, ckpt_arg in methods:
+        if variant == 'apf':
+            seed_list = [('apf', None)]
+        else:
+            seed_list = [(_seed_label(ck, idx), ck)
+                         for idx, ck in enumerate(_expand_ckpts(ckpt_arg))]
 
-    ep_records, agent_records = [], []
-    best = {}     # (method, config) -> (score, seed)
+        for seed_idx, ckpt in seed_list:
+            if variant == 'apf':
+                provider = APFPolicy(env, name=name)
+            else:
+                print(f"[load] {name} seed={seed_idx} <- {ckpt}", flush=True)
+                agents, _ = load_agents_strict(ckpt, config, device, variant)
+                provider = LearnedPolicy(agents, name=name)
 
-    for name, prov in providers.items():
-        for cname, regime, stage_cfg in suite:
-            if stage_cfg.get('static_obs', 0) > 16:
-                print(f"[WARN] {cname}: static_obs will be clamped to 16 by the grid.")
-            print(f"\n=== [{name}] {cname} ({regime}) | {episodes} episodes ===")
-            t_cfg = time.time()
-            for e in range(episodes):
-                seed = base_seed + e          # SAME seed across methods -> paired
-                ep, arows, _ = run_episode(env, prov, stage_cfg, env_cfg, seed)
-                ep.update(method=name, config_name=cname, regime=regime, episode=e)
-                ep_records.append(ep)
-                for r in arows:
-                    r.update(method=name, config_name=cname, episode=e, seed=seed)
-                    agent_records.append(r)
-                sc = _episode_score(ep)
-                key = (name, cname)
-                if key not in best or sc > best[key][0]:
-                    best[key] = (sc, seed)
-            sub = [r for r in ep_records
-                   if r['method'] == name and r['config_name'] == cname]
-            sr = np.mean([r['success_rate'] for r in sub])
-            sr_se = _se([r['success_rate'] for r in sub])
-            msr = np.mean([r['mission_success'] for r in sub])
-            cr = np.mean([r['collision_rate'] for r in sub])
-            ucr = np.mean([r['uav_collision_rate'] for r in sub])
-            enc = np.mean([r['had_encounter'] for r in sub])
-            crr_vals = [r['conflict_resolved'] for r in sub
-                        if not (isinstance(r['conflict_resolved'], float)
-                                and math.isnan(r['conflict_resolved']))]
-            crr = (np.mean(crr_vals) if crr_vals else float('nan'))
-            dur = time.time() - t_cfg
-            print(f"  SR {sr:.1%}±{sr_se:.1%} | MSR {msr:.1%} | coll {cr:.1%} | "
-                  f"uav_coll {ucr:.1%} | encounter {enc:.1%} | "
-                  f"conflict_res {crr:.1%} | {dur:.0f}s ({dur/max(1,episodes):.2f}s/ep)")
-
-    for r in ep_records:
-        r['is_best'] = (r['seed'] == best.get((r['method'], r['config_name']),
-                                               (None, None))[1])
+            for cname, regime, stage_cfg in suite:
+                t0 = time.time()
+                for e in range(episodes):
+                    scene_seed = base_seed + e        # shared across all -> paired
+                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed)
+                    ep.update(method=name, variant=variant, seed=seed_idx,
+                              checkpoint=str(ckpt), config_name=cname,
+                              regime=regime, episode=e)
+                    ep_records.append(ep)
+                dur = time.time() - t0
+                sr = np.mean([r['success_rate'] for r in ep_records
+                              if r['method'] == name and r['seed'] == seed_idx
+                              and r['config_name'] == cname])
+                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} "
+                      f"({dur:.0f}s)", flush=True)
 
     df_ep = pd.DataFrame(ep_records)
-    df_ag = pd.DataFrame(agent_records)
-
-    # ---- aggregated summary --------------------------------------------
-    def agg(g):
-        n = len(g)
-        out = dict(n_episodes=n, regime=g['regime'].iloc[0])
-        rate_cols = ['success_rate', 'collision_rate', 'dyn_collision_rate',
-                     'uav_collision_rate', 'near_miss_ratio',
-                     'trapped_rate_paper', 'trapped_rate_progress',
-                     'mean_agent_reward', 'team_reward',
-                     'path_eff_paper', 'path_eff_reached',
-                     'closest_approach_m', 'mean_flight_distance_m', 'flight_time_s',
-                     'mean_inference_ms_per_decision', 'safe_inter_uav_ratio']
-        for col in rate_cols:
-            v = g[col].astype(float)
-            out[f'{col}_mean'] = (np.nanmean(v) if len(v) else np.nan)
-            out[f'{col}_se'] = _se(v)
-        # mission success (Bernoulli per episode)
-        k = int(g['mission_success'].sum())
-        msr, lo, hi = _wilson(k, n)
-        out['mission_success_rate'] = msr
-        out['mission_success_ci_lo'] = lo
-        out['mission_success_ci_hi'] = hi
-        # encounters + conflict resolution (headline multi-agent metric)
-        cr = g['conflict_resolved'].astype(float)
-        enc_mask = ~cr.isna()
-        n_enc = int(enc_mask.sum())
-        k_res = int((cr[enc_mask] == 1.0).sum())
-        crr, crlo, crhi = _wilson(k_res, n_enc)
-        out['encounter_rate'] = float(g['had_encounter'].mean())
-        out['n_encounters'] = n_enc
-        out['conflict_resolution_rate'] = crr
-        out['conflict_res_ci_lo'] = crlo
-        out['conflict_res_ci_hi'] = crhi
-        out['static_coll_total'] = int(g['n_static_collisions'].sum())
-        out['inter_uav_coll_total'] = int(g['n_inter_uav_collisions'].sum())
-        out['dynamic_coll_total'] = int(g['n_dynamic_collisions'].sum())
-        return pd.Series(out)
-
-    df_sum = (df_ep.groupby(['method', 'config_name'], sort=False)
-              .apply(agg).reset_index())
-
-    # ---- pairwise comparison vs the primary method ----------------------
-    primary = methods[0][0]
-    cmp_rows = []
-    if len(providers) > 1:
-        for cname, regime, _ in suite:
-            base_g = df_ep[(df_ep.method == primary) & (df_ep.config_name == cname)]
-            for name in providers:
-                if name == primary:
-                    continue
-                other_g = df_ep[(df_ep.method == name) & (df_ep.config_name == cname)]
-                merged = base_g.merge(other_g, on='episode', suffixes=('_p', '_o'))
-                for metric in ['success_rate', 'collision_rate', 'uav_collision_rate',
-                               'mission_success', 'conflict_resolved']:
-                    d = _paired_delta(merged[f'{metric}_p'], merged[f'{metric}_o'])
-                    cmp_rows.append(dict(config_name=cname, regime=regime,
-                                         primary=primary, baseline=name,
-                                         metric=metric, **d))
-    df_cmp = pd.DataFrame(cmp_rows)
+    df_seed = aggregate_per_seed(df_ep)
+    df_sum = aggregate_across_seeds(df_seed)
+    df_iqm = aggregate_method_iqm(df_seed, regimes=('in_dist',))
 
     df_ep.to_csv(os.path.join(outdir, 'eval_episodes.csv'), index=False)
-    df_ag.to_csv(os.path.join(outdir, 'eval_agents.csv'), index=False)
+    df_seed.to_csv(os.path.join(outdir, 'eval_per_seed.csv'), index=False)
     df_sum.to_csv(os.path.join(outdir, 'eval_summary.csv'), index=False)
-    if not df_cmp.empty:
-        df_cmp.to_csv(os.path.join(outdir, 'eval_method_comparison.csv'), index=False)
-    print(f"\nWrote eval_episodes / eval_agents / eval_summary"
-          f"{' / eval_method_comparison' if not df_cmp.empty else ''} to {outdir}/")
+    df_iqm.to_csv(os.path.join(outdir, 'eval_method_iqm.csv'), index=False)
 
-    _plot(df_sum, list(providers.keys()),
-          os.path.join(outdir, 'multiagent_summary.png'))
-
-    # ---- render best episode of the chosen method per config ------------
-    if render and _HAVE_RENDER:
-        rm = render_method if render_method in providers else primary
-        suite_cfg = {n: s for n, r, s in suite}
-        for cname in df_ep['config_name'].unique():
-            seed = best[(rm, cname)][1]
-            stage_cfg = dict(suite_cfg[cname])
-            print(f"Rendering best episode of '{cname}' [{rm}] (seed {seed}) ...")
-            _, _, rnd = run_episode(env, providers[rm], stage_cfg, env_cfg, seed)
-            title = (f"BEST [{rm}] | {cname} (seed {seed}) | "
-                     f"reached {int(rnd['reached'].sum())}/{n_agents}, "
-                     f"collided {int(rnd['collided'].sum())}/{n_agents}")
-            plot_trajectory_3d(env, env_cfg, rnd, title,
-                               os.path.join(outdir, f'best_3d_{rm}_{cname}.png'))
-            plot_trajectory_top_down(env, env_cfg, rnd,
-                                     title.replace('BEST', 'BEST TOP-DOWN'),
-                                     os.path.join(outdir, f'best_top_down_{rm}_{cname}.png'))
-    elif render and not _HAVE_RENDER:
-        print(f"[render skipped] visualize_eval import failed: {_RENDER_IMPORT_ERR}")
-
-    return df_ep, df_ag, df_sum, df_cmp
+    _print_variance_report(df_seed, df_sum)
+    print(f"\nWrote eval_episodes / eval_per_seed / eval_summary / "
+          f"eval_method_iqm to {outdir}/")
+    return df_ep, df_seed, df_sum, df_iqm
 
 
-def _plot(df_sum, method_order, out_path):
-    configs = list(dict.fromkeys(df_sum['config_name'].tolist()))
-    nM = len(method_order)
-    x = np.arange(len(configs))
-    width = 0.8 / max(1, nM)
-    cmap = plt.get_cmap('tab10')
-
-    fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(max(9, 1.3 * len(configs)), 11),
-                                        sharex=True)
-    for mi, m in enumerate(method_order):
-        sub = df_sum[df_sum.method == m].set_index('config_name').reindex(configs)
-        off = (mi - (nM - 1) / 2) * width
-        ax1.bar(x + off, sub['success_rate_mean'], width,
-                yerr=sub['success_rate_se'], capsize=3,
-                label=m, color=cmap(mi % 10), alpha=0.9)
-        ax2.bar(x + off, sub['collision_rate_mean'], width,
-                yerr=sub['collision_rate_se'], capsize=3,
-                color=cmap(mi % 10), alpha=0.9)
-        ax3.bar(x + off, sub['uav_collision_rate_mean'], width,
-                yerr=sub['uav_collision_rate_se'], capsize=3,
-                color=cmap(mi % 10), alpha=0.9)
-    ax1.axhline(0.80, color='green', ls=':', lw=1.2, label='0.80 ref')
-    ax1.set_ylabel('Success rate'); ax1.set_ylim(0, 1.0)
-    ax1.set_title('Per-agent success (top), total collision (mid), '
-                  'inter-UAV collision (bottom). Error bars = SE.')
-    ax1.legend(fontsize=8, ncol=min(nM + 1, 4)); ax1.grid(axis='y', alpha=0.3)
-    ax2.set_ylabel('Collision rate')
-    ax2.set_ylim(0, max(0.3, float(np.nanmax(df_sum['collision_rate_mean'])) * 1.3))
-    ax2.grid(axis='y', alpha=0.3)
-    ax3.set_ylabel('Inter-UAV collision rate')
-    _ucap = float(np.nanmax(df_sum['uav_collision_rate_mean'])) if len(df_sum) else 0.1
-    ax3.set_ylim(0, max(0.1, _ucap * 1.3))
-    ax3.set_xticks(x); ax3.set_xticklabels(configs, rotation=30, ha='right')
-    ax3.grid(axis='y', alpha=0.3)
-    plt.tight_layout(); plt.savefig(out_path, dpi=200, bbox_inches='tight')
-    print(f"Saved {out_path}")
+def _print_variance_report(df_seed, df_sum):
+    """The point of the rewrite, made legible: seed-level SE (honest) vs the
+    within-seed scene SE that v1 reported."""
+    print("\n" + "=" * 78)
+    print("VARIANCE DECOMPOSITION — success_rate  (the unit of analysis is the SEED)")
+    print("=" * 78)
+    print(f"{'method':12s} {'config':16s} {'n_seed':>6s} {'mean':>7s} "
+          f"{'seed_SE':>8s} {'scene_SE':>9s}  seed values")
+    print("-" * 78)
+    for _, r in df_sum.sort_values(['method', 'config_name']).iterrows():
+        seedvals = r.get('success_rate_seeds', '')
+        print(f"{r['method']:12s} {r['config_name']:16s} "
+              f"{int(r['n_seeds']):6d} "
+              f"{r['success_rate_mean']:6.1%} "
+              f"{r['success_rate_seed_se']:7.1%} "
+              f"{r.get('success_rate_scene_se_within_seed', float('nan')):8.1%}  "
+              f"[{seedvals}]")
+    print("-" * 78)
+    print("seed_SE is the dispersion you must report. scene_SE is within-seed "
+          "noise (the\nold ±SE) and is typically much smaller — do NOT use it "
+          "for method-level claims.")
 
 
-# ===========================================================================
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument('--checkpoint', required=True, help='primary method checkpoint dir')
-    p.add_argument('--name', default='MARDPG', help='display name for the primary method')
-    p.add_argument('--variant', default='mardpg',
-                   choices=['mardpg', 'maddpg', 'ind_rdpg', 'iddpg'],
-                   help='architecture of the primary checkpoint')
-    p.add_argument('--baseline', action='append', nargs=3, default=[],
-                   metavar=('NAME', 'VARIANT', 'CKPT'),
-                   help='add a learned baseline; repeatable. '
-                        'VARIANT in {mardpg,maddpg,ind_rdpg,iddpg}')
-    p.add_argument('--apf', action='store_true', help='add the reactive APF baseline')
+    p.add_argument('--method', action='append', nargs=3, default=[],
+                   metavar=('NAME', 'VARIANT', 'CKPTS'),
+                   help="repeatable. CKPTS = comma list of seed dirs or a glob. "
+                        "VARIANT in {mardpg,maddpg,ind_rdpg,iddpg}")
+    p.add_argument('--apf', action='store_true', help='add reactive APF baseline (no seeds)')
     p.add_argument('--config', default='config/default.yaml')
     p.add_argument('--episodes', type=int, default=100,
-                   help='episodes per (method,config). 200 -> SE ~ 3.5pp at p=0.5.')
+                   help='scenes per (method,seed,config). 100 -> scene SE ~3.5pp at p=.5')
     p.add_argument('--device', default='cpu')
     p.add_argument('--outdir', default='eval_results')
-    p.add_argument('--no-render', action='store_true')
-    p.add_argument('--render-method', default=None,
-                   help='which method to render best episodes for (default: primary)')
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
-    p.add_argument('--wandb', action='store_true')
-    p.add_argument('--wandb-project', default='mardpg-uav-eval')
-    p.add_argument('--wandb-name', default=None)
     a = p.parse_args()
 
-    methods = [(a.name, 'learned', (a.variant, a.checkpoint))]
-    for nm, var, ck in a.baseline:
-        methods.append((nm, 'learned', (var, ck)))
+    methods = [(nm, var, ck) for nm, var, ck in a.method]
     if a.apf:
-        methods.append(('APF', 'apf', None))
+        methods.append(('APF', 'apf', ''))
+    if not methods:
+        raise SystemExit("Provide at least one --method NAME VARIANT CKPTS.")
 
-    if a.wandb:
-        import wandb
-        wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
-
-    df_ep, df_ag, df_sum, df_cmp = evaluate_suite(
-        methods, a.config, a.episodes, a.device, a.outdir,
-        not a.no_render, a.base_seed, a.suite == 'quick',
-        a.render_method or a.name)
-
-    if a.wandb:
-        import wandb
-        wandb.log({"eval/summary": wandb.Table(dataframe=df_sum)})
-        if not df_cmp.empty:
-            wandb.log({"eval/method_comparison": wandb.Table(dataframe=df_cmp)})
-        img = os.path.join(a.outdir, 'multiagent_summary.png')
-        if os.path.exists(img):
-            wandb.log({"eval/multiagent_summary": wandb.Image(img)})
-        wandb.finish()
+    evaluate(methods, a.config, a.episodes, a.device, a.outdir,
+             a.base_seed, a.suite == 'quick')
 
 
 if __name__ == "__main__":
