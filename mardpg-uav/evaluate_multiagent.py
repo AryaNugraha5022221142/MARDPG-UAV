@@ -541,13 +541,21 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
                         try:
-                            from visualize_eval import plot_trajectory_3d
-                            out_png = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}.png')
+                            from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
                             title = f"Traj: {name} | {cname} | reaches {rnd['reached'].sum()}"
-                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png)
+                            
+                            out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_3d.png')
+                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
+                            
+                            out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_topdown.png')
+                            plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
+                            
                             if wandb_log:
                                 import wandb
-                                wandb.log({f"eval/traj/{name}_{cname}": wandb.Image(out_png)})
+                                wandb.log({
+                                    f"eval/traj_3d/{name}_{cname}": wandb.Image(out_png_3d),
+                                    f"eval/traj_topdown/{name}_{cname}": wandb.Image(out_png_2d)
+                                })
                         except Exception as ex:
                             print(f"[WARN] plot failed: {ex}")
                     
@@ -556,11 +564,15 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                               regime=regime, episode=e)
                     ep_records.append(ep)
                 dur = time.time() - t0
-                sr = np.mean([r['success_rate'] for r in ep_records
-                              if r['method'] == name and r['seed'] == seed_idx
-                              and r['config_name'] == cname])
-                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} "
-                      f"({dur:.0f}s)", flush=True)
+                subset = [r for r in ep_records if r['method'] == name and r['seed'] == seed_idx and r['config_name'] == cname]
+                sr = np.mean([r['success_rate'] for r in subset])
+                coll = np.mean([r['collision_rate'] for r in subset])
+                uav_coll = np.mean([r['uav_collision_rate'] for r in subset])
+                encounter = np.mean([float(r['had_encounter']) for r in subset])
+                conflict_res_vals = [r['conflict_resolved'] for r in subset if not np.isnan(r['conflict_resolved'])]
+                conflict_res = np.mean(conflict_res_vals) if conflict_res_vals else np.nan
+                
+                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} | uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f} ({dur:.0f}s)", flush=True)
 
     df_ep = pd.DataFrame(ep_records)
     df_seed = aggregate_per_seed(df_ep)
