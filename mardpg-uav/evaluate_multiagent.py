@@ -258,11 +258,16 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
     
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
+    steps_taken = np.zeros(n_agents, dtype=int)
     coll_type = [None] * n_agents
     info = {}
 
     for t in range(stage_cfg['max_steps']):
         live_before = ~env.agent_done.copy()
+        for i in range(n_agents):
+            if live_before[i]:
+                steps_taken[i] += 1
+                
         dyn_before = (env.agent_dyn_collided.copy()
                       if hasattr(env, 'agent_dyn_collided')
                       else np.zeros(n_agents, bool))
@@ -327,6 +332,10 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
         near_miss_ratio=near_miss_ratio,
         had_encounter=had_encounter,
         conflict_resolved=conflict_resolved,
+        safe_inter_uav_ratio=float(info.get('safe_inter_uav_ratio', np.nan)),
+        mean_flight_dist=float(np.mean(flight_dist)),
+        mean_flight_time=float(np.mean(steps_taken * dt)),
+        mean_time_to_goal=float(np.nanmean(time_to_goal)),
     )
     if capture_render:
         ep['_render_rnd'] = dict(
@@ -379,8 +388,11 @@ def _bootstrap_ci(values, n_boot=10000, agg=np.mean, ci=0.95, rng=None):
 
 # Metrics aggregated as a per-seed scalar (mean over that seed's scenes).
 _SEED_METRICS = ['success_rate', 'mission_success', 'collision_rate',
+                 'static_collision_rate', 'dyn_collision_rate',
                  'uav_collision_rate', 'path_eff_reached',
-                 'closest_approach_m', 'near_miss_ratio']
+                 'closest_approach_m', 'near_miss_ratio',
+                 'safe_inter_uav_ratio', 'mean_flight_dist',
+                 'mean_flight_time', 'mean_time_to_goal']
 
 
 # ===========================================================================
@@ -576,7 +588,20 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 conflict_res_vals = [r['conflict_resolved'] for r in subset if not np.isnan(r['conflict_resolved'])]
                 conflict_res = np.mean(conflict_res_vals) if conflict_res_vals else np.nan
                 
-                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} (static: {static_coll:.1%}, dyn: {dyn_coll:.1%}) | uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f} ({dur:.0f}s)", flush=True)
+                path_eff = np.nanmean([r['path_eff_reached'] for r in subset])
+                safe_iu = np.nanmean([r['safe_inter_uav_ratio'] for r in subset])
+                min_dist = np.nanmean([r['closest_approach_m'] for r in subset])
+                nmr = np.nanmean([r['near_miss_ratio'] for r in subset])
+                f_dist = np.nanmean([r['mean_flight_dist'] for r in subset])
+                f_time = np.nanmean([r['mean_flight_time'] for r in subset])
+                t_goal = np.nanmean([r['mean_time_to_goal'] for r in subset])
+                
+                print(
+                    f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} (static: {static_coll:.1%}, dyn: {dyn_coll:.1%}) | "
+                    f"uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f}%\n"
+                    f"    path_eff {path_eff:.1%} | safe_iu {safe_iu:.1%} | min_dist {min_dist:.2f}m | nmr {nmr:.1%} | "
+                    f"flight_dist {f_dist:.1f}m | flight_time {f_time:.1f}s | time_to_goal {t_goal:.1f}s  ({dur:.0f}s)"
+                , flush=True)
 
     df_ep = pd.DataFrame(ep_records)
     df_seed = aggregate_per_seed(df_ep)
