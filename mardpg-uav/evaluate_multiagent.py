@@ -239,7 +239,7 @@ class APFPolicy:
 # ===========================================================================
 # Single episode rollout — policy-agnostic, fully instrumented (kept from v1)
 # ===========================================================================
-def run_episode(env, policy, stage_cfg, env_cfg, seed):
+def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
@@ -251,6 +251,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
 
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
+    
+    dyn = getattr(env, 'dynamic_obstacles', []) if capture_render else []
+    dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
+    dyn_r = [d.size[0] for d in dyn] if dyn else []
+    
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
     coll_type = [None] * n_agents
@@ -265,6 +270,9 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         obs, rewards, done, info = env.step(acts)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
+        
+        if capture_render and dyn:
+            dyn_path.append([d.position.copy() for d in dyn])
 
         for i in range(n_agents):
             if info['step_reached'][i] and np.isnan(time_to_goal[i]):
@@ -318,6 +326,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         had_encounter=had_encounter,
         conflict_resolved=conflict_resolved,
     )
+    if capture_render:
+        ep['_render_rnd'] = dict(
+            path=path, reached=reached, collided=collided, goals=goals,
+            dyn_path=np.array(dyn_path) if dyn else None, dyn_r=dyn_r
+        )
     return ep
 
 
@@ -485,7 +498,7 @@ def _expand_ckpts(arg):
     return out
 
 
-def evaluate(methods, config, episodes, device, outdir, base_seed, quick):
+def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False):
     cfg = load_config(config)
     env_cfg = cfg['environment']
     os.makedirs(outdir, exist_ok=True)
@@ -522,7 +535,22 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick):
                 t0 = time.time()
                 for e in range(episodes):
                     scene_seed = base_seed + e        # shared across all -> paired
-                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed)
+                    capture = wandb_log and (e == 0)
+                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture)
+                    
+                    if capture and '_render_rnd' in ep:
+                        rnd = ep.pop('_render_rnd')
+                        try:
+                            from visualize_eval import plot_trajectory_3d
+                            out_png = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}.png')
+                            title = f"Traj: {name} | {cname} | reaches {rnd['reached'].sum()}"
+                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png)
+                            if wandb_log:
+                                import wandb
+                                wandb.log({f"eval/traj/{name}_{cname}": wandb.Image(out_png)})
+                        except Exception as ex:
+                            print(f"[WARN] plot failed: {ex}")
+                    
                     ep.update(method=name, variant=variant, seed=seed_idx,
                               checkpoint=str(ckpt), config_name=cname,
                               regime=regime, episode=e)
@@ -608,7 +636,7 @@ def main():
         wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
 
     df_ep, df_seed, df_sum, df_iqm = evaluate(methods, a.config, a.episodes, a.device, a.outdir,
-             a.base_seed, a.suite == 'quick')
+             a.base_seed, a.suite == 'quick', wandb_log=a.wandb)
 
     if a.wandb:
         import wandb
