@@ -319,6 +319,8 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
         mission_success=bool(reached.all()),
         collision_rate=float(collided.mean()),
         uav_collision_rate=float(np.mean(uav_col)),
+        static_collision_rate=float(sum(c == 'static' for c in coll_type) / n_agents),
+        dyn_collision_rate=float(sum(c == 'dynamic' for c in coll_type) / n_agents),
         path_eff_reached=path_eff_reached,
         team_reward=float(cum_reward.sum()),
         closest_approach_m=(closest_appr if np.isfinite(closest_appr) else np.nan),
@@ -568,11 +570,13 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 sr = np.mean([r['success_rate'] for r in subset])
                 coll = np.mean([r['collision_rate'] for r in subset])
                 uav_coll = np.mean([r['uav_collision_rate'] for r in subset])
+                static_coll = np.mean([r['static_collision_rate'] for r in subset])
+                dyn_coll = np.mean([r['dyn_collision_rate'] for r in subset])
                 encounter = np.mean([float(r['had_encounter']) for r in subset])
                 conflict_res_vals = [r['conflict_resolved'] for r in subset if not np.isnan(r['conflict_resolved'])]
                 conflict_res = np.mean(conflict_res_vals) if conflict_res_vals else np.nan
                 
-                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} | uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f} ({dur:.0f}s)", flush=True)
+                print(f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} (static: {static_coll:.1%}, dyn: {dyn_coll:.1%}) | uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f} ({dur:.0f}s)", flush=True)
 
     df_ep = pd.DataFrame(ep_records)
     df_seed = aggregate_per_seed(df_ep)
