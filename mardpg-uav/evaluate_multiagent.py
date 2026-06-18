@@ -579,6 +579,12 @@ def main():
                    metavar=('NAME', 'VARIANT', 'CKPTS'),
                    help="repeatable. CKPTS = comma list of seed dirs or a glob. "
                         "VARIANT in {mardpg,maddpg,ind_rdpg,iddpg}")
+    p.add_argument('--checkpoint', default=None, help='Legacy: primary method checkpoint dir')
+    p.add_argument('--name', default='MARDPG', help='Legacy: display name')
+    p.add_argument('--variant', default='mardpg', help='Legacy: variant')
+    p.add_argument('--wandb', action='store_true', help='Use wandb tracking')
+    p.add_argument('--wandb-project', default='mardpg-uav-eval', help='Wandb project name')
+    p.add_argument('--wandb-name', default=None, help='Wandb run name')
     p.add_argument('--apf', action='store_true', help='add reactive APF baseline (no seeds)')
     p.add_argument('--config', default='config/default.yaml')
     p.add_argument('--episodes', type=int, default=100,
@@ -590,13 +596,25 @@ def main():
     a = p.parse_args()
 
     methods = [(nm, var, ck) for nm, var, ck in a.method]
+    if a.checkpoint:
+        methods.insert(0, (a.name, a.variant, a.checkpoint))
     if a.apf:
         methods.append(('APF', 'apf', ''))
     if not methods:
-        raise SystemExit("Provide at least one --method NAME VARIANT CKPTS.")
+        raise SystemExit("Provide at least one --method NAME VARIANT CKPTS or --checkpoint.")
 
-    evaluate(methods, a.config, a.episodes, a.device, a.outdir,
+    if a.wandb:
+        import wandb
+        wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
+
+    df_ep, df_seed, df_sum, df_iqm = evaluate(methods, a.config, a.episodes, a.device, a.outdir,
              a.base_seed, a.suite == 'quick')
+
+    if a.wandb:
+        import wandb
+        wandb.log({"eval/summary": wandb.Table(dataframe=df_sum)})
+        wandb.log({"eval/method_iqm": wandb.Table(dataframe=df_iqm)})
+        wandb.finish()
 
 
 if __name__ == "__main__":
