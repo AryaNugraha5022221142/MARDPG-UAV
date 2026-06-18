@@ -613,6 +613,14 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
     df_sum.to_csv(os.path.join(outdir, 'eval_summary.csv'), index=False)
     df_iqm.to_csv(os.path.join(outdir, 'eval_method_iqm.csv'), index=False)
 
+    if wandb_log:
+        import wandb
+        wandb.save(os.path.join(outdir, 'val_*.csv'), base_path=outdir) # actually save exact names
+        wandb.save(os.path.join(outdir, 'eval_episodes.csv'), base_path=outdir)
+        wandb.save(os.path.join(outdir, 'eval_per_seed.csv'), base_path=outdir)
+        wandb.save(os.path.join(outdir, 'eval_summary.csv'), base_path=outdir)
+        wandb.save(os.path.join(outdir, 'eval_method_iqm.csv'), base_path=outdir)
+
     _print_variance_report(df_seed, df_sum)
     print(f"\nWrote eval_episodes / eval_per_seed / eval_summary / "
           f"eval_method_iqm to {outdir}/")
