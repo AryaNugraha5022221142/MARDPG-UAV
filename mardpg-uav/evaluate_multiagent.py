@@ -119,7 +119,10 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
 
         apath = os.path.join(checkpoint_dir, f"agent_{i}.pt")
         if not os.path.exists(apath):
-            raise FileNotFoundError(f"[LOAD FAIL] missing {apath}")
+            print(f"[LOAD WARN] missing {apath}, falling back to agent_0.pt")
+            apath = os.path.join(checkpoint_dir, "agent_0.pt")
+            if not os.path.exists(apath):
+                raise FileNotFoundError(f"[LOAD FAIL] missing {apath}")
         ckpt = torch.load(apath, map_location=device)
 
         if 'actor_private' in ckpt:
@@ -512,7 +515,7 @@ def _expand_ckpts(arg):
     return out
 
 
-def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False):
+def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False, video=False):
     cfg = load_config(config)
     env_cfg = cfg['environment']
     os.makedirs(outdir, exist_ok=True)
@@ -564,12 +567,23 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                             out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_topdown.png')
                             plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
                             
+                            out_vid = None
+                            if video:
+                                from visualize_eval import animate
+                                out_vid = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}.mp4')
+                                animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
+
                             if wandb_log:
                                 import wandb
-                                wandb.log({
+                                log_dict = {
                                     f"eval/traj_3d/{name}_{cname}": wandb.Image(out_png_3d),
                                     f"eval/traj_topdown/{name}_{cname}": wandb.Image(out_png_2d)
-                                })
+                                }
+                                if out_vid and os.path.exists(out_vid):
+                                    log_dict[f"eval/traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
+                                elif out_vid and os.path.exists(out_vid.replace('.mp4', '.gif')):
+                                    log_dict[f"eval/traj_video/{name}_{cname}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
+                                wandb.log(log_dict)
                         except Exception as ex:
                             print(f"[WARN] plot failed: {ex}")
                     
@@ -670,6 +684,7 @@ def main():
     p.add_argument('--outdir', default='eval_results')
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
+    p.add_argument('--video', action='store_true', help='Generate video/animation of episodes')
     a = p.parse_args()
 
     methods = [(nm, var, ck) for nm, var, ck in a.method]
@@ -685,7 +700,7 @@ def main():
         wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
 
     df_ep, df_seed, df_sum, df_iqm = evaluate(methods, a.config, a.episodes, a.device, a.outdir,
-             a.base_seed, a.suite == 'quick', wandb_log=a.wandb)
+             a.base_seed, a.suite == 'quick', wandb_log=a.wandb, video=a.video)
 
     if a.wandb:
         import wandb

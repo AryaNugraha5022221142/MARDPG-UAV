@@ -298,6 +298,8 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
         c = AGENT_COLORS[i % len(AGENT_COLORS)]
         # path
         axtop.plot(path[:, i, 0], path[:, i, 1], color=c, lw=1.8, alpha=0.6)
+        # straight line from start to goal
+        axtop.plot([path[0, i, 0], goals[i, 0]], [path[0, i, 1], goals[i, 1]], color=c, lw=1.2, alpha=0.3, ls='--')
         # start
         axtop.scatter(*path[0, i, :2], color=c, marker='s', s=80, edgecolor='k', linewidth=0.5)
         # goal
@@ -353,6 +355,8 @@ def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58)
                    edgecolor='k', linewidth=0.7, depthshade=False)
         ax.scatter(*goals[i], color=c, marker='*', s=260,
                    edgecolor='k', linewidth=0.7, depthshade=False)
+        # straight line from start to goal
+        ax.plot([path[0, i, 0], goals[i, 0]], [path[0, i, 1], goals[i, 1]], [path[0, i, 2], goals[i, 2]], color=c, lw=1.2, alpha=0.3, ls='--')
         ax.plot(path[:, i, 0], path[:, i, 1], np.zeros(T), color=c, ls=':', alpha=0.2, lw=1)
         status = 'reached' if reached[i] else ('collided' if collided[i] else 'timeout')
         agent_handles.append(Line2D([0], [0], color=c, lw=2.6, marker=em,
