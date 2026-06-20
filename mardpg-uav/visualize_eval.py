@@ -88,7 +88,7 @@ def _draw_sphere(ax, center, r, color, alpha=0.5):
     x = r * np.outer(np.cos(u), np.sin(v)) + center[0]
     y = r * np.outer(np.sin(u), np.sin(v)) + center[1]
     z = r * np.outer(np.ones_like(u), np.cos(v)) + center[2]
-    ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0, shade=True)
+    return ax.plot_surface(x, y, z, color=color, alpha=alpha, linewidth=0, shade=True)
 
 
 def _draw_static_obstacles(ax, env, max_z=60.0):
@@ -177,6 +177,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
             dp = dyn_path[:, k, :]
             ax3d.plot(dp[:, 0], dp[:, 1], dp[:, 2], color=HAZARD_COLOR,
                       lw=1.5, alpha=0.5, ls='--')
+            ax3d.scatter(dp[0, 0], dp[0, 1], dp[0, 2], color=HAZARD_COLOR, marker='o', s=40, facecolors='none', linewidth=1.2)
             _draw_sphere(ax3d, dp[-1], dyn_r[k], HAZARD_COLOR, alpha=0.35)
 
     for i in range(n_agents):
@@ -221,6 +222,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals,
     if dyn_path is not None:
         for k in range(dyn_path.shape[1]):
             axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5)
+            axtop.scatter(dyn_path[0, k, 0], dyn_path[0, k, 1], color=HAZARD_COLOR, marker='o', facecolors='none', s=40, linewidths=1.2)
     axtop.set_xlim(0, ex); axtop.set_ylim(0, ey); axtop.set_aspect('equal')
     axtop.set_xlabel('X (m)'); axtop.set_ylabel('Y (m)')
     axtop.set_title('Top-down (X-Y) — formation & path crossing')
@@ -311,6 +313,7 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
     if dyn_path is not None:
         for k in range(dyn_path.shape[1]):
             axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5, lw=2)
+            axtop.scatter(dyn_path[0, k, 0], dyn_path[0, k, 1], color=HAZARD_COLOR, marker='o', facecolors='none', s=40, linewidths=1.2)
 
     axtop.set_xlim(0, ex); axtop.set_ylim(0, ey); axtop.set_aspect('equal')
     axtop.set_xlabel('X (m)'); axtop.set_ylabel('Y (m)')
@@ -340,6 +343,7 @@ def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58)
             dp = dyn_path[:, k, :]
             ax.plot(dp[:, 0], dp[:, 1], dp[:, 2], color=HAZARD_COLOR,
                     lw=1.6, alpha=0.6, ls='--')
+            ax.scatter(dp[0, 0], dp[0, 1], dp[0, 2], color=HAZARD_COLOR, marker='o', s=40, facecolors='none', linewidth=1.2)
             _draw_sphere(ax, dp[-1], dyn_r[k], HAZARD_COLOR, alpha=0.35)
 
     agent_handles = []
@@ -428,6 +432,15 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
     heads = [ax.plot([], [], [], color=AGENT_COLORS[i % len(AGENT_COLORS)],
                      marker='o', ms=6)[0] for i in range(n_agents)]
 
+    # Dynamic obstacles
+    dyn_lines = []
+    dyn_sphere_colls = []
+    if dyn_path is not None and dyn_path.shape[1] > 0:
+        for k in range(dyn_path.shape[1]):
+            # Path line
+            dyn_lines.append(ax.plot([], [], [], color=HAZARD_COLOR, lw=1.5, ls='--', alpha=0.5)[0])
+            dyn_sphere_colls.append(None)
+
     def update(t):
         lo = max(0, t - tail)
         for i in range(n_agents):
@@ -435,8 +448,24 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
             lines[i].set_data(seg[:, 0], seg[:, 1]); lines[i].set_3d_properties(seg[:, 2])
             heads[i].set_data([path[t, i, 0]], [path[t, i, 1]])
             heads[i].set_3d_properties([path[t, i, 2]])
+            
+        ret = lines + heads
+        
+        if dyn_path is not None and dyn_path.shape[1] > 0:
+            for k in range(dyn_path.shape[1]):
+                seg = dyn_path[lo:t + 1, k, :]
+                dyn_lines[k].set_data(seg[:, 0], seg[:, 1])
+                dyn_lines[k].set_3d_properties(seg[:, 2])
+                
+                # Update sphere shape
+                if dyn_sphere_colls[k] is not None:
+                    dyn_sphere_colls[k].remove()
+                dyn_sphere_colls[k] = _draw_sphere(ax, dyn_path[t, k, :], dyn_r[k], color=HAZARD_COLOR, alpha=0.35)
+                
+                ret.append(dyn_lines[k])
+                
         ax.set_title(f'{stage_name} — step {t}/{T - 1}')
-        return lines + heads
+        return ret
 
     anim = FuncAnimation(fig, update, frames=T, interval=40, blit=False)
     try:

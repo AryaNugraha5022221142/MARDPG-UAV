@@ -552,37 +552,37 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 t0 = time.time()
                 for e in range(episodes):
                     scene_seed = base_seed + e        # shared across all -> paired
-                    capture = wandb_log and (e == 0)
+                    capture = wandb_log and (e < 3)
                     ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture)
                     
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
                         try:
                             from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
-                            title = f"Traj: {name} | {cname} | reaches {rnd['reached'].sum()}"
+                            title = f"Traj: {name} | {cname} | ep {e} | reaches {rnd['reached'].sum()}"
                             
-                            out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_3d.png')
+                            out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_3d.png')
                             plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
                             
-                            out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_topdown.png')
+                            out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_topdown.png')
                             plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
                             
                             out_vid = None
                             if video:
                                 from visualize_eval import animate
-                                out_vid = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}.mp4')
+                                out_vid = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}.mp4')
                                 animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
 
                             if wandb_log:
                                 import wandb
                                 log_dict = {
-                                    f"eval/traj_3d/{name}_{cname}": wandb.Image(out_png_3d),
-                                    f"eval/traj_topdown/{name}_{cname}": wandb.Image(out_png_2d)
+                                    f"eval/traj_3d/{name}_{cname}_ep{e}": wandb.Image(out_png_3d),
+                                    f"eval/traj_topdown/{name}_{cname}_ep{e}": wandb.Image(out_png_2d)
                                 }
                                 if out_vid and os.path.exists(out_vid):
-                                    log_dict[f"eval/traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
+                                    log_dict[f"eval/traj_video/{name}_{cname}_ep{e}"] = wandb.Video(out_vid, format="mp4")
                                 elif out_vid and os.path.exists(out_vid.replace('.mp4', '.gif')):
-                                    log_dict[f"eval/traj_video/{name}_{cname}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
+                                    log_dict[f"eval/traj_video/{name}_{cname}_ep{e}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
                                 wandb.log(log_dict)
                         except Exception as ex:
                             print(f"[WARN] plot failed: {ex}")
