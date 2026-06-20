@@ -460,9 +460,11 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
                 # Update sphere shape
                 if dyn_sphere_colls[k] is not None:
                     dyn_sphere_colls[k].remove()
-                dyn_sphere_colls[k] = _draw_sphere(ax, dyn_path[t, k, :], dyn_r[k], color=HAZARD_COLOR, alpha=0.35)
+                poly = _draw_sphere(ax, dyn_path[t, k, :], dyn_r[k], color=HAZARD_COLOR, alpha=0.35)
+                dyn_sphere_colls[k] = poly
                 
                 ret.append(dyn_lines[k])
+                ret.append(poly)
                 
         ax.set_title(f'{stage_name} — step {t}/{T - 1}')
         return ret

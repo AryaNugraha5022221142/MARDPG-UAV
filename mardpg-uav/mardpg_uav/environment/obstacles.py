@@ -21,8 +21,8 @@ class SceneGenerator:
         # 1. Generate Static Buildings (Boxes and Cylinders) on a Manhattan Grid
         n_static = stage_cfg.get('static_obs', 0)
         if n_static > 0:
-            # INCREASED to 20.0m to prevent geometric choking and ensure solvable paths
-            grid_step = 20.0
+            # INCREASED to 15.0m to provide 25 grid points (for diversity) while maintaining solvable paths
+            grid_step = 15.0
             margin = 20.0
             xs = np.arange(margin, self.env_size[0] - margin + 1e-3, grid_step)
             ys = np.arange(margin, self.env_size[1] - margin + 1e-3, grid_step)
@@ -34,6 +34,10 @@ class SceneGenerator:
             
             for idx in indices:
                 gx, gy = grid_points[idx]
+                
+                # Add location jitter to break perfect grid alignment
+                gx += self.rng.uniform(-3.5, 3.5)
+                gy += self.rng.uniform(-3.5, 3.5)
                 
                 # Fetch max_h from stage config to allow curriculum height scaling (Default: 50.0)
                 max_h = stage_cfg.get('max_h', 50.0)
