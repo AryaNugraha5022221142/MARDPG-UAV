@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+import os
 from mardpg_uav.utils.metrics import MetricsTracker
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
 from mardpg_uav.train import load_config
@@ -41,6 +42,13 @@ def load_agents(checkpoint_dir, config_path, device='cpu',
     net_cfg = cfg['network']
     n_agents = env_cfg['n_agents']
 
+    trained_agents = 0
+    while os.path.exists(os.path.join(checkpoint_dir, f"agent_{trained_agents}.pt")):
+        trained_agents += 1
+    
+    if trained_agents == 0:
+        trained_agents = n_agents
+
     agents = []
     for i in range(n_agents):
         ag = MARDPGAgent(
@@ -53,7 +61,8 @@ def load_agents(checkpoint_dir, config_path, device='cpu',
             device=device
         )
         try:
-            ckpt = torch.load(f"{checkpoint_dir}/agent_{i}.pt", map_location=device)
+            load_idx = i % trained_agents
+            ckpt = torch.load(f"{checkpoint_dir}/agent_{load_idx}.pt", map_location=device)
             if 'actor_private' in ckpt:
                 if i == 0:
                     sc = torch.load(f"{checkpoint_dir}/shared_actor.pt", map_location=device)
