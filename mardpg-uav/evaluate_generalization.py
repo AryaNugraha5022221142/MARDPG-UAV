@@ -97,32 +97,18 @@ def build_suite(quick: bool = False):
     def cfg(**kw):
         c = dict(base); c.update(kw); return c
 
+    s6_kwargs = dict(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500)
+
+    def ood_dense(**kw):
+        c = cfg(**s6_kwargs); c.update(kw); return c
+
     suite = [
-        ('stage4_train', 'in_dist',
-         cfg(static_obs=7, max_h=20.0, min_sep=40.0, max_steps=1000)),
-        ('stage6_train', 'in_dist',
-         cfg(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500)),
-        ('stage7_train', 'in_dist',
-         cfg(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500,
-             dynamic_obs=(1, 2), dynamic_radius=2.0, dynamic_speed=(1.0, 2.0))),
-        ('ood_dist_50', 'ood',
-         cfg(static_obs=16, max_h=50.0, min_sep=50.0, max_steps=1500)),
-        ('ood_dist_60', 'ood',
-         cfg(static_obs=16, max_h=50.0, min_sep=60.0, max_steps=1500)),
-        ('ood_dyn_dense', 'ood',
-         cfg(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500,
-             dynamic_obs=(3, 4), dynamic_radius=2.0, dynamic_speed=(1.0, 2.0))),
-        ('ood_dyn_fast', 'ood',
-         cfg(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500,
-             dynamic_obs=(2, 3), dynamic_radius=2.5, dynamic_speed=(2.5, 3.5))),
-        ('ood_combined', 'ood',
-         cfg(static_obs=16, max_h=50.0, min_sep=60.0, max_steps=1500,
-             dynamic_obs=(2, 3), dynamic_radius=2.5, dynamic_speed=(2.0, 3.0))),
-        ('sanity_freespace', 'in_dist',
-         cfg(static_obs=0, min_sep=30.0, max_steps=600)),
+        ('ood_dense_20',  'ood', ood_dense(static_obs=20)),
+        ('ood_dense_25',  'ood', ood_dense(static_obs=25)),
+        ('ood_dense_max', 'ood', ood_dense(static_obs=30)),
     ]
     if quick:
-        keep = {'stage7_train', 'ood_dist_60', 'ood_dyn_fast', 'sanity_freespace'}
+        keep = {'ood_dense_20', 'ood_dense_25', 'ood_dense_max'}
         suite = [s for s in suite if s[0] in keep]
     return suite
 

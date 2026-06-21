@@ -176,11 +176,17 @@ def build_suite(quick=False):
     def ood_dyn(**kw):
         c = dict(s7); c.update(kw); return c
 
+    def ood_dense(**kw):
+        c = dict(s6); c.update(kw); return c
+
     suite = [
         ('stage4_train',     'in_dist', s4),
         ('stage6_train',     'in_dist', s6),
         ('stage7_train',     'in_dist', s7),
         ('ood_dist_60',      'ood',     ood_static(min_sep=60.0)),
+        ('ood_dense_20',     'ood',     ood_dense(static_obs=20)),
+        ('ood_dense_25',     'ood',     ood_dense(static_obs=25)),
+        ('ood_dense_max',    'ood',     ood_dense(static_obs=30)),
         ('ood_dyn_fast',     'ood',     ood_dyn(dynamic_obs=(2, 3),
                                                 dynamic_radius=2.5,
                                                 dynamic_speed=(2.5, 3.5))),
@@ -190,7 +196,7 @@ def build_suite(quick=False):
                                              conflict_frac=1.0, ring_frac=0.35)),
     ]
     if quick:
-        keep = {'stage7_train', 'ood_dist_60', 'ood_dyn_fast', 'sanity_crossings'}
+        keep = {'stage7_train', 'ood_dist_60', 'ood_dyn_fast', 'sanity_crossings', 'ood_dense_25'}
         suite = [s for s in suite if s[0] in keep]
     return suite
 
