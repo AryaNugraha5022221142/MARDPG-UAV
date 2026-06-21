@@ -371,8 +371,6 @@ def evaluate_suite(methods, config, episodes, device, outdir,
 
     for name, prov in providers.items():
         for cname, regime, stage_cfg in suite:
-            if stage_cfg.get('static_obs', 0) > 16:
-                print(f"[WARN] {cname}: static_obs will be clamped to 16 by the grid.")
             print(f"\n=== [{name}] {cname} ({regime}) | {episodes} episodes ===")
             t_cfg = time.time()
             for e in range(episodes):
