@@ -71,6 +71,12 @@ def load_agents(checkpoint_dir, config_path, device='cpu',
             else:
                 ag.actor.load_state_dict(ckpt['actor'])
         except Exception as e:
+            if trained_agents == n_agents and i == 0:
+                print(f"[ERROR] Could not load agent {i}. Checkpoint directory {checkpoint_dir} contents:")
+                if os.path.exists(checkpoint_dir):
+                    print(os.listdir(checkpoint_dir))
+                else:
+                    print(f"Directory {checkpoint_dir} DOES NOT EXIST!")
             print(f"[WARN] agent {i}: {e}")
         agents.append(ag)
 

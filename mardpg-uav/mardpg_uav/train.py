@@ -467,8 +467,34 @@ def train(config_path: str = "config/default.yaml",
                             sigma_min=algo_cfg.get('noise_min', 0.05),
                             decay=algo_cfg.get('noise_decay', 0.9995))
     metrics = MetricsTracker()
+    
+    # Automatically scale environment size and obstacle counts for larger multi-agent settings
+    scaled_curriculum = []
+    import copy
+    for stage in CURRICULUM:
+        new_stage = copy.deepcopy(stage)
+        if n_agents > 5:
+            scale_factor = (n_agents / 5.0) ** 0.5  # Scale area linearly with number of agents
+            new_stage['env_size'] = [
+                float(new_stage['env_size'][0] * scale_factor),
+                float(new_stage['env_size'][1] * scale_factor),
+                new_stage['env_size'][2]
+            ]
+            # Scale static obstacles to maintain density
+            if 'static_obs' in new_stage and new_stage['static_obs'] > 0:
+                new_stage['static_obs'] = int(new_stage['static_obs'] * (n_agents / 5.0))
+            if 'dynamic_obs' in new_stage:
+                if isinstance(new_stage['dynamic_obs'], tuple):
+                    new_stage['dynamic_obs'] = (
+                        int(new_stage['dynamic_obs'][0] * (n_agents / 5.0)),
+                        int(new_stage['dynamic_obs'][1] * (n_agents / 5.0))
+                    )
+                else:
+                    new_stage['dynamic_obs'] = int(new_stage['dynamic_obs'] * (n_agents / 5.0))
+        scaled_curriculum.append(new_stage)
+
     cl = CurriculumManager(
-        CURRICULUM,
+        scaled_curriculum,
         required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2),
         fast_consecutive_passes=algo_cfg.get('promotion_fast_consecutive_evals', 1),
         promotion_margin=algo_cfg.get('promotion_margin', 0.10),
