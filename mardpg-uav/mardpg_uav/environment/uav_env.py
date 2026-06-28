@@ -90,6 +90,10 @@ class MultiUAVEnv(gym.Env):
         self.cfg['env_size'] = new_env_size
         self.cfg['max_steps_per_episode'] = stage_cfg.get('max_steps', 1500)
         self.dynamics.env_size = new_env_size
+        self.lidar_noise = stage_cfg.get('lidar_noise', 0.02)
+        if 'sensor_range' in stage_cfg:
+            self.rangefinder.range_max = stage_cfg['sensor_range']
+            self.cfg['sensor_range'] = stage_cfg['sensor_range']
         self.dynamics.max_altitude = new_env_size[2]
         self.scene_gen.env_size = new_env_size
         
@@ -206,7 +210,7 @@ class MultiUAVEnv(gym.Env):
                 dv = actions[i, 2]
                 self.agent_v[i] = np.clip(self.agent_v[i] + dv, self.cfg.get('min_v', 0.5), self.cfg.get('max_v', 2.0))
                 
-            next_state = self.dynamics.step(self.agents_state[i], actions[i], current_v=self.agent_v[i] if self.action_dim == 3 else None)
+            next_state = self.dynamics.step(self.agents_state[i], actions[i], current_v=self.agent_v[i])
             self.agents_state[i] = next_state
             
         # --- NEW: UPDATE DYNAMIC OBSTACLES ---
@@ -316,6 +320,7 @@ class MultiUAVEnv(gym.Env):
             # perceives them (decentralized, comms-free inter-UAV avoidance).
             rangefinder_raw, rangefinder_norm = self.rangefinder.scan(
                 pos, theta, phi, self.obstacles,
+                sigma_l=getattr(self, 'lidar_noise', 0.02),
                 obs_centers=self.obs_centers, obs_max_sizes=self.obs_max_sizes,
                 extra_obstacles=self._other_uav_obstacles(i)
             )
@@ -425,6 +430,7 @@ class MultiUAVEnv(gym.Env):
         if lidar_norm is None:
             _, lidar_norm = self.rangefinder.scan(
                 pos, theta, phi, self.obstacles,
+                sigma_l=getattr(self, 'lidar_noise', 0.02),
                 obs_centers=self.obs_centers,
                 obs_max_sizes=self.obs_max_sizes,
                 extra_obstacles=self._other_uav_obstacles(i),
