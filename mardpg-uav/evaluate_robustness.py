@@ -328,6 +328,15 @@ def run_evaluations(args):
         df_sum = df_ep.groupby(['condition', 'scenario'], sort=False).apply(agg).reset_index()
         df_sum.to_csv(os.path.join(exp_dir, 'eval_summary.csv'), index=False)
         print(f"Saved results for {exp_name} to {exp_dir}/")
+        
+        if args.wandb:
+            import wandb
+            for _, row in df_sum.iterrows():
+                wandb.log({
+                    f"{exp_name}/{row['scenario']}/{row['condition']}/success_rate": row['success_rate_mean'],
+                    f"{exp_name}/{row['scenario']}/{row['condition']}/collision_rate": row['collision_rate_mean'],
+                    f"{exp_name}/{row['scenario']}/{row['condition']}/flight_time_s": row['flight_time_s_mean'],
+                })
 
 def main():
     p = argparse.ArgumentParser()
@@ -338,9 +347,22 @@ def main():
     p.add_argument('--device', default='cpu')
     p.add_argument('--outdir', default='robustness_results')
     p.add_argument('--base-seed', type=int, default=20000)
+    p.add_argument('--wandb', action='store_true', help='Log results to W&B')
+    p.add_argument('--wandb-project', default='mardpg-uav-eval')
+    p.add_argument('--wandb-name', default=None)
+    p.add_argument('--suite', default='quick', choices=['quick', 'full'], help='For compatibility, currently ignored as we run fixed scenarios')
     args = p.parse_args()
     
+    if args.wandb:
+        import wandb
+        wandb.init(project=args.wandb_project, name=args.wandb_name or f"Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}")
+        wandb.config.update(vars(args))
+
     run_evaluations(args)
+    
+    if args.wandb:
+        import wandb
+        wandb.finish()
 
 if __name__ == "__main__":
     main()
