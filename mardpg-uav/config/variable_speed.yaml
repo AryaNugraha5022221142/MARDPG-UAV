@@ -2,7 +2,7 @@ environment:
   near_miss_band: 3.0          
   uav_sense_radius: 1.0
 
-  n_agents: 10
+  n_agents: 5
   v: 3.0                      # starting speed m/s
   min_v: 0.5                  # min speed m/s
   max_v: 5.0                  # max speed m/s
