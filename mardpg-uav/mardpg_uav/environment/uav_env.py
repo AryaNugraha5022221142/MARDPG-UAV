@@ -61,7 +61,7 @@ class MultiUAVEnv(gym.Env):
                                                   config.get('inter_uav_min_dist', 1.0)))
         # attitude(4) + lidar(25) + goal(5) + alive(1)
         self.obs_dim    = 4 + 25 + 5 + 1  # = 35
-        self.action_dim = 2
+        self.action_dim = config.get('action_dim', 2)
         
         self.observation_space = gym.spaces.Box(
             low=-np.inf, high=np.inf,
@@ -119,6 +119,7 @@ class MultiUAVEnv(gym.Env):
         # conflict_frac == 0.0 reproduces the legacy scatter behaviour exactly.
         from .assignment import assign_start_goals
         self.agents_state = np.zeros((self.n_agents, 5), dtype=np.float32)
+        self.agent_v = np.ones(self.n_agents, dtype=np.float32) * self.cfg.get('v', 1.0)
         self.goals = np.zeros((self.n_agents, 3), dtype=np.float32)
 
         starts, goals = assign_start_goals(self, stage_cfg)
@@ -201,7 +202,11 @@ class MultiUAVEnv(gym.Env):
             if self.agent_done[i]:
                 continue
                 
-            next_state = self.dynamics.step(self.agents_state[i], actions[i])
+            if self.action_dim == 3:
+                dv = actions[i, 2]
+                self.agent_v[i] = np.clip(self.agent_v[i] + dv, self.cfg.get('min_v', 0.5), self.cfg.get('max_v', 2.0))
+                
+            next_state = self.dynamics.step(self.agents_state[i], actions[i], current_v=self.agent_v[i] if self.action_dim == 3 else None)
             self.agents_state[i] = next_state
             
         # --- NEW: UPDATE DYNAMIC OBSTACLES ---

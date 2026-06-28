@@ -9,7 +9,7 @@
 # and abort_if_cpu: true so a silent CPU fallback fails loudly.
 set -euo pipefail
 
-CONFIG="config/default.yaml"
+CONFIG="${1:-config/default.yaml}"
 OUT_ROOT="checkpoints"
 MAX_EPISODES=20000
 SEEDS=(0 1 2 3 4)

@@ -27,7 +27,7 @@ class Actor(nn.Module):
             self.lstm = nn.LSTM(in_dim, lstm_hidden, batch_first=True)
         else:
             self.lstm = _FFCore(in_dim, lstm_hidden)
-        self.fc_out = nn.Linear(lstm_hidden, 2)   # [rho, tau]
+        self.fc_out = nn.Linear(lstm_hidden, action_dim)
         self.tanh   = nn.Tanh()
 
     def forward(self, obs_sequence, prev_action, hidden=None):

@@ -109,7 +109,7 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
     for i in range(n_agents):
         ag = MARDPGAgent(
             agent_id=i, n_agents=n_agents,
-            obs_dim=env_cfg.get('obs_dim', 35), action_dim=2,
+            obs_dim=env_cfg.get('obs_dim', 35), action_dim=env_cfg.get('action_dim', 2),
             action_bound=env_cfg.get('max_delta_angle', 0.5236),
             lstm_hidden=net_cfg.get('actor_lstm_hidden', 128),
             fc_hidden=net_cfg.get('critic_lstm_hidden', 128),
@@ -556,10 +556,18 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
 
             for cname, regime, stage_cfg in suite:
                 t0 = time.time()
+                best_score = None
+                best_seed = None
+                
                 for e in range(episodes):
                     scene_seed = base_seed + e        # shared across all -> paired
-                    capture = wandb_log and (e < 3)
+                    capture = wandb_log and (e < 3) and not video # fallback if video=False but wandb is True
                     ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture)
+                    
+                    sc = (1 if ep['mission_success'] else 0, ep['success_rate'], ep['team_reward'], -ep['steps'])
+                    if best_score is None or sc > best_score:
+                        best_score = sc
+                        best_seed = scene_seed
                     
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
@@ -573,22 +581,12 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                             out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_topdown.png')
                             plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
                             
-                            out_vid = None
-                            if video:
-                                from visualize_eval import animate
-                                out_vid = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}.mp4')
-                                animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
-
                             if wandb_log:
                                 import wandb
                                 log_dict = {
                                     f"eval/traj_3d/{name}_{cname}_ep{e}": wandb.Image(out_png_3d),
                                     f"eval/traj_topdown/{name}_{cname}_ep{e}": wandb.Image(out_png_2d)
                                 }
-                                if out_vid and os.path.exists(out_vid):
-                                    log_dict[f"eval/traj_video/{name}_{cname}_ep{e}"] = wandb.Video(out_vid, format="mp4")
-                                elif out_vid and os.path.exists(out_vid.replace('.mp4', '.gif')):
-                                    log_dict[f"eval/traj_video/{name}_{cname}_ep{e}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
                                 wandb.log(log_dict)
                         except Exception as ex:
                             print(f"[WARN] plot failed: {ex}")
@@ -597,6 +595,38 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                               checkpoint=str(ckpt), config_name=cname,
                               regime=regime, episode=e)
                     ep_records.append(ep)
+                
+                # Render the best episode
+                if video:
+                    print(f"Rendering best episode of '{cname}' [{name}] (seed {best_seed}) ...")
+                    best_ep = run_episode(env, provider, stage_cfg, env_cfg, best_seed, capture_render=True)
+                    if '_render_rnd' in best_ep:
+                        rnd = best_ep.pop('_render_rnd')
+                        try:
+                            from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
+                            title = f"BEST [{name}] | {cname} (seed {best_seed}) | reached {rnd['reached'].sum()}/{env.n_agents}"
+                            
+                            out_png_3d = os.path.join(outdir, f'best_3d_{name}_s{seed_idx}_{cname}.png')
+                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
+                            
+                            out_png_2d = os.path.join(outdir, f'best_topdown_{name}_s{seed_idx}_{cname}.png')
+                            plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
+                            
+                            out_vid = os.path.join(outdir, f'best_vid_{name}_s{seed_idx}_{cname}.mp4')
+                            animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
+
+                            if wandb_log:
+                                import wandb
+                                log_dict = {
+                                    f"eval/best_traj_3d/{name}_{cname}": wandb.Image(out_png_3d),
+                                    f"eval/best_traj_topdown/{name}_{cname}": wandb.Image(out_png_2d)
+                                }
+                                if os.path.exists(out_vid):
+                                    log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
+                                wandb.log(log_dict)
+                        except Exception as ex:
+                            print(f"[WARN] best plot failed: {ex}")
+                            
                 dur = time.time() - t0
                 subset = [r for r in ep_records if r['method'] == name and r['seed'] == seed_idx and r['config_name'] == cname]
                 sr = np.mean([r['success_rate'] for r in subset])

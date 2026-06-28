@@ -61,6 +61,7 @@ class MARDPGAgent:
         self.shared_extractor = SharedFeatureExtractor().to(self.device)
         self.actor            = Actor(self.shared_extractor, lstm_hidden,
                                       max_delta_angle=action_bound,
+                                      action_dim=action_dim,
                                       recurrent=recurrent).to(self.device)
         self.actor_target     = copy.deepcopy(self.actor).to(self.device)
         self.actor_target.eval()

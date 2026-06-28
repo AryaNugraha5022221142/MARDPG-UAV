@@ -18,10 +18,10 @@ class QuadcopterDynamics:
         self.min_altitude   = min_altitude
         self.max_delta      = max_delta_angle           # pi/6
 
-    def step(self, state: np.ndarray, action: np.ndarray) -> np.ndarray:
+    def step(self, state: np.ndarray, action: np.ndarray, current_v: float = None) -> np.ndarray:
         """
         state  : [x, y, z, theta, phi]
-        action : [rho, tau]  in [-pi/6, pi/6]
+        action : [rho, tau, (optional) delta_v]
         returns: next_state  [x, y, z, theta, phi]
         """
         x, y, z, theta, phi = state
@@ -37,9 +37,11 @@ class QuadcopterDynamics:
         theta_new = (theta_new + np.pi) % (2 * np.pi) - np.pi
         phi_new   = np.clip(phi_new, -np.pi / 2, np.pi / 2)   # physical elevation limit
 
-        x_new = x + self.v * self.dt * np.cos(theta_new) * np.cos(phi_new)
-        y_new = y + self.v * self.dt * np.sin(theta_new) * np.cos(phi_new)
-        z_new = z + self.v * self.dt * np.sin(phi_new)
+        v = current_v if current_v is not None else self.v
+
+        x_new = x + v * self.dt * np.cos(theta_new) * np.cos(phi_new)
+        y_new = y + v * self.dt * np.sin(theta_new) * np.cos(phi_new)
+        z_new = z + v * self.dt * np.sin(phi_new)
 
         # Boundary absorption
         x_new = np.clip(x_new, 0.0, self.env_size[0])
