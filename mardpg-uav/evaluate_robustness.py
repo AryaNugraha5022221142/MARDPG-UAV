@@ -186,26 +186,33 @@ def _wilson(k, n, z=1.96):
 # ===========================================================================
 # Experiment Definitions
 # ===========================================================================
-def build_base_scenarios():
+def build_base_scenarios(env_cfg):
+    env_size = env_cfg.get('env_size', [100.0, 100.0, 60.0])
     return {
         'S1_Static_Dynamic': {
+            'env_size': env_size,
             'static_obs': 16,
             'dynamic_obs': 0, # Injected in loop
-            'dyn_radius': 2.0,
-            'dyn_speed': [1.0, 2.0],
+            'dynamic_radius': 2.0,
+            'dynamic_speed': [1.0, 2.0],
             'min_sep': 40.0,
+            'max_steps': 1500,
         },
         'S2_Longer_Distance': {
+            'env_size': env_size,
             'static_obs': 16,
             'dynamic_obs': 0,
             'min_sep': 60.0,
+            'max_steps': 1500,
         },
         'S3_Fast_Dynamic': {
+            'env_size': env_size,
             'static_obs': 16,
             'dynamic_obs': 0, # Injected in loop 
-            'dyn_radius': 2.5,
-            'dyn_speed': [2.5, 3.5],
+            'dynamic_radius': 2.5,
+            'dynamic_speed': [2.5, 3.5],
             'min_sep': 40.0,
+            'max_steps': 1500,
         }
     }
 
@@ -251,7 +258,7 @@ def run_evaluations(args):
     env = MultiUAVEnv(env_cfg)
     
     experiments = build_experiment_configs()
-    base_scenarios = build_base_scenarios()
+    base_scenarios = build_base_scenarios(env_cfg)
     
     for exp_name, exp_sweeps in experiments.items():
         exp_dir = os.path.join(args.outdir, exp_name)
