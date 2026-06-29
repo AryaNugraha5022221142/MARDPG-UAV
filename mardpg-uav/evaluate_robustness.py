@@ -176,6 +176,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         dyn_path=dyn_path,
         dyn_r=dyn_r,
         reached=reached,
+        collided=collided,
         goals=goals,
     )
     return ep, agent_rows
@@ -356,6 +357,7 @@ def run_evaluations(args):
                     ep.pop('dyn_path', None)
                     ep.pop('dyn_r', None)
                     ep.pop('reached', None)
+                    ep.pop('collided', None)
                     ep.pop('goals', None)
                 
         # Save results for this experiment
