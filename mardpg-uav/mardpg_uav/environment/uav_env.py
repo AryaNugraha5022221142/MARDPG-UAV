@@ -142,7 +142,7 @@ class MultiUAVEnv(gym.Env):
         self.agent_progress_history = [[] for _ in range(self.n_agents)]
         
         dists = {i: np.linalg.norm(self.agents_state[i, :3] - self.goals[i]) for i in range(self.n_agents)}
-        self.reward_fn.reset(list(range(self.n_agents)), dists)
+        self.reward_fn.reset(list(range(self.n_agents)), dists, range_max=self.rangefinder.range_max)
         self.steps = 0
         self.safe_inter_uav_steps = 0  # Track safe steps for Stage 2 metric
         # [FIX5] graded interaction accumulators

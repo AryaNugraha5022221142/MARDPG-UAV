@@ -24,8 +24,10 @@ class RewardFunction:
         self.range_max = range_max
         self.prev_distances = {}
 
-    def reset(self, agent_ids: List[int], distances: dict):
+    def reset(self, agent_ids: List[int], distances: dict, range_max: float = None):
         self.prev_distances = {i: distances[i] for i in agent_ids}
+        if range_max is not None:
+            self.range_max = range_max
 
     def compute(self, agent_id: int, position: np.ndarray, goal: np.ndarray,
                 rangefinder_raw: np.ndarray, rangefinder_norm: np.ndarray,

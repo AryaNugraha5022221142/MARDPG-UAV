@@ -125,9 +125,13 @@ class Rangefinder:
                 min_dists[mask] = dist[mask]
 
         distances = min_dists.reshape(self.n_v, self.n_h)
-        noisy_norm = np.clip(distances / self.range_max
-                             + self.rng.normal(0.0, sigma_l, distances.shape).astype(np.float32),
-                             0.0, 1.0)
+        
+        # Add noise only to points that hit an obstacle
+        if sigma_l > 0.0:
+            noise = self.rng.normal(0.0, sigma_l, distances.shape).astype(np.float32)
+            distances = np.where(distances < self.range_max - 1e-3, distances + noise * self.range_max, distances)
+            
+        noisy_norm = np.clip(distances / self.range_max, 0.0, 1.0)
         return distances, noisy_norm
 
     def _ray_sphere_vec(self, o: np.ndarray, d: np.ndarray, c: np.ndarray, r: float) -> np.ndarray:

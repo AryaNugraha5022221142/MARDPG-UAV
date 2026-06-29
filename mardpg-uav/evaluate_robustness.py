@@ -64,6 +64,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
 
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
+    dyn_path = []
     
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
@@ -88,6 +89,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         obs, rewards, done, info = env.step(acts)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
+        
+        dp = []
+        for o in env.dynamic_obstacles:
+            dp.append(o.position.copy())
+        dyn_path.append(dp)
 
         for i in range(n_agents):
             if info['step_reached'][i] and np.isnan(time_to_goal[i]):
@@ -130,6 +136,9 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     neither = (~reached) & (~collided)
     trapped_rate_paper = float(neither.mean())
     trapped_rate_progress = float(np.mean(info.get('trapped', np.zeros(n_agents, bool))))
+    
+    dyn_path = np.array(dyn_path) if dyn_path else np.zeros((T, 0, 3))
+    dyn_r = np.array([o.size[0] for o in env.dynamic_obstacles]) if hasattr(env, 'dynamic_obstacles') else np.array([])
 
     agent_rows = []
     for i in range(n_agents):
@@ -163,6 +172,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         n_static_collisions=sum(1 for c in coll_type if c == 'static'),
         n_inter_uav_collisions=sum(1 for c in coll_type if c == 'inter_uav'),
         n_dynamic_collisions=sum(1 for c in coll_type if c == 'dynamic'),
+        path=path,
+        dyn_path=dyn_path,
+        dyn_r=dyn_r,
+        reached=reached,
+        goals=goals,
     )
     return ep, agent_rows
 
@@ -282,8 +296,9 @@ def run_evaluations(args):
                 stage_cfg = dict(scenario_cfg)
                 stage_cfg.update({k: v for k, v in sweep.items() if k != 'exp_val'})
                 
-                # S2 overrides min_sep to 60. If we are running goal_distribution sweep, the sweep min_sep should take precedence!
-                # It does, because sweep.items() update happens after.
+                # Re-initialize environment to prevent state pollution across sweeps
+                import copy
+                env = MultiUAVEnv(copy.deepcopy(env_cfg))
 
                 for ep in range(args.episodes):
                     seed = args.base_seed + ep
@@ -310,6 +325,38 @@ def run_evaluations(args):
                 sr = np.mean([r['success_rate'] for r in sub])
                 cr = np.mean([r['collision_rate'] for r in sub])
                 print(f"     SR: {sr:.1%} | Coll: {cr:.1%} | Time: {dur:.1f}s")
+                
+                # Plot/Render the BEST episode for this condition/scenario
+                best_ep = max(sub, key=lambda x: (x['mission_success'], x['success_rate'], x['team_reward'], -x['steps']))
+                try:
+                    from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
+                    title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
+                    out_png_3d = os.path.join(exp_dir, f'best_3d_{scenario_name}_{exp_val}.png')
+                    plot_trajectory_3d(env, env_cfg, best_ep, title, out_png_3d)
+                    
+                    out_png_2d = os.path.join(exp_dir, f'best_topdown_{scenario_name}_{exp_val}.png')
+                    plot_trajectory_top_down(env, env_cfg, best_ep, title, out_png_2d)
+                    
+                    out_vid = os.path.join(exp_dir, f'best_vid_{scenario_name}_{exp_val}.mp4')
+                    animate(env, env_cfg, best_ep['path'], best_ep['dyn_path'], best_ep['dyn_r'], best_ep['goals'], title, out_vid)
+
+                    if args.wandb:
+                        import wandb
+                        wandb.log({
+                            f"video/{exp_name}/{scenario_name}/{exp_val}/3d": wandb.Image(out_png_3d),
+                            f"video/{exp_name}/{scenario_name}/{exp_val}/topdown": wandb.Image(out_png_2d),
+                            f"video/{exp_name}/{scenario_name}/{exp_val}/animation": wandb.Video(out_vid, format="mp4")
+                        })
+                except Exception as ex:
+                    print(f"[WARN] plot/render failed: {ex}")
+                
+                # Delete path payload from memory to avoid OOM
+                for ep in sub:
+                    ep.pop('path', None)
+                    ep.pop('dyn_path', None)
+                    ep.pop('dyn_r', None)
+                    ep.pop('reached', None)
+                    ep.pop('goals', None)
                 
         # Save results for this experiment
         df_ep = pd.DataFrame(ep_records)
