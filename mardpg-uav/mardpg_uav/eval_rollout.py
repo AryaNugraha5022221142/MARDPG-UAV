@@ -133,12 +133,6 @@ def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0,
     return m.get_window_stats(n_episodes), m
 
 
-def make_apf_act_fn(env, apf_ctrl):
-    def act_fn():
-        return apf_ctrl.act()
-    return act_fn
-
-
 def make_learned_act_fn(agents, env):
     state = {'prev_acts': np.zeros((env.n_agents, env.action_dim), dtype=np.float32)}
 

@@ -1046,8 +1046,8 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
 
 
 def _write_eval_csv(path, episode, stage_1based, n_eval, s, q_mean_replay):
-    """[FIX6e] One row per promotion eval — the authoritative held-out record
-    used by aggregate_results.py. `s` is the eval_stats dict; `stage_1based` is
+    """[FIX6e] One row per promotion eval — the authoritative held-out record.
+    `s` is the eval_stats dict; `stage_1based` is
     the stage being evaluated (before any promotion this eval triggers)."""
     os.makedirs(os.path.dirname(path), exist_ok=True)
     is_new = not os.path.exists(path)

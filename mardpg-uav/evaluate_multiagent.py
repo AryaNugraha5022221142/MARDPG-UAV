@@ -49,7 +49,7 @@ Usage
     --method IndRDPG ind_rdpg ckpts/cl_ind_rdpg_seed0/final,ckpts/cl_ind_rdpg_seed1/final,ckpts/cl_ind_rdpg_seed2/final \
     --method MADDPG  maddpg   ckpts/cl_maddpg_seed0/final,ckpts/cl_maddpg_seed1/final,ckpts/cl_maddpg_seed2/final \
     --method IDDPG   iddpg    ckpts/cl_iddpg_seed0/final,ckpts/cl_iddpg_seed1/final,ckpts/cl_iddpg_seed2/final \
-    --apf --episodes 100 --device cpu --suite quick
+    --episodes 100 --device cpu --suite quick
 
 A checkpoint entry may be a comma list (one dir per seed) or a glob
 (e.g. 'ckpts/cl_mardpg_seed*/final'). Outputs:
@@ -228,21 +228,6 @@ class LearnedPolicy:
         acts = np.array(acts, np.float32)
         self._prev = acts.copy()
         return acts
-
-
-class APFPolicy:
-    kind = 'classical'
-
-    def __init__(self, env, name='APF'):
-        from mardpg_uav.apf import APFController
-        self.ctrl = APFController(env)
-        self.name = name
-
-    def reset(self, env):
-        pass
-
-    def act(self, env, obs):
-        return self.ctrl.act()
 
 
 # ===========================================================================
@@ -540,19 +525,13 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
 
     ep_records = []
     for name, variant, ckpt_arg in methods:
-        if variant == 'apf':
-            seed_list = [('apf', None)]
-        else:
-            seed_list = [(_seed_label(ck, idx), ck)
-                         for idx, ck in enumerate(_expand_ckpts(ckpt_arg))]
+        seed_list = [(_seed_label(ck, idx), ck)
+                     for idx, ck in enumerate(_expand_ckpts(ckpt_arg))]
 
         for seed_idx, ckpt in seed_list:
-            if variant == 'apf':
-                provider = APFPolicy(env, name=name)
-            else:
-                print(f"[load] {name} seed={seed_idx} <- {ckpt}", flush=True)
-                agents, _ = load_agents_strict(ckpt, config, device, variant)
-                provider = LearnedPolicy(agents, name=name)
+            print(f"[load] {name} seed={seed_idx} <- {ckpt}", flush=True)
+            agents, _ = load_agents_strict(ckpt, config, device, variant)
+            provider = LearnedPolicy(agents, name=name)
 
             for cname, regime, stage_cfg in suite:
                 t0 = time.time()
@@ -712,7 +691,6 @@ def main():
     p.add_argument('--wandb', action='store_true', help='Use wandb tracking')
     p.add_argument('--wandb-project', default='mardpg-uav-eval', help='Wandb project name')
     p.add_argument('--wandb-name', default=None, help='Wandb run name')
-    p.add_argument('--apf', action='store_true', help='add reactive APF baseline (no seeds)')
     p.add_argument('--config', default='config/default.yaml')
     p.add_argument('--episodes', type=int, default=100,
                    help='scenes per (method,seed,config). 100 -> scene SE ~3.5pp at p=.5')
@@ -726,8 +704,6 @@ def main():
     methods = [(nm, var, ck) for nm, var, ck in a.method]
     if a.checkpoint:
         methods.insert(0, (a.name, a.variant, a.checkpoint))
-    if a.apf:
-        methods.append(('APF', 'apf', ''))
     if not methods:
         raise SystemExit("Provide at least one --method NAME VARIANT CKPTS or --checkpoint.")
 

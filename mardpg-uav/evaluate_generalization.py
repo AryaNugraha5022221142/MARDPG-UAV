@@ -51,14 +51,14 @@ HONESTY notes you should keep in the thesis:
 
 Usage
 -----
-  # MARDPG alone, paper-matching episode count, with APF baseline:
-  python evaluate_generalization.py --checkpoint checkpoints/final --episodes 250 --apf
+    # MARDPG alone, paper-matching episode count:
+    python evaluate_generalization.py --checkpoint checkpoints/final --episodes 250
 
-  # Full comparison against ablations (checkpoints trained with --variant):
-  python evaluate_generalization.py --checkpoint checkpoints/final \
-      --baseline MADDPG maddpg checkpoints/maddpg_final \
-      --baseline IndRDPG iddpg checkpoints/iddpg_final \
-      --apf --episodes 250
+    # Full comparison against ablations (checkpoints trained with --variant):
+    python evaluate_generalization.py --checkpoint checkpoints/final \
+        --baseline MADDPG maddpg checkpoints/maddpg_final \
+        --baseline IndRDPG iddpg checkpoints/iddpg_final \
+        --episodes 250
 
   # Quick smoke test:
   python evaluate_generalization.py --checkpoint checkpoints/final --suite quick --episodes 30
@@ -141,21 +141,6 @@ class LearnedPolicy:
         acts = np.array(acts, np.float32)
         self._prev = acts.copy()
         return acts
-
-
-class APFPolicy:
-    kind = 'classical'
-
-    def __init__(self, env, name='APF'):
-        from mardpg_uav.apf import APFController
-        self.ctrl = APFController(env)
-        self.name = name
-
-    def reset(self, env):
-        pass
-
-    def act(self, env, obs):
-        return self.ctrl.act()
 
 
 # ===========================================================================
@@ -354,16 +339,13 @@ def evaluate_suite(methods, config, episodes, device, outdir,
     # Build policy providers.
     providers = {}                       # name -> provider
     for name, kind, payload in methods:
-        if kind == 'apf':
-            providers[name] = APFPolicy(env, name=name)
-        else:                            # learned variant: payload=(variant, ckpt)
-            variant, ckpt = payload
-            agents, _ = load_agents(ckpt, config, device, variant=variant)
-            # warmup so first timed inference isn't penalised by lazy init
-            _ = agents[0].select_action(np.zeros(env.obs_dim, np.float32),
-                                        np.zeros(env.action_dim, np.float32), evaluate=True)
-            agents[0].reset_hidden(batch_size=1, eval_mode=True)
-            providers[name] = LearnedPolicy(agents, name=name)
+        variant, ckpt = payload
+        agents, _ = load_agents(ckpt, config, device, variant=variant)
+        # warmup so first timed inference isn't penalised by lazy init
+        _ = agents[0].select_action(np.zeros(env.obs_dim, np.float32),
+                                    np.zeros(env.action_dim, np.float32), evaluate=True)
+        agents[0].reset_hidden(batch_size=1, eval_mode=True)
+        providers[name] = LearnedPolicy(agents, name=name)
 
     suite = build_suite(quick=quick)
     ep_records, agent_records = [], []
@@ -521,7 +503,6 @@ def main():
     p.add_argument('--baseline', action='append', nargs=3, default=[],
                    metavar=('NAME', 'VARIANT', 'CKPT'),
                    help='add a learned baseline; repeatable')
-    p.add_argument('--apf', action='store_true', help='add the reactive APF baseline')
     p.add_argument('--config', default='config/default.yaml')
     p.add_argument('--episodes', type=int, default=100,
                    help='episodes per (method,config). Use 250 to match the paper; '
@@ -539,12 +520,10 @@ def main():
     a = p.parse_args()
 
     # Method list: primary first (it is the comparison reference), then baselines.
-    # Tuple = (display_name, kind, payload); kind in {'learned','apf'}.
+    # Tuple = (display_name, kind, payload)
     methods = [(a.name, 'learned', (a.variant, a.checkpoint))]
     for nm, var, ck in a.baseline:
         methods.append((nm, 'learned', (var, ck)))
-    if a.apf:
-        methods.append(('APF', 'apf', None))
 
     if a.wandb:
         import wandb
