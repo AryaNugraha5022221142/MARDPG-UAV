@@ -252,11 +252,6 @@ def build_experiment_configs():
             {'sensor_range': 20.0, 'exp_val': '20m'},
             {'sensor_range': 25.0, 'exp_val': '25m'},
         ],
-        'goal_distribution': [
-            {'min_sep': 50.0, 'exp_val': '50m'},
-            {'min_sep': 60.0, 'exp_val': '60m'},
-            {'min_sep': 70.0, 'exp_val': '70m'},
-        ],
         'variable_speed': [
             {'variable_speed': False, 'exp_val': 'Constant'},
             {'variable_speed': True, 'exp_val': 'Dynamic'},
