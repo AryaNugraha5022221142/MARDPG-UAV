@@ -65,6 +65,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
     dyn_path = []
+    dp_start = []
+    if hasattr(env, 'dynamic_obstacles'):
+        for o in env.dynamic_obstacles:
+            dp_start.append(o.position.copy())
+    dyn_path.append(dp_start)
     
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
@@ -137,7 +142,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     trapped_rate_paper = float(neither.mean())
     trapped_rate_progress = float(np.mean(info.get('trapped', np.zeros(n_agents, bool))))
     
-    dyn_path = np.array(dyn_path) if dyn_path else np.zeros((T, 0, 3))
+    dyn_path = np.array(dyn_path) if dyn_path else np.zeros((len(path), 0, 3))
     dyn_r = np.array([o.size[0] for o in env.dynamic_obstacles]) if hasattr(env, 'dynamic_obstacles') else np.array([])
 
     agent_rows = []
@@ -343,11 +348,15 @@ def run_evaluations(args):
 
                     if args.wandb:
                         import wandb
-                        wandb.log({
+                        log_dict = {
                             f"video/{exp_name}/{scenario_name}/{exp_val}/3d": wandb.Image(out_png_3d),
-                            f"video/{exp_name}/{scenario_name}/{exp_val}/topdown": wandb.Image(out_png_2d),
-                            f"video/{exp_name}/{scenario_name}/{exp_val}/animation": wandb.Video(out_vid, format="mp4")
-                        })
+                            f"video/{exp_name}/{scenario_name}/{exp_val}/topdown": wandb.Image(out_png_2d)
+                        }
+                        if os.path.exists(out_vid):
+                            log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid, format="mp4")
+                        elif os.path.exists(out_vid.replace('.mp4', '.gif')):
+                            log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
+                        wandb.log(log_dict)
                 except Exception as ex:
                     print(f"[WARN] plot/render failed: {ex}")
                 
