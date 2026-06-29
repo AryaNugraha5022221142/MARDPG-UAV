@@ -247,11 +247,6 @@ def build_experiment_configs():
             {'lidar_noise': 0.4, 'exp_val': 'sigma=0.4'},
             {'lidar_noise': 0.5, 'exp_val': 'sigma=0.5'},
         ],
-        'sensor_range': [
-            {'sensor_range': 15.0, 'exp_val': '15m'},
-            {'sensor_range': 20.0, 'exp_val': '20m'},
-            {'sensor_range': 25.0, 'exp_val': '25m'},
-        ],
         'variable_speed': [
             {'variable_speed': False, 'exp_val': 'Constant'},
             {'variable_speed': True, 'exp_val': 'Dynamic'},
