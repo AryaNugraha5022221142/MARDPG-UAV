@@ -79,9 +79,9 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     info = {}
 
     for t in range(stage_cfg.get('max_steps', 1500)):
-        # Dynamic variable speed injection for Variable-Speed robustness experiment
+        # Variable speed robustness experiment: Add a slow random walk to simulate wind/disturbances
         if stage_cfg.get('variable_speed', False):
-            env.agent_v = np.random.uniform(0.5, 5.0, env.n_agents)
+            env.agent_v = np.clip(env.agent_v + np.random.uniform(-0.1, 0.1, env.n_agents), 0.5, 5.0)
 
         live_before = ~env.agent_done.copy()
         dyn_before = (env.agent_dyn_collided.copy() if hasattr(env, 'agent_dyn_collided') else np.zeros(n_agents, bool))
@@ -329,31 +329,32 @@ def run_evaluations(args):
                 
                 # Plot/Render the BEST episode for this condition/scenario
                 best_ep = max(sub, key=lambda x: (x['mission_success'], x['success_rate'], x['team_reward'], -x['steps']))
-                try:
-                    from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
-                    title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
-                    out_png_3d = os.path.join(exp_dir, f'best_3d_{scenario_name}_{exp_val}.png')
-                    plot_trajectory_3d(env, env_cfg, best_ep, title, out_png_3d)
-                    
-                    out_png_2d = os.path.join(exp_dir, f'best_topdown_{scenario_name}_{exp_val}.png')
-                    plot_trajectory_top_down(env, env_cfg, best_ep, title, out_png_2d)
-                    
-                    out_vid = os.path.join(exp_dir, f'best_vid_{scenario_name}_{exp_val}.mp4')
-                    animate(env, env_cfg, best_ep['path'], best_ep['dyn_path'], best_ep['dyn_r'], best_ep['goals'], title, out_vid)
+                if not args.no_render:
+                    try:
+                        from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
+                        title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
+                        out_png_3d = os.path.join(exp_dir, f'best_3d_{scenario_name}_{exp_val}.png')
+                        plot_trajectory_3d(env, env_cfg, best_ep, title, out_png_3d)
+                        
+                        out_png_2d = os.path.join(exp_dir, f'best_topdown_{scenario_name}_{exp_val}.png')
+                        plot_trajectory_top_down(env, env_cfg, best_ep, title, out_png_2d)
+                        
+                        out_vid = os.path.join(exp_dir, f'best_vid_{scenario_name}_{exp_val}.mp4')
+                        animate(env, env_cfg, best_ep['path'], best_ep['dyn_path'], best_ep['dyn_r'], best_ep['goals'], title, out_vid)
 
-                    if args.wandb:
-                        import wandb
-                        log_dict = {
-                            f"video/{exp_name}/{scenario_name}/{exp_val}/3d": wandb.Image(out_png_3d),
-                            f"video/{exp_name}/{scenario_name}/{exp_val}/topdown": wandb.Image(out_png_2d)
-                        }
-                        if os.path.exists(out_vid):
-                            log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid, format="mp4")
-                        elif os.path.exists(out_vid.replace('.mp4', '.gif')):
-                            log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
-                        wandb.log(log_dict)
-                except Exception as ex:
-                    print(f"[WARN] plot/render failed: {ex}")
+                        if args.wandb:
+                            import wandb
+                            log_dict = {
+                                f"video/{exp_name}/{scenario_name}/{exp_val}/3d": wandb.Image(out_png_3d),
+                                f"video/{exp_name}/{scenario_name}/{exp_val}/topdown": wandb.Image(out_png_2d)
+                            }
+                            if os.path.exists(out_vid):
+                                log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid, format="mp4")
+                            elif os.path.exists(out_vid.replace('.mp4', '.gif')):
+                                log_dict[f"video/{exp_name}/{scenario_name}/{exp_val}/animation"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
+                            wandb.log(log_dict)
+                    except Exception as ex:
+                        print(f"[WARN] plot/render failed: {ex}")
                 
                 # Delete path payload from memory to avoid OOM
                 for ep in sub:
@@ -407,6 +408,7 @@ def main():
     p.add_argument('--device', default='cpu')
     p.add_argument('--outdir', default='robustness_results')
     p.add_argument('--base-seed', type=int, default=20000)
+    p.add_argument('--no-render', action='store_true', help='Disable generating trajectory plots and animations')
     p.add_argument('--wandb', action='store_true', help='Log results to W&B')
     p.add_argument('--wandb-project', default='mardpg-uav-eval')
     p.add_argument('--wandb-name', default=None)
