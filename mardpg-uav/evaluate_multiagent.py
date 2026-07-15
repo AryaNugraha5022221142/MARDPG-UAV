@@ -1,64 +1,4 @@
-"""
-evaluate_multiagent.py  (v2) — multi-SEED-correct evaluation with explicit
-variance decomposition.
 
-What changed vs v1 and WHY
-==========================
-v1 varied SCENE seeds per episode for a SINGLE checkpoint and reported ±SE over
-those scenes. That SE is *within-seed scene-sampling noise* — it is NOT the
-variance of your METHOD. A method-level claim ("MARDPG beats X") must account
-for TRAINING-seed variance, which is almost always larger and is the only
-dispersion a reviewer cares about.
-
-v2 makes the TRAINING SEED the unit of statistical analysis:
-
-  1. Each method takes a LIST of checkpoints (one per training seed).
-  2. All methods/seeds see the SAME fixed set of scene seeds  -> paired over
-     scenes; differences are not scene-luck.
-  3. Aggregation is two-level:
-        scene  -> seed     : mean over scenes = that seed's point estimate
-        seed   -> method   : mean/std/SE over SEEDS  (the honest dispersion)
-     Both `seed_se` (honest) and `scene_se_within_seed` (what v1 reported) are
-     printed together so the difference is visible.
-  4. rliable-style robust aggregate: IQM over the (seed x config) score matrix
-     with a STRATIFIED BOOTSTRAP 95% CI that resamples SEEDS. Self-contained
-     (numpy only); no rliable/scipy dependency. With 3 seeds the CI is wide —
-     that is correct, not a defect.
-  5. Checkpoint loads are VERIFIED: a fingerprint of the actor weights before
-     and after load must change, else we RAISE. This closes the v1 hole where a
-     dim mismatch was swallowed (`[WARN] agent i:`) and produced believable
-     random-policy numbers.
-
-Everything good in v1 is kept: instrumented paired rollouts, APF baseline,
-Wilson CIs for Bernoulli mission-success, encounter-conditioned
-conflict-resolution, the exact training-stage configs as the eval MDP.
-
-Honesty notes to keep in the thesis (unchanged from v1)
-------------------------------------------------------
-  * APF is a potential-field reactive controller, NOT ORCA-3D.
-  * Trained reward/hyperparameters deviate from the paper (terminal anchors,
-    sigma, lr, buffer) -> absolute numbers are not digit-comparable.
-  * conflict_resolution_rate / uav_collision_rate are often saturated in this
-    weakly-coupled env; report them but do not over-claim coordination from a
-    ceiling'd metric.
-
-Usage
------
-  python evaluate_multiagent.py \
-    --method MARDPG  mardpg   ckpts/cl_mardpg_seed0/final,ckpts/cl_mardpg_seed1/final,ckpts/cl_mardpg_seed2/final \
-    --method IndRDPG ind_rdpg ckpts/cl_ind_rdpg_seed0/final,ckpts/cl_ind_rdpg_seed1/final,ckpts/cl_ind_rdpg_seed2/final \
-    --method MADDPG  maddpg   ckpts/cl_maddpg_seed0/final,ckpts/cl_maddpg_seed1/final,ckpts/cl_maddpg_seed2/final \
-    --method IDDPG   iddpg    ckpts/cl_iddpg_seed0/final,ckpts/cl_iddpg_seed1/final,ckpts/cl_iddpg_seed2/final \
-    --episodes 100 --device cpu --suite quick
-
-A checkpoint entry may be a comma list (one dir per seed) or a glob
-(e.g. 'ckpts/cl_mardpg_seed*/final'). Outputs:
-    eval_episodes.csv   : one row per (method, seed, config, scene)  [raw]
-    eval_per_seed.csv   : one row per (method, seed, config)         [seed point estimates]
-    eval_summary.csv    : one row per (method, config)               [across-seed stats]
-    eval_method_iqm.csv : one row per method                         [robust aggregate + bootstrap CI]
-analyze_factorial.py consumes eval_per_seed.csv for the 2x2 decomposition.
-"""
 import os
 import re
 import glob
@@ -75,9 +15,8 @@ from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.train import CURRICULUM, load_config
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
 
-ENCOUNTER_DIST = 6.0  # metres; matches utils/metrics.ENCOUNTER_DIST
+ENCOUNTER_DIST = 6.0
 
-# variant -> (recurrent, centralized); mirrors eval_rollout._VARIANT_FLAGS
 _VARIANT_FLAGS = {
     'mardpg':   (True,  True),
     'maddpg':   (False, True),
@@ -85,16 +24,11 @@ _VARIANT_FLAGS = {
     'iddpg':    (False, False),
 }
 
-
-# ===========================================================================
-# Verified checkpoint loading  (audit: silent load failure -> random policy)
-# ===========================================================================
 def _module_fingerprint(module) -> str:
     h = hashlib.sha1()
     for p in module.parameters():
         h.update(p.detach().cpu().numpy().tobytes())
     return h.hexdigest()
-
 
 def load_agents_strict(checkpoint_dir, config_path, device, variant):
     """Build agents for `variant` and load the checkpoint, RAISING if the load
@@ -119,7 +53,6 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
 
         apath = os.path.join(checkpoint_dir, f"agent_{i}.pt")
         if not os.path.exists(apath):
-            print(f"[LOAD WARN] missing {apath}, falling back to agent_0.pt")
             apath = os.path.join(checkpoint_dir, "agent_0.pt")
             if not os.path.exists(apath):
                 raise FileNotFoundError(f"[LOAD FAIL] missing {apath}")
@@ -131,7 +64,7 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
                 if not os.path.exists(spath):
                     raise FileNotFoundError(f"[LOAD FAIL] missing {spath}")
                 sc = torch.load(spath, map_location=device)
-                ag.shared_extractor.load_state_dict(sc['shared_actor'])  # strict
+                ag.shared_extractor.load_state_dict(sc['shared_actor'])
             ag.actor.load_state_dict(ckpt['actor_private'], strict=False)
         elif 'actor' in ckpt:
             ag.actor.load_state_dict(ckpt['actor'])
@@ -140,8 +73,7 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
                            f"nor 'actor' (keys: {list(ckpt.keys())})")
 
         post_fp = _module_fingerprint(ag.actor)
-        # Agent 0 always changes (shared + private). Agents >0 change via the
-        # private lstm/fc_out load; share_parameters runs afterwards.
+
         if post_fp == init_fp:
             raise RuntimeError(
                 f"[LOAD FAIL] {checkpoint_dir} agent {i}: actor weights are "
@@ -151,19 +83,14 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
         agents.append(ag)
 
     for i in range(1, n_agents):
-        agents[i].share_parameters(agents[0])
+        agents[i].share_parameters(agents)
     return agents, cfg
 
-
-# ===========================================================================
-# Evaluation suite — exact training stages as the eval MDP (conflict_frac > 0)
-# ===========================================================================
 def _stage_cfg(idx_0based):
     c = dict(CURRICULUM[idx_0based])
     c.pop('criteria', None)
     c.pop('name', None)
     return c
-
 
 def build_suite(quick=False):
     s4 = _stage_cfg(3)
@@ -200,10 +127,6 @@ def build_suite(quick=False):
         suite = [s for s in suite if s[0] in keep]
     return suite
 
-
-# ===========================================================================
-# Policy providers
-# ===========================================================================
 class LearnedPolicy:
     kind = 'learned'
 
@@ -229,10 +152,6 @@ class LearnedPolicy:
         self._prev = acts.copy()
         return acts
 
-
-# ===========================================================================
-# Single episode rollout — policy-agnostic, fully instrumented (kept from v1)
-# ===========================================================================
 def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
@@ -245,11 +164,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
 
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
-    
+
     dyn = getattr(env, 'dynamic_obstacles', []) if capture_render else []
     dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
     dyn_r = [d.size[0] for d in dyn] if dyn else []
-    
+
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
     steps_taken = np.zeros(n_agents, dtype=int)
@@ -261,7 +180,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
         for i in range(n_agents):
             if live_before[i]:
                 steps_taken[i] += 1
-                
+
         dyn_before = (env.agent_dyn_collided.copy()
                       if hasattr(env, 'agent_dyn_collided')
                       else np.zeros(n_agents, bool))
@@ -269,7 +188,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
         obs, rewards, done, info = env.step(acts)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
-        
+
         if capture_render and dyn:
             dyn_path.append([d.position.copy() for d in dyn])
 
@@ -338,10 +257,6 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
         )
     return ep
 
-
-# ===========================================================================
-# Statistics — numpy only (Wilson, bootstrap, IQM)
-# ===========================================================================
 def _wilson(k, n, z=1.96):
     if n == 0:
         return (np.nan, np.nan, np.nan)
@@ -351,7 +266,6 @@ def _wilson(k, n, z=1.96):
     half = (z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n))) / denom
     return p, max(0.0, centre - half), min(1.0, centre + half)
 
-
 def _iqm(x):
     x = np.sort(np.asarray(x, float))
     x = x[~np.isnan(x)]
@@ -359,10 +273,9 @@ def _iqm(x):
     if n == 0:
         return np.nan
     if n < 4:
-        return float(np.mean(x))          # IQM degenerate below 4 points
+        return float(np.mean(x))
     lo, hi = int(np.floor(n * 0.25)), int(np.ceil(n * 0.75))
     return float(np.mean(x[lo:hi]))
-
 
 def _bootstrap_ci(values, n_boot=10000, agg=np.mean, ci=0.95, rng=None):
     """Resample the UNIT OF ANALYSIS (seeds) with replacement. With 3 seeds the
@@ -372,15 +285,13 @@ def _bootstrap_ci(values, n_boot=10000, agg=np.mean, ci=0.95, rng=None):
     if n == 0:
         return (np.nan, np.nan, np.nan)
     if n == 1:
-        return (float(v[0]), np.nan, np.nan)
+        return (float(v), np.nan, np.nan)
     rng = rng or np.random.default_rng(12345)
     boots = np.array([agg(v[rng.integers(0, n, size=n)]) for _ in range(n_boot)])
     return (float(agg(v)),
             float(np.percentile(boots, 100 * (1 - ci) / 2)),
             float(np.percentile(boots, 100 * (1 + ci) / 2)))
 
-
-# Metrics aggregated as a per-seed scalar (mean over that seed's scenes).
 _SEED_METRICS = ['success_rate', 'mission_success', 'collision_rate',
                  'static_collision_rate', 'dyn_collision_rate',
                  'uav_collision_rate', 'path_eff_reached',
@@ -388,10 +299,6 @@ _SEED_METRICS = ['success_rate', 'mission_success', 'collision_rate',
                  'safe_inter_uav_ratio', 'mean_flight_dist',
                  'mean_flight_time', 'mean_time_to_goal']
 
-
-# ===========================================================================
-# Two-level aggregation
-# ===========================================================================
 def aggregate_per_seed(df_ep):
     """scene -> seed. One row per (method, variant, seed, config)."""
     rows = []
@@ -402,11 +309,11 @@ def aggregate_per_seed(df_ep):
         for m in _SEED_METRICS:
             v = g[m].astype(float).values
             row[m] = float(np.nanmean(v)) if len(v) else np.nan
-            # within-seed scene SE — what v1 mistakenly reported as "the" SE
+
             vv = v[~np.isnan(v)]
             row[f'{m}__scene_se'] = (float(vv.std(ddof=1) / np.sqrt(len(vv)))
                                      if len(vv) > 1 else 0.0)
-        # encounter-conditioned conflict resolution within this seed
+
         cr = g['conflict_resolved'].astype(float)
         enc = cr.notna()
         n_enc = int(enc.sum())
@@ -416,7 +323,6 @@ def aggregate_per_seed(df_ep):
         rows.append(row)
     return pd.DataFrame(rows)
 
-
 def aggregate_across_seeds(df_seed):
     """seed -> method. One row per (method, config). Reports the HONEST
     seed-level dispersion next to the within-seed scene SE for contrast."""
@@ -424,7 +330,7 @@ def aggregate_across_seeds(df_seed):
     rows = []
     for (method, cname), g in df_seed.groupby(['method', 'config_name'], sort=False):
         row = dict(method=method, config_name=cname,
-                   variant=g['variant'].iloc[0], regime=g['regime'].iloc[0],
+                   variant=g['variant'].iloc, regime=g['regime'].iloc,
                    n_seeds=len(g))
         for m in metrics:
             seed_vals = g[m].astype(float).values
@@ -442,7 +348,6 @@ def aggregate_across_seeds(df_seed):
         rows.append(row)
     return pd.DataFrame(rows)
 
-
 def aggregate_method_iqm(df_seed, regimes=('in_dist',)):
     """Robust method-level aggregate: IQM over the (seed x config) score matrix
     for the chosen regime(s), with a stratified bootstrap (resampling SEEDS) CI.
@@ -451,16 +356,15 @@ def aggregate_method_iqm(df_seed, regimes=('in_dist',)):
     sub = df_seed[df_seed['regime'].isin(regimes)]
     for method, g in sub.groupby('method', sort=False):
         seeds = sorted(g['seed'].unique())
-        # score matrix: rows = seeds, cols = configs (SR by default)
+
         for metric in ['success_rate', 'collision_rate', 'conflict_resolution_rate']:
             piv = g.pivot_table(index='seed', columns='config_name',
                                 values=metric, aggfunc='mean')
-            mat = piv.values  # (n_seeds, n_configs)
+            mat = piv.values
             point = _iqm(mat.flatten())
-            # stratified bootstrap: resample seeds (rows) with replacement
+
             rng = np.random.default_rng(2024)
-            n_seeds = mat.shape[0]
-            boots = []
+            n_seeds = mat.shapeboots = []
             for _ in range(10000):
                 idx = rng.integers(0, n_seeds, size=n_seeds)
                 boots.append(_iqm(mat[idx].flatten()))
@@ -471,10 +375,6 @@ def aggregate_method_iqm(df_seed, regimes=('in_dist',)):
                              n_seeds=n_seeds, iqm=point, iqm_ci_lo=lo, iqm_ci_hi=hi))
     return pd.DataFrame(rows)
 
-
-# ===========================================================================
-# Driver
-# ===========================================================================
 def _seed_label(ckpt_dir, fallback_idx):
     """Parse the TRUE training seed from the checkpoint path (e.g.
     '.../cl_mardpg_seed2/final' -> 2). This is what makes results computed on
@@ -484,11 +384,7 @@ def _seed_label(ckpt_dir, fallback_idx):
     m = re.search(r'seed[_-]?(\d+)', ckpt_dir)
     if m:
         return int(m.group(1))
-    print(f"[WARN] no 'seedN' token in '{ckpt_dir}' -> using positional index "
-          f"{fallback_idx}. Cross-machine merges will be WRONG; rename the dir "
-          f"to include seedN.", flush=True)
     return fallback_idx
-
 
 def _expand_ckpts(arg):
     """Comma list and/or glob -> sorted list of checkpoint dirs."""
@@ -505,7 +401,6 @@ def _expand_ckpts(arg):
         raise ValueError(f"No checkpoints resolved from '{arg}'")
     return out
 
-
 def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False, video=False):
     cfg = load_config(config)
     env_cfg = cfg['environment']
@@ -513,14 +408,13 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
     env = MultiUAVEnv(env_cfg)
     suite = build_suite(quick=quick)
 
-    # Preflight: crossing branch needs assignment._nudge_free (audit Fix A).
     try:
         env.scene_gen.rng.seed(base_seed)
         env.rangefinder.rng.seed(base_seed)
-        env.reset(suite[0][2])
+        env.reset(suite)
     except NameError as e:
         raise SystemExit(
-            f"[FATAL] {e}\nThe crossing-assignment branch calls _nudge_free(); "
+            f"{e}\nThe crossing-assignment branch calls _nudge_free(); "
             "ensure it lives in environment/assignment.py (audit Fix A).")
 
     ep_records = []
@@ -529,7 +423,6 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                      for idx, ck in enumerate(_expand_ckpts(ckpt_arg))]
 
         for seed_idx, ckpt in seed_list:
-            print(f"[load] {name} seed={seed_idx} <- {ckpt}", flush=True)
             agents, _ = load_agents_strict(ckpt, config, device, variant)
             provider = LearnedPolicy(agents, name=name)
 
@@ -537,29 +430,29 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 t0 = time.time()
                 best_score = None
                 best_seed = None
-                
+
                 for e in range(episodes):
-                    scene_seed = base_seed + e        # shared across all -> paired
-                    capture = wandb_log and (e < 3) and not video # fallback if video=False but wandb is True
+                    scene_seed = base_seed + e
+                    capture = wandb_log and (e < 3) and not video
                     ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture)
-                    
+
                     sc = (1 if ep['mission_success'] else 0, ep['success_rate'], ep['team_reward'], -ep['steps'])
                     if best_score is None or sc > best_score:
                         best_score = sc
                         best_seed = scene_seed
-                    
+
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
                         try:
                             from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
                             title = f"Traj: {name} | {cname} | ep {e} | reaches {rnd['reached'].sum()}"
-                            
+
                             out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_3d.png')
                             plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
-                            
+
                             out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_topdown.png')
                             plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
-                            
+
                             if wandb_log:
                                 import wandb
                                 log_dict = {
@@ -568,29 +461,27 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                                 }
                                 wandb.log(log_dict)
                         except Exception as ex:
-                            print(f"[WARN] plot failed: {ex}")
-                    
+                            pass
+
                     ep.update(method=name, variant=variant, seed=seed_idx,
                               checkpoint=str(ckpt), config_name=cname,
                               regime=regime, episode=e)
                     ep_records.append(ep)
-                
-                # Render the best episode
+
                 if video:
-                    print(f"Rendering best episode of '{cname}' [{name}] (seed {best_seed}) ...")
                     best_ep = run_episode(env, provider, stage_cfg, env_cfg, best_seed, capture_render=True)
                     if '_render_rnd' in best_ep:
                         rnd = best_ep.pop('_render_rnd')
                         try:
                             from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
                             title = f"BEST [{name}] | {cname} (seed {best_seed}) | reached {rnd['reached'].sum()}/{env.n_agents}"
-                            
+
                             out_png_3d = os.path.join(outdir, f'best_3d_{name}_s{seed_idx}_{cname}.png')
                             plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
-                            
+
                             out_png_2d = os.path.join(outdir, f'best_topdown_{name}_s{seed_idx}_{cname}.png')
                             plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
-                            
+
                             out_vid = os.path.join(outdir, f'best_vid_{name}_s{seed_idx}_{cname}.mp4')
                             animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
 
@@ -604,8 +495,8 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                                     log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
                                 wandb.log(log_dict)
                         except Exception as ex:
-                            print(f"[WARN] best plot failed: {ex}")
-                            
+                            pass
+
                 dur = time.time() - t0
                 subset = [r for r in ep_records if r['method'] == name and r['seed'] == seed_idx and r['config_name'] == cname]
                 sr = np.mean([r['success_rate'] for r in subset])
@@ -616,7 +507,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 encounter = np.mean([float(r['had_encounter']) for r in subset])
                 conflict_res_vals = [r['conflict_resolved'] for r in subset if not np.isnan(r['conflict_resolved'])]
                 conflict_res = np.mean(conflict_res_vals) if conflict_res_vals else np.nan
-                
+
                 path_eff = np.nanmean([r['path_eff_reached'] for r in subset])
                 safe_iu = np.nanmean([r['safe_inter_uav_ratio'] for r in subset])
                 min_dist = np.nanmean([r['closest_approach_m'] for r in subset])
@@ -624,13 +515,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 f_dist = np.nanmean([r['mean_flight_dist'] for r in subset])
                 f_time = np.nanmean([r['mean_flight_time'] for r in subset])
                 t_goal = np.nanmean([r['mean_time_to_goal'] for r in subset])
-                
-                print(
-                    f"  [{name} s{seed_idx}] {cname:16s} SR {sr:.1%} | coll {coll:.1%} (static: {static_coll:.1%}, dyn: {dyn_coll:.1%}) | "
-                    f"uav_coll {uav_coll:.1%} | encounter {encounter:.1%} | conflict_res {conflict_res*100:.1f}%\n"
-                    f"    path_eff {path_eff:.1%} | safe_iu {safe_iu:.1%} | min_dist {min_dist:.2f}m | nmr {nmr:.1%} | "
-                    f"flight_dist {f_dist:.1f}m | flight_time {f_time:.1f}s | time_to_goal {t_goal:.1f}s  ({dur:.0f}s)"
-                , flush=True)
+
 
     df_ep = pd.DataFrame(ep_records)
     df_seed = aggregate_per_seed(df_ep)
@@ -644,40 +529,18 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
 
     if wandb_log:
         import wandb
-        wandb.save(os.path.join(outdir, 'val_*.csv'), base_path=outdir) # actually save exact names
+        wandb.save(os.path.join(outdir, 'val_*.csv'), base_path=outdir)
         wandb.save(os.path.join(outdir, 'eval_episodes.csv'), base_path=outdir)
         wandb.save(os.path.join(outdir, 'eval_per_seed.csv'), base_path=outdir)
         wandb.save(os.path.join(outdir, 'eval_summary.csv'), base_path=outdir)
         wandb.save(os.path.join(outdir, 'eval_method_iqm.csv'), base_path=outdir)
 
     _print_variance_report(df_seed, df_sum)
-    print(f"\nWrote eval_episodes / eval_per_seed / eval_summary / "
-          f"eval_method_iqm to {outdir}/")
     return df_ep, df_seed, df_sum, df_iqm
-
 
 def _print_variance_report(df_seed, df_sum):
     """The point of the rewrite, made legible: seed-level SE (honest) vs the
     within-seed scene SE that v1 reported."""
-    print("\n" + "=" * 78)
-    print("VARIANCE DECOMPOSITION — success_rate  (the unit of analysis is the SEED)")
-    print("=" * 78)
-    print(f"{'method':12s} {'config':16s} {'n_seed':>6s} {'mean':>7s} "
-          f"{'seed_SE':>8s} {'scene_SE':>9s}  seed values")
-    print("-" * 78)
-    for _, r in df_sum.sort_values(['method', 'config_name']).iterrows():
-        seedvals = r.get('success_rate_seeds', '')
-        print(f"{r['method']:12s} {r['config_name']:16s} "
-              f"{int(r['n_seeds']):6d} "
-              f"{r['success_rate_mean']:6.1%} "
-              f"{r['success_rate_seed_se']:7.1%} "
-              f"{r.get('success_rate_scene_se_within_seed', float('nan')):8.1%}  "
-              f"[{seedvals}]")
-    print("-" * 78)
-    print("seed_SE is the dispersion you must report. scene_SE is within-seed "
-          "noise (the\nold ±SE) and is typically much smaller — do NOT use it "
-          "for method-level claims.")
-
 
 def main():
     p = argparse.ArgumentParser()
@@ -720,6 +583,6 @@ def main():
         wandb.log({"eval/method_iqm": wandb.Table(dataframe=df_iqm)})
         wandb.finish()
 
-
 if __name__ == "__main__":
     main()
+

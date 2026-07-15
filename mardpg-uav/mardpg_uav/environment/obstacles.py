@@ -4,79 +4,59 @@ from typing import List
 
 @dataclass
 class Obstacle:
-    type: str          # 'box', 'cylinder', 'sphere'
+    type: str
     position: np.ndarray
-    size: np.ndarray   # [rx, ry, rz] for box, [r, h] for cylinder, [r] for sphere
-    velocity: np.ndarray = None  # [vx, vy, vz] for dynamic obstacles
+    size: np.ndarray
+    velocity: np.ndarray = None
 
 class SceneGenerator:
-    def __init__(self, seed: int = None):
+
+    def __init__(self, seed: int=None):
         self.rng = np.random.RandomState(seed)
-        self.env_size = np.array([100.0, 100.0, 60.0]) # Will be updated dynamically
+        self.env_size = np.array([100.0, 100.0, 60.0])
 
     def generate_stage(self, stage_cfg: dict) -> List[Obstacle]:
         """Generates exactly the obstacles defined in the CL stage."""
         obstacles = []
-        
-        # 1. Generate Static Buildings (Boxes and Cylinders)
         n_static = stage_cfg.get('static_obs', 0)
         if n_static > 0:
-            margin = 15.0  # Keep away from edges
+            margin = 15.0
             for _ in range(n_static):
-                # Pure random placement for distinct visual maps across seeds
-                gx = self.rng.uniform(margin, self.env_size[0] - margin)
-                gy = self.rng.uniform(margin, self.env_size[1] - margin)
-                
-                # Fetch max_h from stage config to allow curriculum height scaling (Default: 50.0)
+                gx = self.rng.uniform(margin, self.env_size - margin)
+                gy = self.rng.uniform(margin, self.env_size - margin)
                 max_h = stage_cfg.get('max_h', 50.0)
                 h = self.rng.uniform(10.0, max_h)
-                
-                # Randomly mix boxes and cylinders to create a diverse urban environment
                 obs_type = self.rng.choice(['box', 'cylinder'])
-                
                 if obs_type == 'cylinder':
-                    # REDUCED radius to 2.0m - 4.0m to guarantee wide enough gaps
                     r = self.rng.uniform(2.0, 4.0)
                     pos = np.array([gx, gy, h / 2])
                     obstacles.append(Obstacle('cylinder', pos, np.array([r, h])))
-                    
                 elif obs_type == 'box':
-                    # Boxes are defined by their "half-extents" (half-width, half-depth, half-height)
                     hx = self.rng.uniform(2.0, 4.0)
                     hy = self.rng.uniform(2.0, 4.0)
                     hz = h / 2.0
                     pos = np.array([gx, gy, hz])
                     obstacles.append(Obstacle('box', pos, np.array([hx, hy, hz])))
-
-        # 2. Generate Dynamic Spheres
         n_dynamic = stage_cfg.get('dynamic_obs', 0)
-        
         has_dynamic = False
         if isinstance(n_dynamic, tuple):
             has_dynamic = True
-            actual_dyn = self.rng.randint(n_dynamic[0], n_dynamic[1] + 1)
+            actual_dyn = self.rng.randint(n_dynamic, n_dynamic + 1)
         elif n_dynamic > 0:
             has_dynamic = True
             actual_dyn = n_dynamic
-
         if has_dynamic:
             r = stage_cfg['dynamic_radius']
             v_range = stage_cfg['dynamic_speed']
-            
             for _ in range(actual_dyn):
                 pos = self.rng.uniform([r, r, r], self.env_size - r)
-                
-                # Random velocity direction
                 phi = self.rng.uniform(0, 2 * np.pi)
                 costheta = self.rng.uniform(-1, 1)
                 theta = np.arccos(costheta)
-                speed = self.rng.uniform(v_range[0], v_range[1])
-                
+                speed = self.rng.uniform(v_range, v_range)
                 vx = speed * np.sin(theta) * np.cos(phi)
                 vy = speed * np.sin(theta) * np.sin(phi)
                 vz = speed * np.cos(theta)
-                
                 velocity = np.array([vx, vy, vz], dtype=np.float32)
                 obstacles.append(Obstacle('sphere', pos, np.array([r]), velocity=velocity))
-
         return obstacles

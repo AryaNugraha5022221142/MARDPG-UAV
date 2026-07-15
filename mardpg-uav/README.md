@@ -22,8 +22,6 @@ This repository implements a **decentralised multi‑agent path planning system*
 - **Exploration**: Gaussian noise
 - **BPTT**: length 80
 
-**Note on Stage-7 Difficulty**: 
-Please note that generating an evaluation scene harder than stage-7 (dense static obstacles) is currently bounded by the maximum possible 16 grid spawns. Requesting static_obs > 16 prints a warning and is clamped by the env. Genuine Out-Of-Distribution evaluation comes from increasing goal distance and denser/faster dynamic threats.
 
 ---
 
@@ -36,7 +34,7 @@ pip install -r requirements.txt
 ```
 
 ## Training Hyperparameters
-*(Confirm)*
+
 - Actor Learning Rate: 1e-4
 - Critic Learning Rate: 1e-3
 - Batch Size: 64

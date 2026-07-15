@@ -1,6 +1,7 @@
 import wandb
 
 class WandbLogger:
+
     def __init__(self, use_wandb, project, config, name):
         self.use_wandb = use_wandb
         if self.use_wandb:

@@ -1,23 +1,10 @@
-"""
-Critic with late action injection, supporting all four corners of the ablation:
-
-  n_agents  = N  -> CENTRALIZED  (sees every agent's obs+action)  [MARDPG/MADDPG]
-  n_agents  = 1  -> INDEPENDENT  (sees only its own agent)        [IDDPG]
-  recurrent = True/False -> LSTM temporal core / per-timestep MLP
-
-The OWN-vs-ALL slicing is done by the agent (MARDPGAgent._critic_inputs) BEFORE
-calling forward(); this class only needs its input dimensions sized correctly,
-which is what `n_agents` controls here.
-"""
 import torch
 import torch.nn as nn
 from mardpg_uav.algorithm.nn_blocks import _FFCore
 
-
 class RecurrentCritic(nn.Module):
-    def __init__(self, n_agents: int, obs_dim: int, action_dim: int,
-                 fc_hidden: int = 128, lstm_hidden: int = 128,
-                 recurrent: bool = True):
+
+    def __init__(self, n_agents: int, obs_dim: int, action_dim: int, fc_hidden: int=128, lstm_hidden: int=128, recurrent: bool=True):
         super().__init__()
         self.obs_input = n_agents * obs_dim
         self.act_input = n_agents * action_dim
@@ -43,6 +30,6 @@ class RecurrentCritic(nn.Module):
         else:
             batch_size = BS_total // seq_len
         x = x.view(batch_size, seq_len, -1)
-        core_out, hidden = self.lstm(x, hidden)
+        (core_out, hidden) = self.lstm(x, hidden)
         q = self.fc_q(core_out).squeeze(-1)
-        return q.view(BS_total), hidden
+        return (q.view(BS_total), hidden)
