@@ -52,7 +52,7 @@ def load_agents(checkpoint_dir, config_path, device='cpu', variant='mardpg', rec
                 pass
         agents.append(ag)
     for i in range(1, n_agents):
-        agents[i].share_parameters(agents)
+        agents[i].share_parameters(agents[0])
     return (agents, cfg)
 
 def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_start=None, collect_paths=True):

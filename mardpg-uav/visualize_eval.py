@@ -87,7 +87,7 @@ def _load_agents(checkpoint_dir, env, env_cfg, net_cfg, algo_cfg, device):
             pass
         agents.append(ag)
     for i in range(1, n_agents):
-        agents[i].share_parameters(agents)
+        agents[i].share_parameters(agents[0])
     return agents
 
 def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals, stage_name, out_path):

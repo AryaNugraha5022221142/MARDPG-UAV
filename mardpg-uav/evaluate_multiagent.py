@@ -83,7 +83,7 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
         agents.append(ag)
 
     for i in range(1, n_agents):
-        agents[i].share_parameters(agents)
+        agents[i].share_parameters(agents[0])
     return agents, cfg
 
 def _stage_cfg(idx_0based):

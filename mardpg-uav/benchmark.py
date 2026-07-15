@@ -22,7 +22,7 @@ def main():
     b_sz = algo_cfg['batch_size']
     agents = [MARDPGAgent(agent_id=i, n_agents=n_agents, obs_dim=obs_dim, action_dim=act_dim, huber_beta=algo_cfg.get('huber_beta', 10.0), device=device) for i in range(n_agents)]
     for i in range(1, n_agents):
-        agents[i].share_parameters(agents)
+        agents[i].share_parameters(agents[0])
     shared_opt = torch.optim.Adam(agents.shared_extractor.parameters(), lr=0.001)
     buf = SequenceReplayBuffer(capacity=100000, seq_len=seq, n_agents=n_agents, obs_dim=obs_dim, action_dim=act_dim)
     stage_cfg = {'env_size': [100.0, 100.0, 60.0], 'static_obs': 0, 'min_sep': 15.0, 'max_steps': 400, 'min_start_sep': 12.0}
