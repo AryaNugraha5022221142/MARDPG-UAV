@@ -5,7 +5,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib import cm
 from mpl_toolkits.mplot3d import Axes3D
-from mardpg_uav.train import CURRICULUM
+from scripts.train import CURRICULUM
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 
 def plot_all_stages(save_path='stages_preview.png'):

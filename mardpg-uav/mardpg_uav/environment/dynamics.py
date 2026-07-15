@@ -17,8 +17,8 @@ class QuadcopterDynamics:
         returns: next_state  [x, y, z, theta, phi]
         """
         (x, y, z, theta, phi) = state
-        rho = np.clip(action, -self.max_delta, self.max_delta)
-        tau = np.clip(action, -self.max_delta, self.max_delta)
+        rho = np.clip(action[0], -self.max_delta, self.max_delta)
+        tau = np.clip(action[1], -self.max_delta, self.max_delta)
         theta_new = theta + rho
         phi_new = phi + tau
         theta_new = (theta_new + np.pi) % (2 * np.pi) - np.pi
@@ -27,7 +27,7 @@ class QuadcopterDynamics:
         x_new = x + v * self.dt * np.cos(theta_new) * np.cos(phi_new)
         y_new = y + v * self.dt * np.sin(theta_new) * np.cos(phi_new)
         z_new = z + v * self.dt * np.sin(phi_new)
-        x_new = np.clip(x_new, 0.0, self.env_size)
-        y_new = np.clip(y_new, 0.0, self.env_size)
+        x_new = np.clip(x_new, 0.0, self.env_size[0])
+        y_new = np.clip(y_new, 0.0, self.env_size[1])
         z_new = np.clip(z_new, self.min_altitude, self.max_altitude)
         return np.array([x_new, y_new, z_new, theta_new, phi_new], dtype=np.float32)

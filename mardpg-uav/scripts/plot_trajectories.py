@@ -3,7 +3,7 @@ import os
 import numpy as np
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents, make_learned_act_fn
-from mardpg_uav.train import CURRICULUM
+from scripts.train import CURRICULUM
 
 def min_pair_dist(env):
     active = ~env.agent_done

@@ -4,6 +4,10 @@
   "description": "MARDPG-UAV Path Planning",
   "scripts": {
     "build": "echo 'No build step'",
-    "start": "echo 'Starting...' && tail -f /dev/null"
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2"
   }
 }

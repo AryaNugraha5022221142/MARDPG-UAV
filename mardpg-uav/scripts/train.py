@@ -8,11 +8,11 @@ import wandb
 from mardpg_uav.wandb_logger import WandbLogger
 from typing import List
 
-from .environment.uav_env     import MultiUAVEnv
-from .algorithm.mardpg        import MARDPGAgent
-from .algorithm.replay_buffer import SequenceReplayBuffer
-from .algorithm.noise         import GaussianNoise
-from .utils.metrics           import MetricsTracker
+from mardpg_uav.environment.uav_env     import MultiUAVEnv
+from mardpg_uav.algorithm.mardpg        import MARDPGAgent
+from mardpg_uav.algorithm.replay_buffer import SequenceReplayBuffer
+from mardpg_uav.algorithm.noise         import GaussianNoise
+from mardpg_uav.utils.metrics           import MetricsTracker
 
 CURRICULUM = [
     {

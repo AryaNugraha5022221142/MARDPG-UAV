@@ -44,7 +44,7 @@ def plot_scene(ax, env, title):
     ax.set_xlabel('X')
     ax.set_ylabel('Y')
     ax.set_zlabel('Z')
-from mardpg_uav.train import CURRICULUM
+from scripts.train import CURRICULUM
 
 def main():
     import os

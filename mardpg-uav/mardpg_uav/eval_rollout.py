@@ -3,7 +3,7 @@ import torch
 import os
 from mardpg_uav.utils.metrics import MetricsTracker
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
-from mardpg_uav.train import load_config
+from scripts.train import load_config
 _VARIANT_FLAGS = {'mardpg': (True, True), 'maddpg': (False, True), 'ind_rdpg': (True, False), 'iddpg': (False, False)}
 
 def load_agents(checkpoint_dir, config_path, device='cpu', variant='mardpg', recurrent=None, centralized=None):

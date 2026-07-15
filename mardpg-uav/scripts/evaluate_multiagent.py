@@ -12,7 +12,7 @@ import pandas as pd
 import torch
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
-from mardpg_uav.train import CURRICULUM, load_config
+from scripts.train import CURRICULUM, load_config
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
 
 ENCOUNTER_DIST = 6.0

@@ -58,9 +58,9 @@ class Rangefinder:
         other_obs = [obs for obs in close_obstacles if obs.type != 'box']
         for obs in other_obs:
             if obs.type == 'sphere':
-                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size)
+                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size[0])
             elif obs.type == 'cylinder':
-                dist = self._ray_cylinder_vec(position, rotated_dirs, obs.position, obs.size, obs.size)
+                dist = self._ray_cylinder_vec(position, rotated_dirs, obs.position, obs.size[0], obs.size[1])
             else:
                 continue
             mask = dist < min_dists
@@ -69,7 +69,7 @@ class Rangefinder:
             for obs in extra_obstacles:
                 if obs.type != 'sphere':
                     continue
-                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size)
+                dist = self._ray_sphere_vec(position, rotated_dirs, obs.position, obs.size[0])
                 mask = dist < min_dists
                 min_dists[mask] = dist[mask]
         distances = min_dists.reshape(self.n_v, self.n_h)

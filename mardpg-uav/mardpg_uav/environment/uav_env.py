@@ -86,17 +86,22 @@ class MultiUAVEnv(gym.Env):
         return (Rt @ vec.astype(np.float32)).astype(np.float32)
 
     def _update_obstacle_caches(self):
-        """Helper to refresh bounding boxes for lidar when objects move."""
+        """Refresh obstacle bounding radii for fast collision/LiDAR queries."""
         self.obs_centers = np.array([obs.position for obs in self.obstacles])
         sizes = []
         for obs in self.obstacles:
             if obs.type == 'box':
-                sizes.append(np.linalg.norm(obs.size))
+                max_size = np.linalg.norm(obs.size)
             elif obs.type == 'cylinder':
-                sizes.append(np.sqrt(obs.size[0] ** 2 + (obs.size[1] / 2) ** 2))
+                radius = float(obs.size[0])
+                height = float(obs.size[1])
+                max_size = np.sqrt(radius**2 + (height / 2.0)**2)
+            elif obs.type == 'sphere':
+                max_size = float(obs.size[0])
             else:
-                sizes.append(obs.size[0])
-        self.obs_max_sizes = np.array(sizes)
+                max_size = float(np.asarray(obs.size).reshape(-1)[0])
+            sizes.append(max_size)
+        self.obs_max_sizes = np.asarray(sizes, dtype=np.float32)
 
     def _other_uav_obstacles(self, i: int):
         """Other LIVE UAVs as spherical lidar targets so a UAV can
@@ -293,7 +298,7 @@ class MultiUAVEnv(gym.Env):
         env = np.array(self.cfg['env_size'])
         for _ in range(max_attempts):
             margin = min(3.0, np.min(env) * 0.1)
-            pos = self.scene_gen.rng.uniform([margin, margin, margin], [env - margin, env - margin, env - margin])
+            pos = self.scene_gen.rng.uniform(margin, env - margin)
             if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos.astype(np.float32)
         margin_x = min(3.0, float(env[0]) * 0.1)
@@ -319,7 +324,12 @@ class MultiUAVEnv(gym.Env):
 
     def _out_of_bounds(self, pos: np.ndarray) -> bool:
         cr = self.cfg.get('collision_radius', 0.5)
-        return bool(pos[0] < cr or pos[0] > self.cfg['env_size'][0] - cr or \
-                    pos[1] < cr or pos[1] > self.cfg['env_size'][1] - cr or \
-                    pos[2] < self.cfg.get('min_altitude', 0.0) + cr or \
-                    pos[2] > self.cfg['max_altitude'] - cr)
+        env_size = self.cfg['env_size']
+        min_altitude = self.cfg.get('min_altitude', 0.0)
+        max_altitude = self.cfg['max_altitude']
+        return bool(
+            np.any(pos[:2] < cr)
+            or np.any(pos[:2] > env_size[:2] - cr)
+            or pos[2] < min_altitude + cr
+            or pos[2] > max_altitude - cr
+        )

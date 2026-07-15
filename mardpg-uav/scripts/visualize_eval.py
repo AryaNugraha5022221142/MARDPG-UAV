@@ -12,7 +12,7 @@ from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
-from mardpg_uav.train import CURRICULUM
+from scripts.train import CURRICULUM
 AGENT_COLORS = ['#0072B2', '#009E73', '#CC79A7', '#E69F00', '#56B4E9', '#F0E442']
 HAZARD_COLOR = '#D55E00'
 OBSTACLE_GRAY = '#9AA0A6'
