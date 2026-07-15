@@ -93,9 +93,9 @@ class MultiUAVEnv(gym.Env):
             if obs.type == 'box':
                 sizes.append(np.linalg.norm(obs.size))
             elif obs.type == 'cylinder':
-                sizes.append(np.sqrt(obs.size ** 2 + (obs.size / 2) ** 2))
+                sizes.append(np.sqrt(obs.size[0] ** 2 + (obs.size[1] / 2) ** 2))
             else:
-                sizes.append(obs.size)
+                sizes.append(obs.size[0])
         self.obs_max_sizes = np.array(sizes)
 
     def _other_uav_obstacles(self, i: int):
