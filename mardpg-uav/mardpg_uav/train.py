@@ -376,7 +376,7 @@ def train(config_path: str = "config/default.yaml",
     if resume_dir:
         try:
             sc = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
-            agents.shared_extractor.load_state_dict(sc['shared_actor'])
+            agents[0].shared_extractor.load_state_dict(sc['shared_actor'])
             if 'shared_opt' in sc:
                 shared_optimizer.load_state_dict(sc['shared_opt'])
             global_step = sc.get('global_step', 0)
@@ -765,7 +765,7 @@ def _save_checkpoint(save_dir, agents, shared_opt, global_step,
                      buffer=None, save_buffer=False):
     """Persist the FULL training state required to resume a long run."""
     os.makedirs(save_dir, exist_ok=True)
-    torch.save({'shared_actor':      agents.shared_extractor.state_dict(),
+    torch.save({'shared_actor':      agents[0].shared_extractor.state_dict(),
                 'shared_opt':        shared_opt.state_dict(),
                 'global_step':       global_step,
                 'episode':           episode,

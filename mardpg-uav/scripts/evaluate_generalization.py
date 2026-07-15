@@ -186,8 +186,9 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
     for (name, kind, payload) in methods:
         (variant, ckpt) = payload
         (agents, _) = load_agents(ckpt, config, device, variant=variant)
-        _ = agents.select_action(np.zeros(env.obs_dim, np.float32), np.zeros(env.action_dim, np.float32), evaluate=True)
-        agents.reset_hidden(batch_size=1, eval_mode=True)
+        for ag in agents:
+            _ = ag.select_action(np.zeros(env.obs_dim, np.float32), np.zeros(env.action_dim, np.float32), evaluate=True)
+            ag.reset_hidden(batch_size=1, eval_mode=True)
         providers[name] = LearnedPolicy(agents, name=name)
     suite = build_suite(quick=quick)
     (ep_records, agent_records) = ([], [])

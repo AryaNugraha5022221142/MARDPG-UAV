@@ -22,8 +22,8 @@ class SceneGenerator:
         if n_static > 0:
             margin = 15.0
             for _ in range(n_static):
-                gx = self.rng.uniform(margin, self.env_size - margin)
-                gy = self.rng.uniform(margin, self.env_size - margin)
+                gx = float(self.rng.uniform(margin, self.env_size[0] - margin))
+                gy = float(self.rng.uniform(margin, self.env_size[1] - margin))
                 max_h = stage_cfg.get('max_h', 50.0)
                 h = self.rng.uniform(10.0, max_h)
                 obs_type = self.rng.choice(['box', 'cylinder'])
@@ -41,7 +41,7 @@ class SceneGenerator:
         has_dynamic = False
         if isinstance(n_dynamic, tuple):
             has_dynamic = True
-            actual_dyn = self.rng.randint(n_dynamic, n_dynamic + 1)
+            actual_dyn = int(self.rng.randint(n_dynamic[0], n_dynamic[1] + 1))
         elif n_dynamic > 0:
             has_dynamic = True
             actual_dyn = n_dynamic
@@ -53,7 +53,7 @@ class SceneGenerator:
                 phi = self.rng.uniform(0, 2 * np.pi)
                 costheta = self.rng.uniform(-1, 1)
                 theta = np.arccos(costheta)
-                speed = self.rng.uniform(v_range, v_range)
+                speed = float(self.rng.uniform(v_range[0], v_range[1]))
                 vx = speed * np.sin(theta) * np.cos(phi)
                 vy = speed * np.sin(theta) * np.sin(phi)
                 vz = speed * np.cos(theta)

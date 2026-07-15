@@ -27,7 +27,7 @@ class Rangefinder:
         (cp, sp) = (np.cos(phi), np.sin(phi))
         R = np.array([[cy * cp, -sy, -cy * sp], [sy * cp, cy, -sy * sp], [sp, 0.0, cp]], dtype=np.float32)
         rotated_dirs = (R @ self._dir_vecs.T).T
-        min_dists = np.full(rotated_dirs.shape, self.range_max, dtype=np.float32)
+        min_dists = np.full(rotated_dirs.shape[0], self.range_max, dtype=np.float32)
         if obs_centers is not None and obs_max_sizes is not None:
             dists_to_centers = np.linalg.norm(obs_centers - position, axis=1)
             mask = dists_to_centers < self.range_max + obs_max_sizes
@@ -85,7 +85,7 @@ class Rangefinder:
         b = 2.0 * np.dot(d, oc)
         c_val = np.dot(oc, oc) - r * r
         disc = b * b - 4 * c_val
-        dist = np.full(d.shape, np.inf, dtype=np.float32)
+        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
         mask = disc >= 0
         if np.any(mask):
             d_mask = (-b[mask] - np.sqrt(disc[mask])) / 2.0
@@ -102,12 +102,12 @@ class Rangefinder:
         b = 2.0 * np.dot(d_xy, oc)
         c_val = np.dot(oc, oc) - r * r
         disc = b * b - 4 * a * c_val
-        dist = np.full(d.shape, np.inf, dtype=np.float32)
+        dist = np.full(d.shape[0], np.inf, dtype=np.float32)
         mask = (disc >= 0) & (a > 1e-06)
         if np.any(mask):
             d_mask = (-b[mask] - np.sqrt(disc[mask])) / (2.0 * a[mask])
-            z_hit = o + d_mask * d[mask, 2]
-            valid = (d_mask > 0) & (z_hit >= c - h / 2) & (z_hit <= c + h / 2)
+            z_hit = o[2] + d_mask * d[mask, 2]
+            valid = (d_mask > 0) & (z_hit >= c[2] - h / 2) & (z_hit <= c[2] + h / 2)
             final_mask = mask.copy()
             final_mask[mask] = valid
             dist[final_mask] = d_mask[valid]

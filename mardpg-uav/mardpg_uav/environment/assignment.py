@@ -7,7 +7,7 @@ def assign_start_goals(env, stage_cfg):
     env_size = np.asarray(env.cfg['env_size'], dtype=np.float32)
     center = env_size / 2.0
     min_alt = float(env.cfg.get('min_altitude', 0.0))
-    ring_r = float(stage_cfg.get('ring_frac', 0.35)) * float(min(env_size, env_size))
+    ring_r = float(stage_cfg.get('ring_frac', 0.35)) * float(min(env_size[0], env_size[1]))
     conflict_frac = float(stage_cfg.get('conflict_frac', 0.0))
     min_sep = float(stage_cfg.get('min_sep', 20.0))
     min_start_sep = float(stage_cfg.get('min_start_sep', max(env.cfg.get('inter_uav_min_dist', 1.0) * 8, 10.0)))
@@ -24,11 +24,11 @@ def assign_start_goals(env, stage_cfg):
     for i in range(n):
         if i in conflict_ids:
             ang = base_ang + 2.0 * np.pi * i / n + float(rng.uniform(-0.12, 0.12))
-            z_s = float(rng.uniform(0.3, 0.7) * env_size)
+            z_s = float(rng.uniform(0.3, 0.7) * env_size[2])
             start = center + np.array([ring_r * np.cos(ang), ring_r * np.sin(ang), 0.0], dtype=np.float32)
-            start = z_s
+            start[2] = z_s
             goal = (2.0 * center - start).astype(np.float32)
-            goal = float(np.clip(2.0 * center - z_s + rng.uniform(-5.0, 5.0), min_alt + 1.0, env_size - 1.0))
+            goal[2] = float(np.clip(2.0 * center[2] - z_s + rng.uniform(-5.0, 5.0), min_alt + 1.0, env_size[2] - 1.0))
             start = _nudge_free(env, start)
             goal = _nudge_free(env, goal)
         else:

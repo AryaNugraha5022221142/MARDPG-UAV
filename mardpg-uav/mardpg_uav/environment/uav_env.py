@@ -41,7 +41,8 @@ class MultiUAVEnv(gym.Env):
         if 'sensor_range' in stage_cfg:
             self.rangefinder.range_max = stage_cfg['sensor_range']
             self.cfg['sensor_range'] = stage_cfg['sensor_range']
-        self.dynamics.max_altitude = new_env_sizeself.scene_gen.env_size = new_env_size
+        self.dynamics.max_altitude = new_env_size[2]
+        self.scene_gen.env_size = new_env_size
         self.obstacles = self.scene_gen.generate_stage(stage_cfg)
         self.dynamic_obstacles = [obs for obs in self.obstacles if getattr(obs, 'velocity', None) is not None]
         t = 5.0
@@ -262,8 +263,8 @@ class MultiUAVEnv(gym.Env):
         goal_vec = self.goals[i] - pos
         d5 = np.linalg.norm(goal_vec)
         if d5 > 1e-06:
-            abs_varpi = np.arctan2(goal_vec, goal_vec)
-            abs_varpi_z = np.arctan2(goal_vec, np.linalg.norm(goal_vec[:2]))
+            abs_varpi = np.arctan2(goal_vec[1], goal_vec[0])
+            abs_varpi_z = np.arctan2(goal_vec[2], np.linalg.norm(goal_vec[:2]))
             varpi = abs_varpi - theta
             varpi_z = abs_varpi_z - phi
         else:
@@ -295,10 +296,14 @@ class MultiUAVEnv(gym.Env):
             pos = self.scene_gen.rng.uniform([margin, margin, margin], [env - margin, env - margin, env - margin])
             if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos.astype(np.float32)
-        margin_x = min(3.0, env * 0.1)
-        margin_y = min(3.0, env * 0.1)
+        margin_x = min(3.0, float(env[0]) * 0.1)
+        margin_y = min(3.0, float(env[1]) * 0.1)
         for attempt in range(50):
-            pos = np.array([self.scene_gen.rng.uniform(margin_x, env - margin_x), self.scene_gen.rng.uniform(margin_y, env - margin_y), self.scene_gen.rng.uniform(3.0, env - 3.0)], dtype=np.float32)
+            pos = np.array([
+                self.scene_gen.rng.uniform(margin_x, env[0] - margin_x),
+                self.scene_gen.rng.uniform(margin_y, env[1] - margin_y),
+                self.scene_gen.rng.uniform(3.0, env[2] - 3.0)
+            ], dtype=np.float32)
             if not self._inside_obstacles(pos, buffer=self.cfg['collision_radius'] + 0.5):
                 return pos
         import warnings
@@ -314,4 +319,7 @@ class MultiUAVEnv(gym.Env):
 
     def _out_of_bounds(self, pos: np.ndarray) -> bool:
         cr = self.cfg.get('collision_radius', 0.5)
-        return pos < cr or pos > self.cfg['env_size'] - cr or pos < cr or (pos > self.cfg['env_size'] - cr) or (pos < self.cfg.get('min_altitude', 0.0) + cr) or (pos > self.cfg['max_altitude'] - cr)
+        return bool(pos[0] < cr or pos[0] > self.cfg['env_size'][0] - cr or \
+                    pos[1] < cr or pos[1] > self.cfg['env_size'][1] - cr or \
+                    pos[2] < self.cfg.get('min_altitude', 0.0) + cr or \
+                    pos[2] > self.cfg['max_altitude'] - cr)

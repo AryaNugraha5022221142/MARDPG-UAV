@@ -37,9 +37,9 @@ class RewardFunction:
         r_col_obs = -self.lambda_col * np.exp(-self.sigma_col * d_obs_clear)
         r_col_uav = -self.lambda_col * np.exp(-self.sigma_col_uav * d_uav_clear)
         r_col = min(r_col_obs, r_col_uav)
-        r_free = self.r_free if rangefinder_raw.flatten() >= self.range_max else 0.0
+        r_free = self.r_free if np.all(rangefinder_raw >= self.range_max) else 0.0
         r_step = self.r_step
-        return self.delta * r_trans + self.delta * r_col + self.delta * r_free + self.delta * r_step
+        return self.delta[0] * r_trans + self.delta[1] * r_col + self.delta[2] * r_free + self.delta[3] * r_step
 
     def _surface_distance(self, position, obs):
         p = position
