@@ -27,8 +27,8 @@ class SequenceReplayBuffer:
     def add_transition(self, obs, prev_actions, actions, rewards, next_obs, dones, pad: bool=False):
         """Store one environment transition (or one inert pad step)."""
         idx = self.ptr
-        start_invalid = max(0, idx - self.seq_len + 1)
-        self.valid_mask[start_invalid:idx + 1] = False
+        
+        # Store the transition data
         self.obs[idx] = obs
         self.next_obs[idx] = next_obs
         self.prev_actions[idx] = prev_actions
@@ -38,10 +38,29 @@ class SequenceReplayBuffer:
         self.pads[idx] = pad
         self.ep_ids[idx] = self._ep_count
         self._current_ep_len += 1
+        
+        # Only mark as valid if we have a complete window ending at this position
+        # A window is valid if:
+        # 1. We have at least seq_len transitions in this episode
+        # 2. The window [idx-seq_len+1, idx] all belong to the same episode
         if self._current_ep_len >= self.seq_len:
             start_idx = idx - self.seq_len + 1
-            if start_idx >= 0 and self.ep_ids[start_idx] == self._ep_count:
-                self.valid_mask[start_idx] = True
+            # Handle wraparound case
+            if start_idx < 0:
+                # Window wraps around - check if all positions in the window are from current ep
+                # Positions [0, idx] and [capacity+start_idx, capacity-1] should be current ep
+                wrap_start = self.capacity + start_idx
+                all_current_ep = (
+                    np.all(self.ep_ids[wrap_start:] == self._ep_count) and
+                    np.all(self.ep_ids[:idx + 1] == self._ep_count)
+                )
+                if all_current_ep:
+                    self.valid_mask[idx] = True
+            else:
+                # No wraparound - just check if start position is from current episode
+                if self.ep_ids[start_idx] == self._ep_count:
+                    self.valid_mask[idx] = True
+        
         self.ptr = (self.ptr + 1) % self.capacity
         self.size = min(self.size + 1, self.capacity)
 
@@ -138,7 +157,17 @@ class SequenceReplayBuffer:
         k = int(len(valid) * float(frac))
         if k <= 0:
             return 0
-        age = (self.ptr - 1 - valid) % self.capacity
-        oldest = valid[np.argsort(-age)[:k]]
-        self.valid_mask[oldest] = False
+        
+        # Calculate age for each valid index in the circular buffer.
+        # Age = number of steps since this index was written.
+        # Most recent write is at (ptr - 1) % capacity with age 0.
+        # For circular buffer: age[idx] = (last_written - idx) % capacity
+        # This gives correct ages regardless of wraparound.
+        last_written = (self.ptr - 1) % self.capacity
+        ages = (last_written - valid) % self.capacity
+        
+        # Sort by age descending (oldest first) and take the k oldest
+        oldest_indices = valid[np.argsort(-ages)[:k]]
+        
+        self.valid_mask[oldest_indices] = False
         return int(k)
