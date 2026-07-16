@@ -434,10 +434,6 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick,
     env = MultiUAVEnv(env_cfg)
     suite = build_suite(quick=quick)
 
-    # One live renderer for the whole run (built once; no-op when headless).
-    live = None
-    if rcfg.enable_render and rcfg.realtime_render:
-        live = LiveRenderer(env, env_cfg)
 
     media_paths = []  # collected for the optional wandb Artifact bundle
 
@@ -449,6 +445,10 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick,
         raise SystemExit(
             f"{e}\nThe crossing-assignment branch calls _nudge_free(); "
             "ensure it lives in environment/assignment.py (audit Fix A).")
+    # One live renderer for the whole run (built once; no-op when headless).
+    live = None
+    if rcfg.enable_render and rcfg.realtime_render:
+        live = LiveRenderer(env, env_cfg)
 
     ep_records = []
     for name, variant, ckpt_arg in methods:

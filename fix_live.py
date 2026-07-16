@@ -1,4 +1,7 @@
-"""LiveRenderer: smooth on-screen real-time visualisation.
+with open("mardpg-uav/mardpg_uav/rendering/live.py", "r") as f:
+    content = f.read()
+
+new_content = """\"\"\"LiveRenderer: smooth on-screen real-time visualisation.
 
 Task 2 ("Fix evaluation rendering") root cause: the patched real-time path
 called, every single timestep, `plt.pause(0.001)` on a full 3D axes with a
@@ -18,7 +21,7 @@ Fixes here:
 
 If the active backend is Agg (headless), the LiveRenderer becomes a no-op: it
 never tries to open a window, so the same eval code runs on the VM unchanged.
-"""
+\"\"\"
 from __future__ import annotations
 
 import time
@@ -106,7 +109,7 @@ class LiveRenderer:
             self._setup_scene(env)
 
     def step(self, env):
-        """Push the current agent positions and refresh the window."""
+        \"\"\"Push the current agent positions and refresh the window.\"\"\"
         if not self.enabled:
             return
 
@@ -145,3 +148,7 @@ class LiveRenderer:
         import matplotlib.pyplot as plt
         plt.close(self.fig)
         self.fig = None
+"""
+
+with open("mardpg-uav/mardpg_uav/rendering/live.py", "w") as f:
+    f.write(new_content)
