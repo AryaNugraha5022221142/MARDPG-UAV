@@ -1,4 +1,3 @@
-
 import os
 import time
 import itertools
@@ -195,7 +194,9 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
         env.scene_gen.rng.seed(_es)
         env.rangefinder.rng.seed(_es)
         np.random.seed(_es)
+
         obs = env.reset(stage_cfg)
+
         for ag in agents:
             ag.reset_hidden(batch_size=1, eval_mode=True)
         prev_actions = [np.zeros(action_dim, dtype=np.float32) for _ in range(n_agents)]
@@ -260,15 +261,15 @@ def train(config_path: str = "config/default.yaml",
     net_cfg  = cfg['network']
 
     torch.manual_seed(seed); np.random.seed(seed); random.seed(seed)
-    torch.cuda.manual_seed_all(seed)
 
-    torch.backends.cudnn.deterministic = bool(
-        algo_cfg.get('deterministic_cudnn', False))
 
     if device is None:
-        device = algo_cfg.get('device',
-                              'cuda' if torch.cuda.is_available() else 'cpu')
-    if device == 'cuda' and not torch.cuda.is_available():
+        device = algo_cfg.get('device', 'cpu')
+    if device != 'cpu' and torch.cuda.is_available():
+        device = 'cuda'
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = bool(algo_cfg.get('deterministic_cudnn', False))
+    else:
         device = 'cpu'
 
     if device == 'cpu':
@@ -457,7 +458,9 @@ def train(config_path: str = "config/default.yaml",
             if max_episodes != -1 and episode >= max_episodes:
                 break
             stage_cfg = cl.get_current_config()
+
             obs = env.reset(stage_cfg)
+
             cl.episodes_in_stage += 1
 
             for ag in agents:
