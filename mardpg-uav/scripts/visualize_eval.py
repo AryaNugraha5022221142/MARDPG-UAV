@@ -102,11 +102,11 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals, s
     axgoal = fig.add_subplot(2, 2, 4)
     _draw_static_obstacles(ax3d, env, max_z=ez)
     if dyn_path is not None:
-        for k in range(dyn_path.shape):
+        for k in range(dyn_path.shape[1]):
             dp = dyn_path[:, k, :]
             ax3d.plot(dp[:, 0], dp[:, 1], dp[:, 2], color=HAZARD_COLOR, lw=1.5, alpha=0.5, ls='--')
             ax3d.scatter(dp[0, 0], dp[0, 1], dp[0, 2], color=HAZARD_COLOR, marker='o', s=40, facecolors='none', linewidth=1.2)
-            _draw_sphere(ax3d, dp, dyn_r[k], HAZARD_COLOR, alpha=0.35)
+            _draw_sphere(ax3d, dp[0], dyn_r[k], HAZARD_COLOR, alpha=0.35)
     for i in range(n_agents):
         c = AGENT_COLORS[i % len(AGENT_COLORS)]
         segs = _time_graded_segments(path[:, i, :])
@@ -144,7 +144,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals, s
         elif ob.type == 'box':
             axtop.add_patch(plt.Rectangle(ob.position[:2] - ob.size[:2], 2 * ob.size[0], 2 * ob.size[1], color=c, alpha=0.55))
     if dyn_path is not None:
-        for k in range(dyn_path.shape):
+        for k in range(dyn_path.shape[1]):
             axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5)
             axtop.scatter(dyn_path[0, k, 0], dyn_path[0, k, 1], color=HAZARD_COLOR, marker='o', facecolors='none', s=40, linewidths=1.2)
     axtop.set_xlim(0, ex)
@@ -217,7 +217,7 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
         em = 'o' if reached[i] else 'X' if collided[i] else 'P'
         axtop.scatter(*path[-1, i, :2], color=c, marker=em, s=120, edgecolor='k', linewidth=1.5, zorder=5)
     if dyn_path is not None:
-        for k in range(dyn_path.shape):
+        for k in range(dyn_path.shape[1]):
             axtop.plot(dyn_path[:, k, 0], dyn_path[:, k, 1], color=HAZARD_COLOR, ls='--', alpha=0.5, lw=2)
             axtop.scatter(dyn_path[0, k, 0], dyn_path[0, k, 1], color=HAZARD_COLOR, marker='o', facecolors='none', s=40, linewidths=1.2)
     axtop.set_xlim(0, ex)
@@ -244,11 +244,11 @@ def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58)
     ax = fig.add_subplot(111, projection='3d')
     _draw_static_obstacles(ax, env, max_z=ez)
     if dyn_path is not None:
-        for k in range(dyn_path.shape):
+        for k in range(dyn_path.shape[1]):
             dp = dyn_path[:, k, :]
             ax.plot(dp[:, 0], dp[:, 1], dp[:, 2], color=HAZARD_COLOR, lw=1.6, alpha=0.6, ls='--')
             ax.scatter(dp[0, 0], dp[0, 1], dp[0, 2], color=HAZARD_COLOR, marker='o', s=40, facecolors='none', linewidth=1.2)
-            _draw_sphere(ax, dp, dyn_r[k], HAZARD_COLOR, alpha=0.35)
+            _draw_sphere(ax, dp[0], dyn_r[k], HAZARD_COLOR, alpha=0.35)
     agent_handles = []
     for i in range(n_agents):
         c = AGENT_COLORS[i % len(AGENT_COLORS)]
@@ -302,8 +302,8 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
     heads = [ax.plot([], [], [], color=AGENT_COLORS[i % len(AGENT_COLORS)], marker='o', ms=6) for i in range(n_agents)]
     dyn_lines = []
     dyn_sphere_colls = []
-    if dyn_path is not None and dyn_path.shape > 0:
-        for k in range(dyn_path.shape):
+    if dyn_path is not None and dyn_path.shape[1] > 0:
+        for k in range(dyn_path.shape[1]):
             dyn_lines.append(ax.plot([], [], [], color=HAZARD_COLOR, lw=1.5, ls='--', alpha=0.5))
             dyn_sphere_colls.append(None)
 
@@ -316,8 +316,8 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
             heads[i].set_data([path[t, i, 0]], [path[t, i, 1]])
             heads[i].set_3d_properties([path[t, i, 2]])
         ret = lines + heads
-        if dyn_path is not None and dyn_path.shape > 0:
-            for k in range(dyn_path.shape):
+        if dyn_path is not None and dyn_path.shape[1] > 0:
+            for k in range(dyn_path.shape[1]):
                 seg = dyn_path[lo:t + 1, k, :]
                 dyn_lines[k].set_data(seg[:, 0], seg[:, 1])
                 dyn_lines[k].set_3d_properties(seg[:, 2])

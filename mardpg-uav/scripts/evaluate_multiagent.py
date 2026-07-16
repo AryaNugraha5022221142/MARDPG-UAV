@@ -465,6 +465,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                                 wandb.log(log_dict)
                         except Exception as ex:
                             pass
+                            pass
 
                     ep.update(method=name, variant=variant, seed=seed_idx,
                               checkpoint=str(ckpt), config_name=cname,
@@ -496,8 +497,11 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                                 }
                                 if os.path.exists(out_vid):
                                     log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
+                                elif os.path.exists(out_vid.replace('.mp4', '.gif')):
+                                    log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
                                 wandb.log(log_dict)
                         except Exception as ex:
+                            pass
                             pass
 
                 dur = time.time() - t0
