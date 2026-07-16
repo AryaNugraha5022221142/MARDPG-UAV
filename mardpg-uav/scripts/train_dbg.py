@@ -196,6 +196,7 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
         np.random.seed(_es)
 
         obs = env.reset(stage_cfg)
+            print('[DEBUG] env.reset done', flush=True)
 
         for ag in agents:
             ag.reset_hidden(batch_size=1, eval_mode=True)
@@ -256,6 +257,7 @@ def train(config_path: str = "config/default.yaml",
           no_curriculum: bool = False):
 
     cfg      = load_config(config_path)
+    print('[DEBUG] load_config done', flush=True)
     env_cfg  = cfg['environment']; env_cfg['seed'] = seed
     algo_cfg = cfg['algorithm']
     net_cfg  = cfg['network']
@@ -283,8 +285,10 @@ def train(config_path: str = "config/default.yaml",
 
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     logger = WandbLogger(use_wandb=use_wandb, project="mardpg-uav", name=run_name if run_name else f"run_{run_id}_seed_{seed}", config=cfg)
+    print('[DEBUG] WandbLogger done', flush=True)
 
     env        = MultiUAVEnv(env_cfg)
+    print('[DEBUG] MultiUAVEnv done', flush=True)
     env.action_space.seed(seed)
     n_agents   = env_cfg['n_agents']
     obs_dim    = env.obs_dim
@@ -327,6 +331,7 @@ def train(config_path: str = "config/default.yaml",
         tail_pad=algo_cfg.get('tail_pad', None))
 
     noise   = GaussianNoise(n_agents=n_agents, action_dim=action_dim,
+    print('[DEBUG] GaussianNoise done', flush=True)
                             sigma=algo_cfg.get('noise_std', 0.3),
                             sigma_min=algo_cfg.get('noise_min', 0.05),
                             decay=algo_cfg.get('noise_decay', 0.9995))
@@ -356,6 +361,7 @@ def train(config_path: str = "config/default.yaml",
         scaled_curriculum.append(new_stage)
 
     cl = CurriculumManager(
+    print('[DEBUG] CurriculumManager done', flush=True)
         scaled_curriculum,
         required_consecutive_passes=algo_cfg.get('promotion_consecutive_evals', 2),
         fast_consecutive_passes=algo_cfg.get('promotion_fast_consecutive_evals', 1),
@@ -377,6 +383,7 @@ def train(config_path: str = "config/default.yaml",
     global_step   = 0
     if resume_dir:
         try:
+    print('[DEBUG] try block started', flush=True)
             sc = torch.load(f"{resume_dir}/shared_actor.pt", map_location=device)
             agents[0].shared_extractor.load_state_dict(sc['shared_actor'])
             if 'shared_opt' in sc:
@@ -398,6 +405,7 @@ def train(config_path: str = "config/default.yaml",
 
         for i, ag in enumerate(agents):
             try:
+    print('[DEBUG] try block started', flush=True)
                 ckpt = torch.load(f"{resume_dir}/agent_{i}.pt",
                                   map_location=device, weights_only=True)
             except Exception:
@@ -424,6 +432,7 @@ def train(config_path: str = "config/default.yaml",
         replay_path = f"{resume_dir}/replay.npz"
         if os.path.exists(replay_path):
             try:
+    print('[DEBUG] try block started', flush=True)
                 buffer.load(replay_path)
                 pass
             except Exception as e:
@@ -454,12 +463,14 @@ def train(config_path: str = "config/default.yaml",
 
     episode = start_episode
     try:
+    print('[DEBUG] try block started', flush=True)
         for episode in itertools.count(start_episode):
             if max_episodes != -1 and episode >= max_episodes:
                 break
             stage_cfg = cl.get_current_config()
 
             obs = env.reset(stage_cfg)
+            print('[DEBUG] env.reset done', flush=True)
 
             cl.episodes_in_stage += 1
 
@@ -853,6 +864,6 @@ if __name__ == "__main__":
                 'ind_rdpg': (True, False), 'iddpg': (False, False)}[a.variant]
     train(a.config, a.device, a.resume, a.seed,
           out_dir=a.out_dir, run_name=a.run_name,
-          max_episodes=a.max_episodes, use_wandb=False,
+          max_episodes=a.max_episodes, use_wandb=not a.no_wandb,
           recurrent=rec, centralized=cen, no_curriculum=a.no_curriculum)
 

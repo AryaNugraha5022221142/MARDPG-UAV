@@ -283,8 +283,10 @@ def train(config_path: str = "config/default.yaml",
 
     run_id = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
     logger = WandbLogger(use_wandb=use_wandb, project="mardpg-uav", name=run_name if run_name else f"run_{run_id}_seed_{seed}", config=cfg)
+    print('[DEBUG] WandbLogger created', flush=True)
 
     env        = MultiUAVEnv(env_cfg)
+    print('[DEBUG] MultiUAVEnv created', flush=True)
     env.action_space.seed(seed)
     n_agents   = env_cfg['n_agents']
     obs_dim    = env.obs_dim
@@ -307,6 +309,7 @@ def train(config_path: str = "config/default.yaml",
             recurrent=recurrent, centralized=centralized,
             device=device)
         agents.append(ag)
+        print(f'[DEBUG] Agent {i} created', flush=True)
 
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])
@@ -321,12 +324,14 @@ def train(config_path: str = "config/default.yaml",
         _shared_clip = min(_shared_clip, 1.0)
 
     buffer = SequenceReplayBuffer(
+    print('[DEBUG] Replay buffer created', flush=True)
         capacity=algo_cfg['replay_capacity'],
         seq_len=algo_cfg['seq_len'] + algo_cfg.get('burn_in', 10),
         n_agents=n_agents, obs_dim=obs_dim, action_dim=action_dim,
         tail_pad=algo_cfg.get('tail_pad', None))
 
     noise   = GaussianNoise(n_agents=n_agents, action_dim=action_dim,
+    print('[DEBUG] Noise created', flush=True)
                             sigma=algo_cfg.get('noise_std', 0.3),
                             sigma_min=algo_cfg.get('noise_min', 0.05),
                             decay=algo_cfg.get('noise_decay', 0.9995))
@@ -460,6 +465,7 @@ def train(config_path: str = "config/default.yaml",
             stage_cfg = cl.get_current_config()
 
             obs = env.reset(stage_cfg)
+            print('[DEBUG] env.reset() called', flush=True)
 
             cl.episodes_in_stage += 1
 
@@ -853,6 +859,6 @@ if __name__ == "__main__":
                 'ind_rdpg': (True, False), 'iddpg': (False, False)}[a.variant]
     train(a.config, a.device, a.resume, a.seed,
           out_dir=a.out_dir, run_name=a.run_name,
-          max_episodes=a.max_episodes, use_wandb=False,
+          max_episodes=a.max_episodes, use_wandb=not a.no_wandb,
           recurrent=rec, centralized=cen, no_curriculum=a.no_curriculum)
 
