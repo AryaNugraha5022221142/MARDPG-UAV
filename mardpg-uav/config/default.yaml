@@ -82,7 +82,7 @@ network:
 # not with code edits (set realtime_render:false on the VM, true locally).
 # ---------------------------------------------------------------------------
 render:
-  enable_render:     false          # master switch for producing any media
+  enable_render:     true          # master switch for producing any media
   realtime_render:   false          # live interactive window (local desktops only)
   record_video:      true           # write an MP4 of the best episode per scene
   save_png:          true           # write publication-quality trajectory PNGs

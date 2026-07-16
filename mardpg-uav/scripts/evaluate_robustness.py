@@ -1,3 +1,4 @@
+import sys
 import os
 import time
 import math
@@ -5,11 +6,14 @@ import argparse
 import yaml
 import numpy as np
 import pandas as pd
+import torch
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents
 
 class LearnedPolicy:
-
     def __init__(self, agents, name):
         self.agents = agents
         self.name = name
@@ -34,105 +38,19 @@ class LearnedPolicy:
         self._prev = acts.copy()
         return acts
 
-def run_episode(env, policy, stage_cfg, env_cfg, seed):
-    n_agents = env_cfg['n_agents']
-    dt = env_cfg.get('dt', 0.1)
-    iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
-    env.scene_gen.rng.seed(seed)
-    env.rangefinder.rng.seed(seed)
-    np.random.seed(seed)
-    obs = env.reset(stage_cfg)
-    policy.reset(env)
-    start_pos = env.agents_state[:, :3].copy()
-    path = [start_pos.copy()]
-    dyn_path = []
-    dp_start = []
-    if hasattr(env, 'dynamic_obstacles'):
-        for o in env.dynamic_obstacles:
-            dp_start.append(o.position.copy())
-    dyn_path.append(dp_start)
-    cum_reward = np.zeros(n_agents)
-    time_to_goal = np.full(n_agents, np.nan)
-    coll_type = [None] * n_agents
-    infer_time_total = 0.0
-    n_decisions = 0
-    info = {}
-    for t in range(stage_cfg.get('max_steps', 1500)):
-        if stage_cfg.get('variable_speed', False):
-            env.agent_v = np.clip(env.agent_v + np.random.uniform(-0.1, 0.1, env.n_agents), 0.5, 5.0)
-        live_before = ~env.agent_done.copy()
-        dyn_before = env.agent_dyn_collided.copy() if hasattr(env, 'agent_dyn_collided') else np.zeros(n_agents, bool)
-        t0 = time.perf_counter()
-        acts = policy.act(env, obs)
-        infer_time_total += time.perf_counter() - t0
-        n_decisions += int(live_before.sum())
-        (obs, rewards, done, info) = env.step(acts)
-        cum_reward += np.asarray(rewards)
-        path.append(env.agents_state[:, :3].copy())
-        dp = []
-        for o in env.dynamic_obstacles:
-            dp.append(o.position.copy())
-        dyn_path.append(dp)
-        for i in range(n_agents):
-            if info['step_reached'][i] and np.isnan(time_to_goal[i]):
-                time_to_goal[i] = (t + 1) * dt
-        pos_now = env.agents_state[:, :3]
-        for i in range(n_agents):
-            if info['step_collisions'][i] and coll_type[i] is None:
-                if env.agent_dyn_collided[i] and (not dyn_before[i]):
-                    coll_type[i] = 'dynamic'
-                else:
-                    dmin = min((np.linalg.norm(pos_now[i] - pos_now[j]) for j in range(n_agents) if j != i and live_before[j]), default=np.inf)
-                    coll_type[i] = 'inter_uav' if dmin < iu_min else 'static'
-        if done:
-            break
-    path = np.array(path)
-    T = len(path)
-    reached = env.agent_reached.copy()
-    collided = env.agent_collided.copy()
-    dyn_collided = env.agent_dyn_collided.copy() if hasattr(env, 'agent_dyn_collided') else np.zeros(n_agents, bool)
-    goals = env.goals.copy()
-    flight_dist = np.zeros(n_agents)
-    for i in range(n_agents):
-        flight_dist[i] = float(np.sum(np.linalg.norm(np.diff(path[:, i, :], axis=0), axis=1)))
-    straight = np.array([np.linalg.norm(goals[i] - start_pos[i]) for i in range(n_agents)])
-    tot_actual = float(flight_dist.sum())
-    path_eff_paper = float(straight.sum() / tot_actual) if tot_actual > 1e-08 else np.nan
-    reached_eff = []
-    for i in range(n_agents):
-        if reached[i] and flight_dist[i] > 1e-08:
-            reached_eff.append(min(straight[i] / flight_dist[i], 1.0))
-    path_eff_reached = float(np.mean(reached_eff)) if reached_eff else np.nan
-    neither = ~reached & ~collided
-    trapped_rate_paper = float(neither.mean())
-    trapped_rate_progress = float(np.mean(info.get('trapped', np.zeros(n_agents, bool))))
-    dyn_path = np.array(dyn_path) if dyn_path else np.zeros((len(path), 0, 3))
-    dyn_r = np.array([o.size[0] for o in env.dynamic_obstacles]) if hasattr(env, 'dynamic_obstacles') else np.array([])
-    agent_rows = []
-    for i in range(n_agents):
-        peff = min(straight[i] / flight_dist[i], 1.0) if reached[i] and flight_dist[i] > 1e-08 else np.nan
-        agent_rows.append(dict(agent=i, reached=bool(reached[i]), collided=bool(collided[i]), dyn_collided=bool(dyn_collided[i]), collision_type=coll_type[i] if collided[i] else '', flight_distance_m=flight_dist[i], straight_distance_m=float(straight[i]), time_to_goal_s=float(time_to_goal[i]), path_efficiency=float(peff), cumulative_reward=float(cum_reward[i])))
-    ep = dict(seed=seed, steps=T - 1, flight_time_s=(T - 1) * dt, success_rate=float(reached.mean()), mission_success=bool(reached.all()), collision_rate=float(collided.mean()), dyn_collision_rate=float(dyn_collided.mean()), trapped_rate_paper=trapped_rate_paper, trapped_rate_progress=trapped_rate_progress, team_reward=float(cum_reward.sum()), mean_agent_reward=float(cum_reward.mean()), path_eff_paper=path_eff_paper, path_eff_reached=path_eff_reached, mean_flight_distance_m=float(flight_dist.mean()), total_flight_distance_m=float(flight_dist.sum()), mean_inference_ms_per_decision=1000.0 * infer_time_total / max(1, n_decisions), n_static_collisions=sum((1 for c in coll_type if c == 'static')), n_inter_uav_collisions=sum((1 for c in coll_type if c == 'inter_uav')), n_dynamic_collisions=sum((1 for c in coll_type if c == 'dynamic')), path=path, dyn_path=dyn_path, dyn_r=dyn_r, reached=reached, collided=collided, goals=goals)
-    return (ep, agent_rows)
-
-def _se(v):
-    v = np.asarray(v, float)
-    v = v[~np.isnan(v)]
-    n = len(v)
-    return v.std(ddof=1) / np.sqrt(n) if n > 1 else 0.0
-
-def _wilson(k, n, z=1.96):
-    if n == 0:
-        return (np.nan, np.nan, np.nan)
-    p = k / n
-    denom = 1.0 + z * z / n
-    centre = (p + z * z / (2 * n)) / denom
-    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
-    return (p, max(0.0, centre - half), min(1.0, centre + half))
-
 def build_base_scenarios(env_cfg):
-    env_size = env_cfg.get('env_size', [100.0, 100.0, 60.0])
-    return {'S1_Static_Dynamic': {'env_size': env_size, 'static_obs': 16, 'dynamic_obs': 0, 'dynamic_radius': 2.0, 'dynamic_speed': [1.0, 2.0], 'min_sep': 40.0, 'max_steps': 1500}, 'S2_Longer_Distance': {'env_size': env_size, 'static_obs': 16, 'dynamic_obs': 0, 'min_sep': 60.0, 'max_steps': 1500}, 'S3_Fast_Dynamic': {'env_size': env_size, 'static_obs': 16, 'dynamic_obs': 0, 'dynamic_radius': 2.5, 'dynamic_speed': [2.5, 3.5], 'min_sep': 40.0, 'max_steps': 1500}}
+    s_cfg = dict(env_size=[100.0, 100.0, 60.0], min_start_sep=12.0, static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500)
+    return {
+        'S1_Static_Dynamic': dict(s_cfg, static_obs=20, dynamic_obs=2),
+        'S3_Fast_Dynamic': dict(s_cfg, static_obs=25, dynamic_obs=3)
+    }
+
+def run_episode(env, policy, stage_cfg, env_cfg, seed):
+    # Call generalization's run_episode
+    import scripts.evaluate_generalization as eg
+    (ep, ag, rnd) = eg.run_episode(env, policy, stage_cfg, env_cfg, seed)
+    ep.update(rnd)
+    return ep, ag
 
 def build_experiment_configs():
     return {'sensor_noise': [{'lidar_noise': 0.0, 'exp_val': 'sigma=0.0'}, {'lidar_noise': 0.1, 'exp_val': 'sigma=0.1'}, {'lidar_noise': 0.2, 'exp_val': 'sigma=0.2'}, {'lidar_noise': 0.3, 'exp_val': 'sigma=0.3'}, {'lidar_noise': 0.4, 'exp_val': 'sigma=0.4'}, {'lidar_noise': 0.5, 'exp_val': 'sigma=0.5'}], 'variable_speed': [{'variable_speed': False, 'exp_val': 'Constant'}, {'variable_speed': True, 'exp_val': 'Dynamic'}]}
@@ -142,7 +60,7 @@ def run_evaluations(args, wlogger=None):
     env_cfg = cfg['environment']
     (agents, _) = load_agents(args.checkpoint, args.config, args.device, variant=args.variant)
     policy = LearnedPolicy(agents, name='MARDPG')
-    env = MultiUAVEnv(env_cfg)
+    
     experiments = build_experiment_configs()
     base_scenarios = build_base_scenarios(env_cfg)
     for (exp_name, exp_sweeps) in experiments.items():
@@ -158,6 +76,8 @@ def run_evaluations(args, wlogger=None):
                 stage_cfg.update({k: v for (k, v) in sweep.items() if k != 'exp_val'})
                 import copy
                 env = MultiUAVEnv(copy.deepcopy(env_cfg))
+                
+                sub = []
                 for ep in range(args.episodes):
                     seed = args.base_seed + ep
                     if scenario_name == 'S1_Static_Dynamic':
@@ -169,28 +89,28 @@ def run_evaluations(args, wlogger=None):
                     (ep_stats, ag_stats) = run_episode(env, policy, stage_cfg, env_cfg, seed)
                     ep_stats.update(experiment=exp_name, condition=exp_val, scenario=scenario_name)
                     ep_records.append(ep_stats)
-                    for r in ag_stats:
-                        r.update(experiment=exp_name, condition=exp_val, scenario=scenario_name, seed=seed)
-                        ag_records.append(r)
-                dur = time.time() - t0
-                sub = [r for r in ep_records if r['condition'] == exp_val and r['scenario'] == scenario_name]
-                sr = np.mean([r['success_rate'] for r in sub])
+                    ag_records.extend(ag_stats)
+                    sub.append(ep_stats)
+                    
                 cr = np.mean([r['collision_rate'] for r in sub])
                 best_ep = max(sub, key=lambda x: (x['mission_success'], x['success_rate'], x['team_reward'], -x['steps']))
                 if not args.no_render:
-                    from mardpg_uav.rendering import RenderConfig
-                    from mardpg_uav.rendering.media import generate_episode_media
-                    from mardpg_uav.wandb_logger import WandbLogger
-                    title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
-                    tag = f"best_{scenario_name}_{exp_val}"
-                    rcfg = RenderConfig(enable_render=True, record_video=True,
-                                        save_png=True, output_directory=exp_dir)
-                    produced = generate_episode_media(env, env_cfg, best_ep, rcfg,
-                                                      tag, title, exp_dir)
-                    if args.wandb and wlogger:
-                        wlogger.log_media(
-                            produced,
-                            prefix=f"video/{exp_name}/{scenario_name}/{exp_val}")
+                    try:
+                        from mardpg_uav.rendering import RenderConfig
+                        from mardpg_uav.rendering.media import generate_episode_media
+                        title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
+                        tag = f"best_{scenario_name}_{exp_val}"
+                        rcfg = RenderConfig(enable_render=True, record_video=True,
+                                            save_png=True, output_directory=exp_dir)
+                        produced = generate_episode_media(env, env_cfg, best_ep, rcfg,
+                                                          tag, title, exp_dir)
+                        if args.wandb and wlogger:
+                            wlogger.log_media(
+                                produced,
+                                prefix=f"video/{exp_name}/{scenario_name}/{exp_val}")
+                    except Exception as e:
+                        pass
+                
                 for ep in sub:
                     ep.pop('path', None)
                     ep.pop('dyn_path', None)
@@ -198,29 +118,26 @@ def run_evaluations(args, wlogger=None):
                     ep.pop('reached', None)
                     ep.pop('collided', None)
                     ep.pop('goals', None)
+                    
         df_ep = pd.DataFrame(ep_records)
         df_ag = pd.DataFrame(ag_records)
         df_ep.to_csv(os.path.join(exp_dir, 'eval_episodes.csv'), index=False)
         df_ag.to_csv(os.path.join(exp_dir, 'eval_agents.csv'), index=False)
-
+        
         def agg(g):
             n = len(g)
             out = dict(n_episodes=n)
             for col in ['success_rate', 'collision_rate', 'dyn_collision_rate', 'path_eff_paper', 'path_eff_reached', 'flight_time_s']:
                 v = g[col].astype(float)
                 out[f'{col}_mean'] = np.nanmean(v)
-                out[f'{col}_se'] = _se(v)
-            (msr, lo, hi) = _wilson(int(g['mission_success'].sum()), n)
-            out['mission_success_rate'] = msr
-            out['mission_success_ci_lo'] = lo
-            out['mission_success_ci_hi'] = hi
             return pd.Series(out)
-        df_sum = df_ep.groupby(['condition', 'scenario'], sort=False).apply(agg).reset_index()
-        df_sum.to_csv(os.path.join(exp_dir, 'eval_summary.csv'), index=False)
-        if args.wandb:
-            import wandb
+        
+        df_sum = df_ep.groupby(['scenario', 'condition']).apply(agg).reset_index()
+        df_sum.to_csv(os.path.join(exp_dir, 'summary.csv'), index=False)
+        
+        if args.wandb and wlogger:
             for (_, row) in df_sum.iterrows():
-                wandb.log({f"{exp_name}/{row['scenario']}/{row['condition']}/success_rate": row['success_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/collision_rate": row['collision_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/flight_time_s": row['flight_time_s_mean']})
+                wlogger._wandb.log({f"{exp_name}/{row['scenario']}/{row['condition']}/success_rate": row['success_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/collision_rate": row['collision_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/flight_time_s": row['flight_time_s_mean']})
 
 def main():
     p = argparse.ArgumentParser()
@@ -237,14 +154,18 @@ def main():
     p.add_argument('--wandb-name', default=None)
     p.add_argument('--suite', default='quick', choices=['quick', 'full'], help='For compatibility, currently ignored as we run fixed scenarios')
     args = p.parse_args()
+    
     wlogger = None
     if args.wandb:
         from mardpg_uav.wandb_logger import WandbLogger
-        wlogger = WandbLogger(True, args.wandb_project, args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}', None)
+        wlogger = WandbLogger(True, args.wandb_project, args.config, args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}')
         if wlogger.use_wandb:
             wlogger._wandb.config.update(vars(args))
+    
     run_evaluations(args, wlogger)
+    
     if wlogger and wlogger.use_wandb:
         wlogger._wandb.finish()
+
 if __name__ == '__main__':
     main()
