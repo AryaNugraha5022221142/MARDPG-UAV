@@ -287,7 +287,7 @@ def _bootstrap_ci(values, n_boot=10000, agg=np.mean, ci=0.95, rng=None):
     if n == 0:
         return (np.nan, np.nan, np.nan)
     if n == 1:
-        return (float(v), np.nan, np.nan)
+        return (float(v.item()), np.nan, np.nan)
     rng = rng or np.random.default_rng(12345)
     boots = np.array([agg(v[rng.integers(0, n, size=n)]) for _ in range(n_boot)])
     return (float(agg(v)),

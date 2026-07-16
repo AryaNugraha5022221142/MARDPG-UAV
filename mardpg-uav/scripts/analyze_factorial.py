@@ -20,7 +20,7 @@ def _bootstrap_ci(per_seed_effect, n_boot=10000, ci=0.95, seed=7):
     if n == 0:
         return (np.nan, np.nan, np.nan)
     if n == 1:
-        return (float(v), np.nan, np.nan)
+        return (float(v.item()), np.nan, np.nan)
     rng = np.random.default_rng(seed)
     boots = np.array([v[rng.integers(0, n, size=n)].mean() for _ in range(n_boot)])
     return (float(v.mean()),
