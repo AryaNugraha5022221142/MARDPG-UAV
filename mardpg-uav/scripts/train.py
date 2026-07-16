@@ -364,6 +364,7 @@ def train(config_path: str = "config/default.yaml",
 
     flush_frac       = float(algo_cfg.get('replay_flush_frac_on_promotion', 0.0))
     flush_frac_shift = float(algo_cfg.get('replay_flush_frac_on_obstacle_shift', 0.5))
+    tgt_noise        = float(algo_cfg.get('target_noise', 0.1))
     tgt_noise_clip   = float(algo_cfg.get('target_noise_clip', 0.2))
 
     GRAD_WIN = 200
