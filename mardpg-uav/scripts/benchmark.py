@@ -1,3 +1,6 @@
+import os
+import sys
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse, time, yaml, torch, numpy as np
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
