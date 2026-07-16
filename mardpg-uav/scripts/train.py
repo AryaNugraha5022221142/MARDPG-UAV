@@ -1,11 +1,8 @@
 import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import time
 import itertools
 import yaml, torch, numpy as np, random, datetime
 from collections import deque
-import wandb
 from mardpg_uav.wandb_logger import WandbLogger
 from typing import List
 

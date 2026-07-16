@@ -11,10 +11,15 @@ class WandbLogger:
         self.use_wandb = bool(use_wandb)
         self._wandb = None
         if self.use_wandb:
-            import wandb
-            self._wandb = wandb
-            if wandb.run is None:
-                wandb.init(project=project, config=config, name=name)
+            try:
+                import wandb
+                self._wandb = wandb
+                if wandb.run is None:
+                    wandb.init(project=project, config=config, name=name)
+            except Exception as e:
+                log.warning("Wandb init failed (%s). Disabling wandb logging.", e)
+                self.use_wandb = False
+                self._wandb = None
 
     # -- scalars -----------------------------------------------------------
     def log(self, data, step=None):

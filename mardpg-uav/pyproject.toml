@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mardpg_uav"
+version = "0.1.0"
+description = "MARDPG-UAV Multi-Agent RL"
+dependencies = [
+    "numpy>=1.21.0",
+    "torch>=1.12.0",
+    "matplotlib>=3.5.0",
+    "gymnasium",
+    "pandas",
+    "PyYAML>=6.0",
+    "typing-extensions"
+]
+
+[project.optional-dependencies]
+media = ["opencv-python>=4.5.0", "imageio>=2.9.0"]
+dev = ["pytest", "wandb"]
+
+[tool.setuptools.packages.find]
+include = ["mardpg_uav*", "scripts*"]

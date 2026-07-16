@@ -1,8 +1,4 @@
-import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import argparse
-import os
 import numpy as np
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents, make_learned_act_fn

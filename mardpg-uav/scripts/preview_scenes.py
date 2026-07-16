@@ -1,10 +1,7 @@
 import os
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml
 import numpy as np
 import matplotlib.pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 
 def plot_scene(ax, env, title):

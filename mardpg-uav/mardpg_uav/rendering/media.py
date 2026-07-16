@@ -64,7 +64,12 @@ def generate_episode_media(env, env_cfg, rnd, rcfg: RenderConfig,
             rec = VideoRecorder(vid_path, fps=rcfg.video_fps, codec=rcfg.video_codec)
             for f in frames:
                 rec.add_frame(f)
-            produced["video"] = rec.close()  # actual path (mp4 or gif fallback)
+            try:
+                vid_res = rec.close()  # actual path (mp4 or gif fallback)
+                if vid_res:
+                    produced["video"] = vid_res
+            except Exception as e:
+                log.warning("Video rendering failed and was skipped: %s", e)
 
         if rcfg.save_frames:
             frame_dir = os.path.join(outdir, f"{tag}_frames")

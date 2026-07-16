@@ -109,14 +109,22 @@ class VideoRecorder:
     def _flush_imageio(self) -> str:
         try:
             import imageio.v2 as imageio
+        except ImportError:
+            log.error("Cannot save video because imageio is not installed.")
+            return ""
+
+        try:
             imageio.mimsave(self.out_path, self._imageio_frames, fps=self.fps)
             return self.out_path
         except Exception as e:
             gif_path = os.path.splitext(self.out_path)[0] + ".gif"
             log.warning("imageio mp4 failed (%s); writing GIF %s instead.", e, gif_path)
-            import imageio.v2 as imageio
-            imageio.mimsave(gif_path, self._imageio_frames, fps=self.fps)
-            return gif_path
+            try:
+                imageio.mimsave(gif_path, self._imageio_frames, fps=self.fps)
+                return gif_path
+            except Exception as e2:
+                log.error("imageio gif fallback also failed: %s", e2)
+                return ""
 
     def __enter__(self):
         return self

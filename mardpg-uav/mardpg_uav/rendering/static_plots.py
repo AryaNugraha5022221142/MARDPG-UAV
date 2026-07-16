@@ -16,7 +16,7 @@ from matplotlib.lines import Line2D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
 
 from .scene import (
-    agent_color, AGENT_COLORS, HAZARD_COLOR,
+    agent_color, HAZARD_COLOR,
     draw_static_obstacles_3d, draw_static_obstacles_2d, draw_sphere,
 )
 

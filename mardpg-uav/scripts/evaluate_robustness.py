@@ -1,5 +1,3 @@
-import sys
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import os
 import time
 import math
@@ -7,7 +5,6 @@ import argparse
 import yaml
 import numpy as np
 import pandas as pd
-import torch
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents
 
@@ -140,7 +137,7 @@ def build_base_scenarios(env_cfg):
 def build_experiment_configs():
     return {'sensor_noise': [{'lidar_noise': 0.0, 'exp_val': 'sigma=0.0'}, {'lidar_noise': 0.1, 'exp_val': 'sigma=0.1'}, {'lidar_noise': 0.2, 'exp_val': 'sigma=0.2'}, {'lidar_noise': 0.3, 'exp_val': 'sigma=0.3'}, {'lidar_noise': 0.4, 'exp_val': 'sigma=0.4'}, {'lidar_noise': 0.5, 'exp_val': 'sigma=0.5'}], 'variable_speed': [{'variable_speed': False, 'exp_val': 'Constant'}, {'variable_speed': True, 'exp_val': 'Dynamic'}]}
 
-def run_evaluations(args):
+def run_evaluations(args, wlogger=None):
     cfg = yaml.safe_load(open(args.config))
     env_cfg = cfg['environment']
     (agents, _) = load_agents(args.checkpoint, args.config, args.device, variant=args.variant)
@@ -190,8 +187,8 @@ def run_evaluations(args):
                                         save_png=True, output_directory=exp_dir)
                     produced = generate_episode_media(env, env_cfg, best_ep, rcfg,
                                                       tag, title, exp_dir)
-                    if args.wandb:
-                        WandbLogger(True, None, None, None).log_media(
+                    if args.wandb and wlogger:
+                        wlogger.log_media(
                             produced,
                             prefix=f"video/{exp_name}/{scenario_name}/{exp_val}")
                 for ep in sub:
@@ -240,13 +237,14 @@ def main():
     p.add_argument('--wandb-name', default=None)
     p.add_argument('--suite', default='quick', choices=['quick', 'full'], help='For compatibility, currently ignored as we run fixed scenarios')
     args = p.parse_args()
+    wlogger = None
     if args.wandb:
-        import wandb
-        wandb.init(project=args.wandb_project, name=args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}')
-        wandb.config.update(vars(args))
-    run_evaluations(args)
-    if args.wandb:
-        import wandb
-        wandb.finish()
+        from mardpg_uav.wandb_logger import WandbLogger
+        wlogger = WandbLogger(True, args.wandb_project, args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}', None)
+        if wlogger.use_wandb:
+            wlogger._wandb.config.update(vars(args))
+    run_evaluations(args, wlogger)
+    if wlogger and wlogger.use_wandb:
+        wlogger._wandb.finish()
 if __name__ == '__main__':
     main()
