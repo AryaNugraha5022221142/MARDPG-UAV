@@ -58,7 +58,7 @@ class MARDPGAgent:
                 if self.actor_hidden is None:
                     self.actor_hidden = self._init_hidden(1)
                 (act, self.actor_hidden) = self.actor(obs_t, pa_t, self.actor_hidden)
-            return act[:, -1, :].cpu().numpy()
+            return act[0, -1].cpu().numpy()
 
     def reset_hidden(self, batch_size: int=1, eval_mode: bool=False):
         h = self._init_hidden(batch_size)

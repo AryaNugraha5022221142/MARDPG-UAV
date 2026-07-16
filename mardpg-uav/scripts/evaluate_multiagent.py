@@ -147,8 +147,10 @@ class LearnedPolicy:
                 acts.append(np.zeros(env.action_dim, np.float32))
             else:
                 a = ag.select_action(obs[i], self._prev[i], evaluate=True)
+                assert a.shape == (env.action_dim,), f"Agent {i} returned {a.shape}, expected {(env.action_dim,)}"
                 acts.append(np.clip(a, -ag.actor.action_bound, ag.actor.action_bound))
         acts = np.array(acts, np.float32)
+        assert acts.shape == (env.n_agents, env.action_dim), f"actions shape = {acts.shape}"
         self._prev = acts.copy()
         return acts
 
@@ -364,7 +366,8 @@ def aggregate_method_iqm(df_seed, regimes=('in_dist',)):
             point = _iqm(mat.flatten())
 
             rng = np.random.default_rng(2024)
-            n_seeds = mat.shapeboots = []
+            n_seeds = mat.shape[0]
+            boots = []
             for _ in range(10000):
                 idx = rng.integers(0, n_seeds, size=n_seeds)
                 boots.append(_iqm(mat[idx].flatten()))
@@ -411,7 +414,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
     try:
         env.scene_gen.rng.seed(base_seed)
         env.rangefinder.rng.seed(base_seed)
-        env.reset(suite)
+        env.reset(suite[0][2])
     except NameError as e:
         raise SystemExit(
             f"{e}\nThe crossing-assignment branch calls _nudge_free(); "

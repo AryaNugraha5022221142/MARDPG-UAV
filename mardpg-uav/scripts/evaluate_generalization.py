@@ -57,8 +57,10 @@ class LearnedPolicy:
                 acts.append(np.zeros(env.action_dim, np.float32))
             else:
                 a = ag.select_action(obs[i], self._prev[i], evaluate=True)
+                assert a.shape == (env.action_dim,), f"Agent {i} returned {a.shape}, expected {(env.action_dim,)}"
                 acts.append(np.clip(a, -ag.actor.action_bound, ag.actor.action_bound))
         acts = np.array(acts, np.float32)
+        assert acts.shape == (env.n_agents, env.action_dim), f"actions shape = {acts.shape}"
         self._prev = acts.copy()
         return acts
 
