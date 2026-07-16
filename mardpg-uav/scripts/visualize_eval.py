@@ -4,7 +4,7 @@ import yaml
 import numpy as np
 import torch
 import matplotlib
-matplotlib.use('Agg')
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from matplotlib.colors import to_rgb
 from matplotlib.collections import LineCollection
@@ -183,6 +183,7 @@ def plot_static(env, env_cfg, path, dyn_path, dyn_r, reached, collided, goals, s
     fig.suptitle(f'MARDPG-UAV eval | {stage_name} | {T} steps | reached {n_reached}/{n_agents}, collided {n_col}/{n_agents}', fontsize=14, fontweight='bold')
     plt.tight_layout(rect=[0, 0, 1, 0.97])
     plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
 
 def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
     n_agents = env_cfg['n_agents']
@@ -228,6 +229,7 @@ def plot_trajectory_top_down(env, env_cfg, render, title, out_path):
     axtop.set_title(title, fontsize=12, fontweight='bold', pad=14)
     axtop.grid(alpha=0.3)
     plt.savefig(out_path, dpi=200, bbox_inches='tight')
+    plt.close(fig)
     plt.close(fig)
 
 def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58):
@@ -282,6 +284,7 @@ def plot_trajectory_3d(env, env_cfg, render, title, out_path, elev=22, azim=-58)
     plt.tight_layout(rect=[0, 0.04, 1, 1])
     plt.savefig(out_path, dpi=200, bbox_inches='tight')
     plt.close(fig)
+    plt.close(fig)
 
 def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, tail=40):
     from matplotlib.animation import FuncAnimation
@@ -334,6 +337,7 @@ def animate(env, env_cfg, path, dyn_path, dyn_r, goals, stage_name, out_path, ta
         anim.save(out_path, writer='ffmpeg', dpi=120)
     except Exception:
         anim.save(out_path.replace('.mp4', '.gif'), writer='pillow', dpi=90)
+    plt.close(fig)
 
 def main():
     p = argparse.ArgumentParser()

@@ -154,7 +154,7 @@ class LearnedPolicy:
         self._prev = acts.copy()
         return acts
 
-def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
+def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, render_rt=False):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
@@ -170,6 +170,24 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
     dyn = getattr(env, 'dynamic_obstacles', []) if capture_render else []
     dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
     dyn_r = [d.size[0] for d in dyn] if dyn else []
+
+    if render_rt:
+        import matplotlib.pyplot as plt
+        if not hasattr(env, '_rt_fig'):
+            plt.ion()
+            env._rt_fig = plt.figure()
+            env._rt_ax = env._rt_fig.add_subplot(111, projection='3d')
+            env._rt_scats = []
+            for _ in range(n_agents):
+                env._rt_scats.append(env._rt_ax.plot([], [], [], marker='o', ls='')[0])
+            from visualize_eval import _draw_static_obstacles
+            _draw_static_obstacles(env._rt_ax, env, max_z=env_cfg['env_size'][2])
+        
+        env._rt_ax.set_xlim(0, env_cfg['env_size'][0])
+        env._rt_ax.set_ylim(0, env_cfg['env_size'][1])
+        env._rt_ax.set_zlim(0, env_cfg['env_size'][2])
+        for i in range(n_agents):
+            env._rt_ax.scatter(*env.goals[i], marker='*', color='blue')
 
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
@@ -257,6 +275,11 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False):
             path=path, reached=reached, collided=collided, goals=goals,
             dyn_path=np.array(dyn_path) if dyn else None, dyn_r=dyn_r
         )
+    if render_rt:
+        import matplotlib.pyplot as plt
+        if hasattr(env, '_rt_fig'):
+            plt.close(env._rt_fig)
+            delattr(env, '_rt_fig')
     return ep
 
 def _wilson(k, n, z=1.96):
@@ -404,7 +427,7 @@ def _expand_ckpts(arg):
         raise ValueError(f"No checkpoints resolved from '{arg}'")
     return out
 
-def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False, video=False):
+def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False, video=False, render_rt=False):
     cfg = load_config(config)
     env_cfg = cfg['environment']
     os.makedirs(outdir, exist_ok=True)
@@ -437,7 +460,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 for e in range(episodes):
                     scene_seed = base_seed + e
                     capture = wandb_log and (e < 3) and not video
-                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture)
+                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture, render_rt=render_rt)
 
                     sc = (1 if ep['mission_success'] else 0, ep['success_rate'], ep['team_reward'], -ep['steps'])
                     if best_score is None or sc > best_score:
@@ -473,7 +496,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                     ep_records.append(ep)
 
                 if video:
-                    best_ep = run_episode(env, provider, stage_cfg, env_cfg, best_seed, capture_render=True)
+                    best_ep = run_episode(env, provider, stage_cfg, env_cfg, best_seed, capture_render=True, render_rt=render_rt)
                     if '_render_rnd' in best_ep:
                         rnd = best_ep.pop('_render_rnd')
                         try:
@@ -569,6 +592,7 @@ def main():
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
     p.add_argument('--video', action='store_true', help='Generate video/animation of episodes')
+    p.add_argument('--render', action='store_true', help='Render the environment in real time')
     a = p.parse_args()
 
     methods = [(nm, var, ck) for nm, var, ck in a.method]
@@ -582,7 +606,7 @@ def main():
         wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
 
     df_ep, df_seed, df_sum, df_iqm = evaluate(methods, a.config, a.episodes, a.device, a.outdir,
-             a.base_seed, a.suite == 'quick', wandb_log=a.wandb, video=a.video)
+             a.base_seed, a.suite == 'quick', wandb_log=a.wandb, video=a.video, render_rt=a.render)
 
     if a.wandb:
         import wandb
