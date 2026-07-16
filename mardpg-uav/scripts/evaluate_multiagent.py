@@ -180,7 +180,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, ren
             env._rt_scats = []
             for _ in range(n_agents):
                 env._rt_scats.append(env._rt_ax.plot([], [], [], marker='o', ls='')[0])
-            from visualize_eval import _draw_static_obstacles
+            from scripts.visualize_eval import _draw_static_obstacles
             _draw_static_obstacles(env._rt_ax, env, max_z=env_cfg['env_size'][2])
         
         env._rt_ax.set_xlim(0, env_cfg['env_size'][0])
@@ -470,7 +470,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
                         try:
-                            from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
+                            from scripts.visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
                             title = f"Traj: {name} | {cname} | ep {e} | reaches {rnd['reached'].sum()}"
 
                             out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_3d.png')
@@ -500,7 +500,7 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                     if '_render_rnd' in best_ep:
                         rnd = best_ep.pop('_render_rnd')
                         try:
-                            from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
+                            from scripts.visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
                             title = f"BEST [{name}] | {cname} (seed {best_seed}) | reached {rnd['reached'].sum()}/{env.n_agents}"
 
                             out_png_3d = os.path.join(outdir, f'best_3d_{name}_s{seed_idx}_{cname}.png')
