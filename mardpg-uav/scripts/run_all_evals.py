@@ -19,7 +19,7 @@ def main():
     run(cmd1)
     cmd2 = ['python', os.path.join(script_dir, 'visualize_eval.py'), '--checkpoint', args.checkpoint, '--stage', str(args.stage), '--out', os.path.join(args.outdir, f'visualize_stage_{args.stage}.png')]
     run(cmd2)
-    cmd3 = ['python', os.path.join(script_dir, 'visualize_eval.py'), '--checkpoint', args.checkpoint, '--stage', str(args.stage), '--animate', '--out', os.path.join(args.outdir, f'animate_stage_{args.stage}.mp4')]
+    cmd3 = ['python', os.path.join(script_dir, 'visualize_eval.py'), '--checkpoint', args.checkpoint, '--stage', str(args.stage), '--animate', '--out', os.path.join(args.outdir, f'animate_stage_{args.stage}.png')]
     run(cmd3)
 if __name__ == '__main__':
     main()

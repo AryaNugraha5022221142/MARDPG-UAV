@@ -70,3 +70,28 @@ network:
   fc_goal_units:   8
   actor_lstm_hidden: 128
   critic_lstm_hidden: 128
+
+# ---------------------------------------------------------------------------
+# Rendering / media logging.
+#
+# Every option below can also be overridden from the command line (see
+# scripts/evaluate_multiagent.py --help). Nothing here affects training or the
+# numeric evaluation metrics; it only controls whether/how the environment is
+# visualised and where media is written. The same config works unchanged on a
+# headless GCP VM and on a local desktop -- switch behaviour with the flags,
+# not with code edits (set realtime_render:false on the VM, true locally).
+# ---------------------------------------------------------------------------
+render:
+  enable_render:     false          # master switch for producing any media
+  realtime_render:   false          # live interactive window (local desktops only)
+  record_video:      true           # write an MP4 of the best episode per scene
+  save_png:          true           # write publication-quality trajectory PNGs
+  save_frames:       false          # also dump the individual video frames as PNGs
+  frame_stride:      1              # when save_frames: keep every Nth frame
+  video_fps:         20             # frames per second of the recorded MP4
+  video_codec:       mp4v           # FourCC codec for the OpenCV writer (mp4v/avc1/XVID)
+  render_backend:    auto           # auto | Agg (headless) | TkAgg/QtAgg (interactive)
+  render_resolution: [1280, 960]    # [width, height] in pixels for rendered frames
+  image_dpi:         200            # DPI for the static publication PNGs
+  wandb_log_media:   true           # upload videos + images to Weights & Biases
+  output_directory:  eval_results   # where all rendered media is written

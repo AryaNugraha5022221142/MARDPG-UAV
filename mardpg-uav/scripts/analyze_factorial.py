@@ -1,4 +1,3 @@
-
 import argparse
 import numpy as np
 import pandas as pd
@@ -46,7 +45,7 @@ def _cell_table(df, metric, config_filter=None):
 
 def _effects_for(df, metric, config_filter, regime_label):
     cells = _cell_table(df, metric, config_filter)
-    common = set.intersection(*[set(cells[v].keys()) for v in _CELLS])        if all(cells[v] for v in _CELLS) else set()
+    common = set.intersection(*[set(cells[v].keys()) for v in _CELLS]) if all(cells[v] for v in _CELLS) else set()
     if not common:
         present = {v: sorted(cells[v].keys()) for v in _CELLS}
         raise SystemExit(
@@ -142,4 +141,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

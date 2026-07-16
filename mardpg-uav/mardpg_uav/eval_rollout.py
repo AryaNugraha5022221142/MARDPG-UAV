@@ -88,7 +88,7 @@ def run_eval(env, stage_cfg, act_fn, n_episodes=50, base_seed=0, on_episode_star
         if collect_paths:
             info['dyn_path'] = np.array(dyn_path) if dyn else None
             info['dyn_r'] = dyn_r
-        m.record_episode(length=L, info=info, start_pos=[ph[i] for i in range(env.n_agents)] if collect_paths else None, goal_pos=[env.goals[i] for i in range(env.n_agents)], path_history=ph if collect_paths else None, rewards=[ep_r])
+        m.record_episode(length=L, info=info, start_pos=[ph[0][i] for i in range(env.n_agents)] if collect_paths else None, goal_pos=[env.goals[i] for i in range(env.n_agents)], path_history=ph if collect_paths else None, rewards=[ep_r])
     return (m.get_window_stats(n_episodes), m)
 
 def make_learned_act_fn(agents, env):

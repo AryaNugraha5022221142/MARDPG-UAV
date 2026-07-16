@@ -1,4 +1,3 @@
-
 import os
 import re
 import glob
@@ -14,6 +13,13 @@ import torch
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from scripts.train import CURRICULUM, load_config
 from mardpg_uav.algorithm.mardpg import MARDPGAgent
+from mardpg_uav.rendering import RenderConfig, select_backend, LiveRenderer
+from mardpg_uav.rendering.media import generate_episode_media
+from mardpg_uav.wandb_logger import WandbLogger
+
+import logging
+logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+log = logging.getLogger("mardpg.eval")
 
 ENCOUNTER_DIST = 6.0
 
@@ -154,7 +160,7 @@ class LearnedPolicy:
         self._prev = acts.copy()
         return acts
 
-def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, render_rt=False):
+def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, live=None):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
@@ -171,23 +177,8 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, ren
     dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
     dyn_r = [d.size[0] for d in dyn] if dyn else []
 
-    if render_rt:
-        import matplotlib.pyplot as plt
-        if not hasattr(env, '_rt_fig'):
-            plt.ion()
-            env._rt_fig = plt.figure()
-            env._rt_ax = env._rt_fig.add_subplot(111, projection='3d')
-            env._rt_scats = []
-            for _ in range(n_agents):
-                env._rt_scats.append(env._rt_ax.plot([], [], [], marker='o', ls='')[0])
-            from scripts.visualize_eval import _draw_static_obstacles
-            _draw_static_obstacles(env._rt_ax, env, max_z=env_cfg['env_size'][2])
-        
-        env._rt_ax.set_xlim(0, env_cfg['env_size'][0])
-        env._rt_ax.set_ylim(0, env_cfg['env_size'][1])
-        env._rt_ax.set_zlim(0, env_cfg['env_size'][2])
-        for i in range(n_agents):
-            env._rt_ax.scatter(*env.goals[i], marker='*', color='blue')
+    if live is not None:
+        live.reset(env)
 
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
@@ -208,6 +199,9 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, ren
         obs, rewards, done, info = env.step(acts)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
+
+        if live is not None:
+            live.step(env)
 
         if capture_render and dyn:
             dyn_path.append([d.position.copy() for d in dyn])
@@ -275,11 +269,6 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, capture_render=False, ren
             path=path, reached=reached, collided=collided, goals=goals,
             dyn_path=np.array(dyn_path) if dyn else None, dyn_r=dyn_r
         )
-    if render_rt:
-        import matplotlib.pyplot as plt
-        if hasattr(env, '_rt_fig'):
-            plt.close(env._rt_fig)
-            delattr(env, '_rt_fig')
     return ep
 
 def _wilson(k, n, z=1.96):
@@ -355,7 +344,7 @@ def aggregate_across_seeds(df_seed):
     rows = []
     for (method, cname), g in df_seed.groupby(['method', 'config_name'], sort=False):
         row = dict(method=method, config_name=cname,
-                   variant=g['variant'].iloc, regime=g['regime'].iloc,
+                   variant=g['variant'].iloc[0], regime=g['regime'].iloc[0],
                    n_seeds=len(g))
         for m in metrics:
             seed_vals = g[m].astype(float).values
@@ -427,12 +416,30 @@ def _expand_ckpts(arg):
         raise ValueError(f"No checkpoints resolved from '{arg}'")
     return out
 
-def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_log=False, video=False, render_rt=False):
+def evaluate(methods, config, episodes, device, outdir, base_seed, quick,
+             wlogger=None, rcfg=None):
+    """Run the evaluation suite.
+
+    Args:
+        wlogger: a WandbLogger (its .use_wandb flag gates all uploads).
+        rcfg: a RenderConfig controlling media generation. When
+              rcfg.any_media_requested() is False, no rendering runs at all.
+    """
     cfg = load_config(config)
     env_cfg = cfg['environment']
+    rcfg = rcfg or RenderConfig.from_config(cfg)
+    outdir = rcfg.output_directory if rcfg else outdir
+    wandb_log = bool(wlogger and wlogger.use_wandb)
     os.makedirs(outdir, exist_ok=True)
     env = MultiUAVEnv(env_cfg)
     suite = build_suite(quick=quick)
+
+    # One live renderer for the whole run (built once; no-op when headless).
+    live = None
+    if rcfg.enable_render and rcfg.realtime_render:
+        live = LiveRenderer(env, env_cfg)
+
+    media_paths = []  # collected for the optional wandb Artifact bundle
 
     try:
         env.scene_gen.rng.seed(base_seed)
@@ -457,113 +464,88 @@ def evaluate(methods, config, episodes, device, outdir, base_seed, quick, wandb_
                 best_score = None
                 best_seed = None
 
+                # Capture trajectory data on the first few episodes so we can
+                # render per-episode PNGs (cheap) even when not doing video.
+                capture_first_few = rcfg.enable_render and rcfg.save_png
+
                 for e in range(episodes):
                     scene_seed = base_seed + e
-                    capture = wandb_log and (e < 3) and not video
-                    ep = run_episode(env, provider, stage_cfg, env_cfg, scene_seed, capture_render=capture, render_rt=render_rt)
+                    capture = capture_first_few and (e < 3)
+                    ep = run_episode(env, provider, stage_cfg, env_cfg,
+                                     scene_seed, capture_render=capture, live=live)
 
-                    sc = (1 if ep['mission_success'] else 0, ep['success_rate'], ep['team_reward'], -ep['steps'])
+                    sc = (1 if ep['mission_success'] else 0, ep['success_rate'],
+                          ep['team_reward'], -ep['steps'])
                     if best_score is None or sc > best_score:
                         best_score = sc
                         best_seed = scene_seed
 
                     if capture and '_render_rnd' in ep:
                         rnd = ep.pop('_render_rnd')
-                        try:
-                            from scripts.visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
-                            title = f"Traj: {name} | {cname} | ep {e} | reaches {rnd['reached'].sum()}"
-
-                            out_png_3d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_3d.png')
-                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
-
-                            out_png_2d = os.path.join(outdir, f'traj_{name}_s{seed_idx}_{cname}_ep{e}_topdown.png')
-                            plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
-
-                            if wandb_log:
-                                import wandb
-                                log_dict = {
-                                    f"eval/traj_3d/{name}_{cname}_ep{e}": wandb.Image(out_png_3d),
-                                    f"eval/traj_topdown/{name}_{cname}_ep{e}": wandb.Image(out_png_2d)
-                                }
-                                wandb.log(log_dict)
-                        except Exception as ex:
-                            pass
-                            pass
+                        tag = f"traj_{name}_s{seed_idx}_{cname}_ep{e}"
+                        title = f"Traj: {name} | {cname} | ep {e} | reaches {int(rnd['reached'].sum())}"
+                        # Per-episode: PNG only (no video) to keep it cheap.
+                        ep_rcfg = rcfg.merged_with_cli(record_video=False, save_frames=False)
+                        produced = generate_episode_media(env, env_cfg, rnd, ep_rcfg,
+                                                          tag, title, outdir)
+                        media_paths.extend(produced.values())
+                        if wandb_log:
+                            wlogger.log_media(produced, prefix=f"eval/{name}_{cname}_ep{e}")
+                    else:
+                        ep.pop('_render_rnd', None)
 
                     ep.update(method=name, variant=variant, seed=seed_idx,
                               checkpoint=str(ckpt), config_name=cname,
                               regime=regime, episode=e)
                     ep_records.append(ep)
 
-                if video:
-                    best_ep = run_episode(env, provider, stage_cfg, env_cfg, best_seed, capture_render=True, render_rt=render_rt)
-                    if '_render_rnd' in best_ep:
-                        rnd = best_ep.pop('_render_rnd')
-                        try:
-                            from scripts.visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
-                            title = f"BEST [{name}] | {cname} (seed {best_seed}) | reached {rnd['reached'].sum()}/{env.n_agents}"
+                # Best-episode media: full video + PNGs, driven by the config.
+                if rcfg.enable_render and (rcfg.record_video or rcfg.save_frames or rcfg.save_png):
+                    best_ep = run_episode(env, provider, stage_cfg, env_cfg,
+                                          best_seed, capture_render=True, live=live)
+                    rnd = best_ep.pop('_render_rnd', None)
+                    if rnd is not None:
+                        tag = f"best_{name}_s{seed_idx}_{cname}"
+                        title = (f"BEST [{name}] | {cname} (seed {best_seed}) | "
+                                 f"reached {int(rnd['reached'].sum())}/{env.n_agents}")
+                        produced = generate_episode_media(env, env_cfg, rnd, rcfg,
+                                                          tag, title, outdir)
+                        media_paths.extend(produced.values())
+                        if wandb_log:
+                            wlogger.log_media(produced,
+                                              prefix=f"eval/best_{name}_{cname}",
+                                              fps=rcfg.video_fps)
 
-                            out_png_3d = os.path.join(outdir, f'best_3d_{name}_s{seed_idx}_{cname}.png')
-                            plot_trajectory_3d(env, env_cfg, rnd, title, out_png_3d)
+                log.info("[%s | seed %s | %s] done in %.1fs",
+                         name, seed_idx, cname, time.time() - t0)
 
-                            out_png_2d = os.path.join(outdir, f'best_topdown_{name}_s{seed_idx}_{cname}.png')
-                            plot_trajectory_top_down(env, env_cfg, rnd, title, out_png_2d)
-
-                            out_vid = os.path.join(outdir, f'best_vid_{name}_s{seed_idx}_{cname}.mp4')
-                            animate(env, env_cfg, rnd['path'], rnd['dyn_path'], rnd['dyn_r'], env.goals, title, out_vid)
-
-                            if wandb_log:
-                                import wandb
-                                log_dict = {
-                                    f"eval/best_traj_3d/{name}_{cname}": wandb.Image(out_png_3d),
-                                    f"eval/best_traj_topdown/{name}_{cname}": wandb.Image(out_png_2d)
-                                }
-                                if os.path.exists(out_vid):
-                                    log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid, format="mp4")
-                                elif os.path.exists(out_vid.replace('.mp4', '.gif')):
-                                    log_dict[f"eval/best_traj_video/{name}_{cname}"] = wandb.Video(out_vid.replace('.mp4', '.gif'), format="gif")
-                                wandb.log(log_dict)
-                        except Exception as ex:
-                            pass
-                            pass
-
-                dur = time.time() - t0
-                subset = [r for r in ep_records if r['method'] == name and r['seed'] == seed_idx and r['config_name'] == cname]
-                sr = np.mean([r['success_rate'] for r in subset])
-                coll = np.mean([r['collision_rate'] for r in subset])
-                uav_coll = np.mean([r['uav_collision_rate'] for r in subset])
-                static_coll = np.mean([r['static_collision_rate'] for r in subset])
-                dyn_coll = np.mean([r['dyn_collision_rate'] for r in subset])
-                encounter = np.mean([float(r['had_encounter']) for r in subset])
-                conflict_res_vals = [r['conflict_resolved'] for r in subset if not np.isnan(r['conflict_resolved'])]
-                conflict_res = np.mean(conflict_res_vals) if conflict_res_vals else np.nan
-
-                path_eff = np.nanmean([r['path_eff_reached'] for r in subset])
-                safe_iu = np.nanmean([r['safe_inter_uav_ratio'] for r in subset])
-                min_dist = np.nanmean([r['closest_approach_m'] for r in subset])
-                nmr = np.nanmean([r['near_miss_ratio'] for r in subset])
-                f_dist = np.nanmean([r['mean_flight_dist'] for r in subset])
-                f_time = np.nanmean([r['mean_flight_time'] for r in subset])
-                t_goal = np.nanmean([r['mean_time_to_goal'] for r in subset])
-
+    if live is not None:
+        live.close()
 
     df_ep = pd.DataFrame(ep_records)
     df_seed = aggregate_per_seed(df_ep)
     df_sum = aggregate_across_seeds(df_seed)
     df_iqm = aggregate_method_iqm(df_seed, regimes=('in_dist',))
 
-    df_ep.to_csv(os.path.join(outdir, 'eval_episodes.csv'), index=False)
-    df_seed.to_csv(os.path.join(outdir, 'eval_per_seed.csv'), index=False)
-    df_sum.to_csv(os.path.join(outdir, 'eval_summary.csv'), index=False)
-    df_iqm.to_csv(os.path.join(outdir, 'eval_method_iqm.csv'), index=False)
+    csv_paths = [os.path.join(outdir, n) for n in
+                 ('eval_episodes.csv', 'eval_per_seed.csv',
+                  'eval_summary.csv', 'eval_method_iqm.csv')]
+    df_ep.to_csv(csv_paths[0], index=False)
+    df_seed.to_csv(csv_paths[1], index=False)
+    df_sum.to_csv(csv_paths[2], index=False)
+    df_iqm.to_csv(csv_paths[3], index=False)
 
     if wandb_log:
         import wandb
-        wandb.save(os.path.join(outdir, 'val_*.csv'), base_path=outdir)
-        wandb.save(os.path.join(outdir, 'eval_episodes.csv'), base_path=outdir)
-        wandb.save(os.path.join(outdir, 'eval_per_seed.csv'), base_path=outdir)
-        wandb.save(os.path.join(outdir, 'eval_summary.csv'), base_path=outdir)
-        wandb.save(os.path.join(outdir, 'eval_method_iqm.csv'), base_path=outdir)
+        for p in csv_paths:
+            wandb.save(p, base_path=outdir)
+        # Bundle CSVs + all rendered media into a single versioned artifact.
+        if rcfg.wandb_log_media:
+            wlogger.log_artifact(
+                name=f"eval-results-{wandb.run.id if wandb.run else 'run'}",
+                artifact_type="evaluation",
+                paths=csv_paths + [p for p in media_paths if p],
+                metadata={"n_episodes": int(len(df_ep))})
 
     _print_variance_report(df_seed, df_sum)
     return df_ep, df_seed, df_sum, df_iqm
@@ -588,11 +570,27 @@ def main():
     p.add_argument('--episodes', type=int, default=100,
                    help='scenes per (method,seed,config). 100 -> scene SE ~3.5pp at p=.5')
     p.add_argument('--device', default='cpu')
-    p.add_argument('--outdir', default='eval_results')
+    p.add_argument('--outdir', default=None,
+                   help='Output dir for media/CSV. Overrides render.output_directory.')
     p.add_argument('--base-seed', type=int, default=10_000)
     p.add_argument('--suite', choices=['full', 'quick'], default='full')
-    p.add_argument('--video', action='store_true', help='Generate video/animation of episodes')
-    p.add_argument('--render', action='store_true', help='Render the environment in real time')
+
+    # Rendering flags. Each defaults to None => "not set, use config value".
+    # This is what lets one config drive both cloud (headless) and local runs.
+    p.add_argument('--render', dest='enable_render', action='store_true', default=None,
+                   help='Enable media generation (PNG/MP4) for this run.')
+    p.add_argument('--realtime', dest='realtime_render', action='store_true', default=None,
+                   help='Show a live interactive window (local desktops only).')
+    p.add_argument('--video', dest='record_video', action='store_true', default=None,
+                   help='Record an MP4 of the best episode per scene.')
+    p.add_argument('--no-video', dest='record_video', action='store_false', default=None,
+                   help='Disable MP4 recording.')
+    p.add_argument('--save-png', dest='save_png', action='store_true', default=None)
+    p.add_argument('--save-frames', dest='save_frames', action='store_true', default=None)
+    p.add_argument('--video-fps', dest='video_fps', type=int, default=None)
+    p.add_argument('--video-codec', dest='video_codec', default=None)
+    p.add_argument('--render-backend', dest='render_backend', default=None)
+    p.add_argument('--image-dpi', dest='image_dpi', type=int, default=None)
     a = p.parse_args()
 
     methods = [(nm, var, ck) for nm, var, ck in a.method]
@@ -601,19 +599,35 @@ def main():
     if not methods:
         raise SystemExit("Provide at least one --method NAME VARIANT CKPTS or --checkpoint.")
 
-    if a.wandb:
-        import wandb
-        wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
+    # Build the render config: YAML defaults, then CLI overrides.
+    cfg = load_config(a.config)
+    rcfg = RenderConfig.from_config(cfg).merged_with_cli(
+        enable_render=a.enable_render,
+        realtime_render=a.realtime_render,
+        record_video=a.record_video,
+        save_png=a.save_png,
+        save_frames=a.save_frames,
+        video_fps=a.video_fps,
+        video_codec=a.video_codec,
+        render_backend=a.render_backend,
+        image_dpi=a.image_dpi,
+        output_directory=a.outdir,
+    )
+    # Choosing the backend once, up front, honours headless/cloud correctly.
+    select_backend(rcfg.render_backend, want_interactive=rcfg.realtime_render)
 
-    df_ep, df_seed, df_sum, df_iqm = evaluate(methods, a.config, a.episodes, a.device, a.outdir,
-             a.base_seed, a.suite == 'quick', wandb_log=a.wandb, video=a.video, render_rt=a.render)
+    wlogger = WandbLogger(use_wandb=a.wandb, project=a.wandb_project,
+                          config={**vars(a), "render": rcfg.__dict__},
+                          name=a.wandb_name)
 
-    if a.wandb:
-        import wandb
-        wandb.log({"eval/summary": wandb.Table(dataframe=df_sum)})
-        wandb.log({"eval/method_iqm": wandb.Table(dataframe=df_iqm)})
-        wandb.finish()
+    df_ep, df_seed, df_sum, df_iqm = evaluate(
+        methods, a.config, a.episodes, a.device, rcfg.output_directory,
+        a.base_seed, a.suite == 'quick', wlogger=wlogger, rcfg=rcfg)
+
+    if wlogger.use_wandb:
+        wlogger.log_table("eval/summary", df_sum)
+        wlogger.log_table("eval/method_iqm", df_iqm)
+        wlogger.finish()
 
 if __name__ == "__main__":
     main()
-

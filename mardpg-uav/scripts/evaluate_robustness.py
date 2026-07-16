@@ -179,25 +179,19 @@ def run_evaluations(args):
                 cr = np.mean([r['collision_rate'] for r in sub])
                 best_ep = max(sub, key=lambda x: (x['mission_success'], x['success_rate'], x['team_reward'], -x['steps']))
                 if not args.no_render:
-                    try:
-                        from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down, animate
-                        title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
-                        out_png_3d = os.path.join(exp_dir, f'best_3d_{scenario_name}_{exp_val}.png')
-                        plot_trajectory_3d(env, env_cfg, best_ep, title, out_png_3d)
-                        out_png_2d = os.path.join(exp_dir, f'best_topdown_{scenario_name}_{exp_val}.png')
-                        plot_trajectory_top_down(env, env_cfg, best_ep, title, out_png_2d)
-                        out_vid = os.path.join(exp_dir, f'best_vid_{scenario_name}_{exp_val}.mp4')
-                        animate(env, env_cfg, best_ep['path'], best_ep['dyn_path'], best_ep['dyn_r'], best_ep['goals'], title, out_vid)
-                        if args.wandb:
-                            import wandb
-                            log_dict = {f'video/{exp_name}/{scenario_name}/{exp_val}/3d': wandb.Image(out_png_3d), f'video/{exp_name}/{scenario_name}/{exp_val}/topdown': wandb.Image(out_png_2d)}
-                            if os.path.exists(out_vid):
-                                log_dict[f'video/{exp_name}/{scenario_name}/{exp_val}/animation'] = wandb.Video(out_vid, format='mp4')
-                            elif os.path.exists(out_vid.replace('.mp4', '.gif')):
-                                log_dict[f'video/{exp_name}/{scenario_name}/{exp_val}/animation'] = wandb.Video(out_vid.replace('.mp4', '.gif'), format='gif')
-                            wandb.log(log_dict)
-                    except Exception as ex:
-                        pass
+                    from mardpg_uav.rendering import RenderConfig
+                    from mardpg_uav.rendering.media import generate_episode_media
+                    from mardpg_uav.wandb_logger import WandbLogger
+                    title = f"Robustness | {exp_name}={exp_val} | {scenario_name} (seed {best_ep['seed']}) | SR {best_ep['success_rate']:.0%}"
+                    tag = f"best_{scenario_name}_{exp_val}"
+                    rcfg = RenderConfig(enable_render=True, record_video=True,
+                                        save_png=True, output_directory=exp_dir)
+                    produced = generate_episode_media(env, env_cfg, best_ep, rcfg,
+                                                      tag, title, exp_dir)
+                    if args.wandb:
+                        WandbLogger(True, None, None, None).log_media(
+                            produced,
+                            prefix=f"video/{exp_name}/{scenario_name}/{exp_val}")
                 for ep in sub:
                     ep.pop('path', None)
                     ep.pop('dyn_path', None)

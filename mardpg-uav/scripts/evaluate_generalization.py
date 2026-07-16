@@ -12,7 +12,7 @@ import matplotlib.pyplot as plt
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents
 try:
-    from visualize_eval import plot_trajectory_3d, plot_trajectory_top_down
+    from mardpg_uav.rendering import plot_trajectory_3d, plot_trajectory_top_down
     _HAVE_RENDER = True
 except Exception as _e:
     _HAVE_RENDER = False
@@ -223,7 +223,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
 
     def agg(g):
         n = len(g)
-        out = dict(n_episodes=n, regime=g['regime'].iloc)
+        out = dict(n_episodes=n, regime=g['regime'].iloc[0])
         rate_cols = ['success_rate', 'collision_rate', 'dyn_collision_rate', 'trapped_rate_paper', 'trapped_rate_progress', 'mean_agent_reward', 'team_reward', 'path_eff_paper', 'path_eff_reached', 'mean_flight_distance_m', 'flight_time_s', 'mean_inference_ms_per_decision', 'safe_inter_uav_ratio']
         for col in rate_cols:
             v = g[col].astype(float)
@@ -239,7 +239,8 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
         out['dynamic_coll_total'] = int(g['n_dynamic_collisions'].sum())
         return pd.Series(out)
     df_sum = df_ep.groupby(['method', 'config_name'], sort=False).apply(agg).reset_index()
-    primary = methodscmp_rows = []
+    primary = methods[0][0]
+    cmp_rows = []
     if len(providers) > 1:
         for (cname, regime, _) in suite:
             base_g = df_ep[(df_ep.method == primary) & (df_ep.config_name == cname)]
