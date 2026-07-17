@@ -23,8 +23,13 @@ class WandbLogger:
 
     # -- scalars -----------------------------------------------------------
     def log(self, data, step=None):
-        if self.use_wandb:
+        if not self.use_wandb:
+            return
+        try:
             self._wandb.log(data, step=step)
+        except Exception as e:
+            log.warning("wandb.log failed (%s). Disabling wandb.", e)
+            self.use_wandb = False
 
     # -- media -------------------------------------------------------------
     def log_video(self, key, path, fps=20, step=None):

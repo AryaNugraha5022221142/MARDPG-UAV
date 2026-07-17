@@ -86,10 +86,22 @@ class SequenceReplayBuffer:
         self._current_ep_len = 0
 
     def sample(self, batch_size: int):
-        valid_indices = np.nonzero(self.valid_mask)[0]
-        if len(valid_indices) < batch_size:
+        valid_end_indices = np.nonzero(self.valid_mask)[0]
+        if len(valid_end_indices) < batch_size:
             return None
-        starts = np.random.choice(valid_indices, size=batch_size, replace=False)
+
+        # valid_mask marks the END of a valid [idx-seq_len+1, idx] window.
+        # Convert to start indices so idx_t is correctly aligned.
+        start_candidates = valid_end_indices - (self.seq_len - 1)
+
+        # Guard: drop any that would go negative (buffer just started)
+        safe_mask    = start_candidates >= 0
+        start_pool   = start_candidates[safe_mask]
+        if len(start_pool) < batch_size:
+            return None
+
+        chosen_idx = np.random.choice(len(start_pool), size=batch_size, replace=False)
+        starts = start_pool[chosen_idx]
         idx_t = starts[:, None] + np.arange(self.seq_len)[None, :]
         batch_obs = self.obs[idx_t]
         batch_next_obs = self.next_obs[idx_t]

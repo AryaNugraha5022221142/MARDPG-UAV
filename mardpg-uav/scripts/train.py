@@ -237,6 +237,8 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
             start_pos=[path_history[i] for i in range(n_agents)],
             goal_pos=[env.goals[i] for i in range(n_agents)],
             path_history=path_history, rewards=[ep_reward])
+        if _ep % 10 == 0:
+            print(f"[eval] episode {_ep}/{n_episodes}", flush=True)
     stats = em.get_window_stats(n_episodes)
 
     stats['realized_return'] = float(np.mean(disc_returns)) if disc_returns else 0.0
