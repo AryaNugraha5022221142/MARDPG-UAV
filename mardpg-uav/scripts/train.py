@@ -1,7 +1,7 @@
 import os
 import time
 import itertools
-import yaml, torch, numpy as np, random, datetime
+import yaml, torch, numpy as np, random, datetime, copy
 from collections import deque
 from mardpg_uav.wandb_logger import WandbLogger
 from typing import List
@@ -333,26 +333,34 @@ def train(config_path: str = "config/default.yaml",
     metrics = MetricsTracker()
 
     scaled_curriculum = []
-    import copy
     for stage in CURRICULUM:
         new_stage = copy.deepcopy(stage)
         if n_agents > 5:
             scale_factor = (n_agents / 5.0) ** 0.5
+            orig_env_size = new_stage['env_size']
             new_stage['env_size'] = [
-                float(new_stage['env_size']* scale_factor),
-                float(new_stage['env_size']* scale_factor),
-                new_stage['env_size']]
+                float(orig_env_size[0] * scale_factor),
+                float(orig_env_size[1] * scale_factor),
+                float(orig_env_size[2])] # Z-axis kept constant
 
             if 'static_obs' in new_stage and new_stage['static_obs'] > 0:
                 new_stage['static_obs'] = int(new_stage['static_obs'] * (n_agents / 5.0))
             if 'dynamic_obs' in new_stage:
-                if isinstance(new_stage['dynamic_obs'], tuple):
+                dyn_obs = new_stage['dynamic_obs']
+                if isinstance(dyn_obs, tuple):
                     new_stage['dynamic_obs'] = (
-                        int(new_stage['dynamic_obs']* (n_agents / 5.0)),
-                        int(new_stage['dynamic_obs']* (n_agents / 5.0))
+                        int(dyn_obs[0] * (n_agents / 5.0)),
+                        int(dyn_obs[1] * (n_agents / 5.0))
                     )
                 else:
-                    new_stage['dynamic_obs'] = int(new_stage['dynamic_obs'] * (n_agents / 5.0))
+                    new_stage['dynamic_obs'] = int(dyn_obs * (n_agents / 5.0))
+            if 'dynamic_speed' in new_stage:
+                dyn_speed = new_stage['dynamic_speed']
+                if isinstance(dyn_speed, tuple):
+                    new_stage['dynamic_speed'] = (
+                        float(dyn_speed[0] * scale_factor),
+                        float(dyn_speed[1] * scale_factor)
+                    )
         scaled_curriculum.append(new_stage)
 
     cl = CurriculumManager(
