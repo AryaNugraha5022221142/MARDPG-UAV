@@ -241,6 +241,7 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
 
     stats['realized_return'] = float(np.mean(disc_returns)) if disc_returns else 0.0
     stats['q_eval_start']    = float(np.mean(q0_means))     if q0_means     else 0.0
+    return stats
 
 def train(config_path: str = "config/default.yaml",
           device: str = None,
