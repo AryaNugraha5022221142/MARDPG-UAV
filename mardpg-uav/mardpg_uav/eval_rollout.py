@@ -36,20 +36,16 @@ def load_agents(checkpoint_dir, config_path, device='cpu', variant='mardpg', rec
         ag = MARDPGAgent(agent_id=i, n_agents=n_agents, obs_dim=env_cfg.get('obs_dim', 35), action_dim=env_cfg.get('action_dim', 2), action_bound=env_cfg.get('max_delta_angle', 0.5236), lstm_hidden=net_cfg.get('actor_lstm_hidden', 128), fc_hidden=net_cfg.get('critic_lstm_hidden', 128), recurrent=recurrent, centralized=centralized, device=device)
         try:
             load_idx = i % trained_agents
-            ckpt = torch.load(f'{checkpoint_dir}/agent_{load_idx}.pt', map_location=device)
+            ckpt = torch.load(f'{checkpoint_dir}/agent_{load_idx}.pt', map_location=device, weights_only=False)
             if 'actor_private' in ckpt:
                 if i == 0:
-                    sc = torch.load(f'{checkpoint_dir}/shared_actor.pt', map_location=device)
+                    sc = torch.load(f'{checkpoint_dir}/shared_actor.pt', map_location=device, weights_only=False)
                     ag.shared_extractor.load_state_dict(sc['shared_actor'])
                 ag.actor.load_state_dict(ckpt['actor_private'], strict=False)
             else:
                 ag.actor.load_state_dict(ckpt['actor'])
         except Exception as e:
-            if trained_agents == n_agents and i == 0:
-                if os.path.exists(checkpoint_dir):
-                    pass
-            else:
-                pass
+            raise RuntimeError(f"Failed to load weights for agent {i} from {checkpoint_dir}. Error: {e}")
         agents.append(ag)
     for i in range(1, n_agents):
         agents[i].share_parameters(agents[0])

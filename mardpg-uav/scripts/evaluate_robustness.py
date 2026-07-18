@@ -45,10 +45,10 @@ def build_base_scenarios(env_cfg):
         'S3_Fast_Dynamic': dict(s_cfg, static_obs=25, dynamic_obs=3)
     }
 
-def run_episode(env, policy, stage_cfg, env_cfg, seed):
+def run_episode(env, policy, stage_cfg, env_cfg, seed, live=None):
     # Call generalization's run_episode
     import scripts.evaluate_generalization as eg
-    (ep, ag, rnd) = eg.run_episode(env, policy, stage_cfg, env_cfg, seed)
+    (ep, ag, rnd) = eg.run_episode(env, policy, stage_cfg, env_cfg, seed, live=live)
     ep.update(rnd)
     return ep, ag
 
@@ -61,6 +61,15 @@ def run_evaluations(args, wlogger=None):
     (agents, _) = load_agents(args.checkpoint, args.config, args.device, variant=args.variant)
     policy = LearnedPolicy(agents, name='MARDPG')
     
+    try:
+        from mardpg_uav.rendering import select_backend, LiveRenderer
+        _HAVE_RENDER = True
+    except Exception:
+        _HAVE_RENDER = False
+        
+    if not args.no_render and _HAVE_RENDER:
+        select_backend('auto', want_interactive=args.realtime)
+        
     experiments = build_experiment_configs()
     base_scenarios = build_base_scenarios(env_cfg)
     for (exp_name, exp_sweeps) in experiments.items():
@@ -77,6 +86,10 @@ def run_evaluations(args, wlogger=None):
                 import copy
                 env = MultiUAVEnv(copy.deepcopy(env_cfg))
                 
+                live = None
+                if not args.no_render and args.realtime and _HAVE_RENDER:
+                    live = LiveRenderer(env, env_cfg)
+                
                 sub = []
                 for ep in range(args.episodes):
                     seed = args.base_seed + ep
@@ -86,7 +99,7 @@ def run_evaluations(args, wlogger=None):
                     elif scenario_name == 'S3_Fast_Dynamic':
                         rng_tmp = np.random.RandomState(seed)
                         stage_cfg['dynamic_obs'] = rng_tmp.randint(2, 4)
-                    (ep_stats, ag_stats) = run_episode(env, policy, stage_cfg, env_cfg, seed)
+                    (ep_stats, ag_stats) = run_episode(env, policy, stage_cfg, env_cfg, seed, live=live)
                     ep_stats.update(experiment=exp_name, condition=exp_val, scenario=scenario_name)
                     ep_records.append(ep_stats)
                     ag_records.extend(ag_stats)
@@ -156,6 +169,7 @@ def main():
     p.add_argument('--wandb-project', default='mardpg-uav-eval')
     p.add_argument('--wandb-name', default=None)
     p.add_argument('--suite', default='quick', choices=['quick', 'full'], help='For compatibility, currently ignored as we run fixed scenarios')
+    p.add_argument('--realtime', action='store_true', help='Enable live rendering')
     args = p.parse_args()
     
     wlogger = None

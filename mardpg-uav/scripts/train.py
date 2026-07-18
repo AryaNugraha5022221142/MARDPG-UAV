@@ -280,6 +280,7 @@ def train(config_path: str = "config/default.yaml",
                "longer per episode. Run benchmark.py to confirm the bottleneck, "
                "move to a GPU instance, or set algorithm.abort_if_cpu: false to "
                "bypass this check.")
+        print(f"WARNING: {msg}")
         if bool(algo_cfg.get('abort_if_cpu', False)):
             raise RuntimeError(f"{msg}")
 
@@ -461,12 +462,15 @@ def train(config_path: str = "config/default.yaml",
 
     q_mean = c_loss_mean = c_grad = 0.0
     q_div_streak = 0
+    print(f"Starting training loop with N_STAGES={N_STAGES}...", flush=True)
 
     episode = start_episode
+    print(f"Starting training loop. Output is logged every 100 episodes.", flush=True)
     try:
         for episode in itertools.count(start_episode):
             if max_episodes != -1 and episode >= max_episodes:
                 break
+            print(f"Episode {episode} started", flush=True)
             stage_cfg = cl.get_current_config()
 
             obs = env.reset(stage_cfg)
@@ -863,6 +867,6 @@ if __name__ == "__main__":
                 'ind_rdpg': (True, False), 'iddpg': (False, False)}[a.variant]
     train(a.config, a.device, a.resume, a.seed,
           out_dir=a.out_dir, run_name=a.run_name,
-          max_episodes=a.max_episodes, use_wandb=False,
+          max_episodes=a.max_episodes, use_wandb=not a.no_wandb,
           recurrent=rec, centralized=cen, no_curriculum=a.no_curriculum)
 

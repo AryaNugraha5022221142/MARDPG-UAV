@@ -5,13 +5,12 @@ import argparse
 import yaml
 import numpy as np
 import pandas as pd
-import matplotlib
-matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import torch
+
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from mardpg_uav.eval_rollout import load_agents
 try:
-    from mardpg_uav.rendering import plot_trajectory_3d, plot_trajectory_top_down
+    from mardpg_uav.rendering import plot_trajectory_3d, plot_trajectory_top_down, select_backend, LiveRenderer
     _HAVE_RENDER = True
 except Exception as _e:
     _HAVE_RENDER = False
@@ -63,7 +62,7 @@ class LearnedPolicy:
         self._prev = acts.copy()
         return acts
 
-def run_episode(env, policy, stage_cfg, env_cfg, seed):
+def run_episode(env, policy, stage_cfg, env_cfg, seed, live=None):
     n_agents = env_cfg['n_agents']
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
@@ -71,6 +70,10 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     env.rangefinder.rng.seed(seed)
     obs = env.reset(stage_cfg)
     policy.reset(env)
+    
+    if live is not None:
+        live.reset(env)
+        
     start_pos = env.agents_state[:, :3].copy()
     path = [start_pos.copy()]
     dyn = getattr(env, 'dynamic_obstacles', [])
@@ -90,6 +93,8 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
         infer_time_total += time.perf_counter() - t0
         n_decisions += int(live_before.sum())
         (obs, rewards, done, info) = env.step(acts)
+        if live is not None:
+            live.step(env)
         cum_reward += np.asarray(rewards)
         path.append(env.agents_state[:, :3].copy())
         if dyn:
@@ -173,7 +178,7 @@ def _paired_delta(a, b):
     p = 2.0 * (1.0 - _normal_cdf(abs(z))) if se > 0 else np.nan
     return dict(delta=delta, se=se, z=z, p=p, n=n)
 
-def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed, quick, render_method):
+def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed, quick, render_method, realtime=False):
     if not os.path.exists(config):
         fb = os.path.join(os.path.dirname(os.path.abspath(__file__)), config)
         if os.path.exists(fb):
@@ -182,7 +187,15 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
     env_cfg = cfg['environment']
     n_agents = env_cfg['n_agents']
     os.makedirs(outdir, exist_ok=True)
+    
+    if render and _HAVE_RENDER:
+        select_backend('auto', want_interactive=realtime)
+        
     env = MultiUAVEnv(env_cfg)
+    live = None
+    if render and realtime and _HAVE_RENDER:
+        live = LiveRenderer(env, env_cfg)
+        
     providers = {}
     for (name, kind, payload) in methods:
         (variant, ckpt) = payload
@@ -199,7 +212,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
             t_cfg = time.time()
             for e in range(episodes):
                 seed = base_seed + e
-                (ep, arows, _) = run_episode(env, prov, stage_cfg, env_cfg, seed)
+                (ep, arows, _) = run_episode(env, prov, stage_cfg, env_cfg, seed, live=live)
                 ep.update(method=name, config_name=cname, regime=regime, episode=e)
                 ep_records.append(ep)
                 for r in arows:
@@ -318,6 +331,7 @@ def main():
     p.add_argument('--wandb', action='store_true')
     p.add_argument('--wandb-project', default='mardpg-uav-eval')
     p.add_argument('--wandb-name', default=None)
+    p.add_argument('--realtime', action='store_true', help='Enable live rendering')
     a = p.parse_args()
     methods = [(a.name, 'learned', (a.variant, a.checkpoint))]
     for (nm, var, ck) in a.baseline:
@@ -325,7 +339,7 @@ def main():
     if a.wandb:
         import wandb
         wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
-    (df_ep, df_ag, df_sum, df_cmp) = evaluate_suite(methods, a.config, a.episodes, a.device, a.outdir, not a.no_render, a.base_seed, a.suite == 'quick', a.render_method or a.name)
+    (df_ep, df_ag, df_sum, df_cmp) = evaluate_suite(methods, a.config, a.episodes, a.device, a.outdir, not a.no_render, a.base_seed, a.suite == 'quick', a.render_method or a.name, a.realtime)
     if a.wandb:
         import wandb
         wandb.log({'eval/summary': wandb.Table(dataframe=df_sum)})

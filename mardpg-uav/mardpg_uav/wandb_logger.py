@@ -42,7 +42,7 @@ class WandbLogger:
             log.warning("wandb.log_video: file missing, skipping: %s", path)
             return False
         fmt = "gif" if path.lower().endswith(".gif") else "mp4"
-        self._wandb.log({key: self._wandb.Video(path, fps=fps, format=fmt)}, step=step)
+        self._wandb.log({key: self._wandb.Video(path, format=fmt)}, step=step)
         return True
 
     def log_image(self, key, path, step=None):
