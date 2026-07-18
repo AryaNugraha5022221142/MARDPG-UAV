@@ -8,7 +8,7 @@ import pandas as pd
 import torch
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
-from mardpg_uav.eval_rollout import load_agents
+from scripts.evaluate_multiagent import load_agents_strict as load_agents
 try:
     from mardpg_uav.rendering import plot_trajectory_3d, plot_trajectory_top_down, select_backend, LiveRenderer
     _HAVE_RENDER = True
@@ -41,16 +41,32 @@ class LearnedPolicy:
     def __init__(self, agents, name):
         self.agents = agents
         self.name = name
+        self.current_agents = agents
 
     def reset(self, env):
         self._prev = [np.zeros(env.action_dim, np.float32) for _ in range(env.n_agents)]
-        for ag in self.agents:
+        
+        if env.n_agents > len(self.agents):
+            import copy
+            new_agents = []
+            for i in range(env.n_agents):
+                if i < len(self.agents):
+                    new_agents.append(self.agents[i])
+                else:
+                    ag_copy = copy.deepcopy(self.agents[i % len(self.agents)])
+                    ag_copy.agent_id = i
+                    new_agents.append(ag_copy)
+            self.current_agents = new_agents
+        else:
+            self.current_agents = self.agents[:env.n_agents]
+            
+        for ag in self.current_agents:
             ag.actor.eval()
             ag.reset_hidden(batch_size=1, eval_mode=True)
 
     def act(self, env, obs):
         acts = []
-        for (i, ag) in enumerate(self.agents):
+        for (i, ag) in enumerate(self.current_agents):
             if env.agent_done[i]:
                 acts.append(np.zeros(env.action_dim, np.float32))
             else:
@@ -63,7 +79,7 @@ class LearnedPolicy:
         return acts
 
 def run_episode(env, policy, stage_cfg, env_cfg, seed, live=None):
-    n_agents = env_cfg['n_agents']
+    n_agents = stage_cfg.get('n_agents', env_cfg['n_agents'])
     dt = env_cfg.get('dt', 0.1)
     iu_min = env_cfg.get('inter_uav_min_dist', 1.0)
     env.scene_gen.rng.seed(seed)
@@ -199,7 +215,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
     providers = {}
     for (name, kind, payload) in methods:
         (variant, ckpt) = payload
-        (agents, _) = load_agents(ckpt, config, device, variant=variant)
+        (agents, _) = load_agents(ckpt, config_path, device, variant=variant)
         for ag in agents:
             _ = ag.select_action(np.zeros(env.obs_dim, np.float32), np.zeros(env.action_dim, np.float32), evaluate=True)
             ag.reset_hidden(batch_size=1, eval_mode=True)

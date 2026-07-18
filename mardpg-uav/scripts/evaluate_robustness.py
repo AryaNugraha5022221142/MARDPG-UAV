@@ -11,22 +11,38 @@ import torch
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
-from mardpg_uav.eval_rollout import load_agents
+from scripts.evaluate_multiagent import load_agents_strict as load_agents
 
 class LearnedPolicy:
     def __init__(self, agents, name):
         self.agents = agents
         self.name = name
+        self.current_agents = agents
 
     def reset(self, env):
         self._prev = [np.zeros(env.action_dim, np.float32) for _ in range(env.n_agents)]
-        for ag in self.agents:
+        
+        if env.n_agents > len(self.agents):
+            import copy
+            new_agents = []
+            for i in range(env.n_agents):
+                if i < len(self.agents):
+                    new_agents.append(self.agents[i])
+                else:
+                    ag_copy = copy.deepcopy(self.agents[i % len(self.agents)])
+                    ag_copy.agent_id = i
+                    new_agents.append(ag_copy)
+            self.current_agents = new_agents
+        else:
+            self.current_agents = self.agents[:env.n_agents]
+
+        for ag in self.current_agents:
             ag.actor.eval()
             ag.reset_hidden(batch_size=1, eval_mode=True)
 
     def act(self, env, obs):
         acts = []
-        for (i, ag) in enumerate(self.agents):
+        for (i, ag) in enumerate(self.current_agents):
             if env.agent_done[i]:
                 acts.append(np.zeros(env.action_dim, np.float32))
             else:
@@ -119,11 +135,9 @@ def run_evaluations(args, wlogger=None):
                                                           tag, title, exp_dir)
                         if args.wandb and wlogger:
                             wlogger.log_media(
-                                produced,
-                                prefix=f"video/{exp_name}/{scenario_name}/{exp_val}")
-                    except Exception as e:
+                                produced)
+                    except Exception:
                         pass
-                
                 for ep in sub:
                     ep.pop('path', None)
                     ep.pop('dyn_path', None)
