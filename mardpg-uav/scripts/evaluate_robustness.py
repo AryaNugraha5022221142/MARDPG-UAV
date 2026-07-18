@@ -161,7 +161,7 @@ def main():
     wlogger = None
     if args.wandb:
         from mardpg_uav.wandb_logger import WandbLogger
-        wlogger = WandbLogger(True, args.wandb_project, args.config, args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}')
+        wlogger = WandbLogger(True, args.wandb_project, vars(args), args.wandb_name or f'Robustness_{os.path.basename(os.path.dirname(args.checkpoint))}')
         if wlogger.use_wandb:
             wlogger._wandb.config.update(vars(args))
     

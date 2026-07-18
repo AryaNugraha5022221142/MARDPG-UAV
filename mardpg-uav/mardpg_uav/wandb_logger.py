@@ -17,6 +17,8 @@ class WandbLogger:
                 if wandb.run is None:
                     wandb.init(project=project, config=config, name=name)
             except Exception as e:
+                import traceback
+                traceback.print_exc()
                 log.warning("Wandb init failed (%s). Disabling wandb logging.", e)
                 self.use_wandb = False
                 self._wandb = None

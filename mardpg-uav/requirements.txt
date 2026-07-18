@@ -1,7 +1,8 @@
 numpy>=1.21.0
 matplotlib>=3.5.0
-opencv-python>=4.5.0
+opencv-python-headless>=4.5.0
 imageio>=2.9.0
+imageio-ffmpeg>=0.4.0
 gymnasium
 typing-extensions
 torch>=1.12.0

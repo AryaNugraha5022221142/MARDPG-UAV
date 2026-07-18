@@ -35,6 +35,7 @@ Full mathematical derivations, stability analysis, and hyperparameter justificat
 
 ## Mathematical Formulation
 
+All equations, assumptions, and derivations are documented in [`MARDPG_UAV_Mathematical_Formulation_Revised.pdf`](MARDPG_UAV_Mathematical_Formulation_Revised.pdf).  
 Key sections:
 
 - **UAV kinematic model** (semi‑implicit Euler, constant airspeed `v=3.0 m/s`)
@@ -65,7 +66,7 @@ Key sections:
 **Requirements**: Python 3.9+, PyTorch 2.0+, NumPy, Gymnasium (or custom environment)
 
 ```bash
-git clone https://github.com/AryaNugraha5022221142/MARDPG-UAV.git
+git clone https://github.com/your-org/mardpg-uav.git
 cd mardpg-uav
 pip install -r requirements.txt
 ```
