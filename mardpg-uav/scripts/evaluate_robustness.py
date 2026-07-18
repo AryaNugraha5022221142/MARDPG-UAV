@@ -129,7 +129,10 @@ def run_evaluations(args, wlogger=None):
             out = dict(n_episodes=n)
             for col in ['success_rate', 'collision_rate', 'dyn_collision_rate', 'path_eff_paper', 'path_eff_reached', 'flight_time_s']:
                 v = g[col].astype(float)
-                out[f'{col}_mean'] = np.nanmean(v)
+                import warnings
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", category=RuntimeWarning)
+                    out[f'{col}_mean'] = np.nanmean(v)
             return pd.Series(out)
         
         df_sum = df_ep.groupby(['scenario', 'condition']).apply(agg).reset_index()

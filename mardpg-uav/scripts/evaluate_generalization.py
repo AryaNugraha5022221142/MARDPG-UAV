@@ -75,7 +75,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed):
     path = [start_pos.copy()]
     dyn = getattr(env, 'dynamic_obstacles', [])
     dyn_path = [[d.position.copy() for d in dyn]] if dyn else []
-    dyn_r = [float(d.size) for d in dyn] if dyn else []
+    dyn_r = [float(np.max(d.size)) for d in dyn] if dyn else []
     cum_reward = np.zeros(n_agents)
     time_to_goal = np.full(n_agents, np.nan)
     coll_type = [None] * n_agents
@@ -226,7 +226,10 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
         rate_cols = ['success_rate', 'collision_rate', 'dyn_collision_rate', 'trapped_rate_paper', 'trapped_rate_progress', 'mean_agent_reward', 'team_reward', 'path_eff_paper', 'path_eff_reached', 'mean_flight_distance_m', 'flight_time_s', 'mean_inference_ms_per_decision', 'safe_inter_uav_ratio']
         for col in rate_cols:
             v = g[col].astype(float)
-            out[f'{col}_mean'] = np.nanmean(v)
+            import warnings
+            with warnings.catch_warnings():
+                warnings.simplefilter("ignore", category=RuntimeWarning)
+                out[f'{col}_mean'] = np.nanmean(v)
             out[f'{col}_se'] = _se(v)
         k = int(g['mission_success'].sum())
         (msr, lo, hi) = _wilson(k, n)
