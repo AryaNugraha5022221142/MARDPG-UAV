@@ -15,8 +15,14 @@ def main():
     args = parser.parse_args()
     os.makedirs(args.outdir, exist_ok=True)
     script_dir = os.path.dirname(os.path.abspath(__file__))
+    cmd0 = ['python', os.path.join(script_dir, 'evaluate_multiagent.py'), '--method', 'MARDPG', 'mardpg', args.checkpoint, '--outdir', args.outdir, '--episodes', str(args.episodes)]
+    run(cmd0)
+    
     cmd1 = ['python', os.path.join(script_dir, 'evaluate_generalization.py'), '--checkpoint', args.checkpoint, '--outdir', args.outdir, '--suite', args.suite, '--episodes', str(args.episodes)]
     run(cmd1)
+
+    cmd1b = ['python', os.path.join(script_dir, 'evaluate_robustness.py'), '--checkpoint', args.checkpoint, '--outdir', args.outdir, '--episodes', str(args.episodes)]
+    run(cmd1b)
     cmd2 = ['python', os.path.join(script_dir, 'visualize_eval.py'), '--checkpoint', args.checkpoint, '--stage', str(args.stage), '--out', os.path.join(args.outdir, f'visualize_stage_{args.stage}.png')]
     run(cmd2)
     cmd3 = ['python', os.path.join(script_dir, 'visualize_eval.py'), '--checkpoint', args.checkpoint, '--stage', str(args.stage), '--animate', '--out', os.path.join(args.outdir, f'animate_stage_{args.stage}.png')]

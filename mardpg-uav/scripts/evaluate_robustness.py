@@ -39,7 +39,7 @@ class LearnedPolicy:
         return acts
 
 def build_base_scenarios(env_cfg):
-    s_cfg = dict(env_size=[100.0, 100.0, 60.0], min_start_sep=12.0, static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500)
+    s_cfg = dict(env_size=[100.0, 100.0, 60.0], min_start_sep=12.0, static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500, dynamic_radius=2.0, dynamic_speed=(1.0, 2.0))
     return {
         'S1_Static_Dynamic': dict(s_cfg, static_obs=20, dynamic_obs=2),
         'S3_Fast_Dynamic': dict(s_cfg, static_obs=25, dynamic_obs=3)

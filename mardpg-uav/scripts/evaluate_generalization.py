@@ -207,7 +207,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
                     agent_records.append(r)
                 sc = _episode_score(ep)
                 key = (name, cname)
-                if key not in best or sc > best[key]:
+                if key not in best or sc > best[key][0]:
                     best[key] = (sc, seed)
             sub = [r for r in ep_records if r['method'] == name and r['config_name'] == cname]
             sr = np.mean([r['success_rate'] for r in sub])
@@ -216,7 +216,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
             cr = np.mean([r['collision_rate'] for r in sub])
             dur = time.time() - t_cfg
     for r in ep_records:
-        r['is_best'] = r['seed'] == best.get((r['method'], r['config_name']), (None, None))
+        r['is_best'] = r['seed'] == best.get((r['method'], r['config_name']), (None, None))[1]
     df_ep = pd.DataFrame(ep_records)
     df_ag = pd.DataFrame(agent_records)
 
@@ -262,7 +262,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
         rm = render_method if render_method in providers else primary
         suite_cfg = {n: s for (n, r, s) in suite}
         for cname in df_ep['config_name'].unique():
-            seed = best[rm, cname][0]
+            seed = best[rm, cname][1]
             stage_cfg = dict(suite_cfg[cname])
             (_, _, rnd) = run_episode(env, providers[rm], stage_cfg, env_cfg, seed)
             title = f"BEST [{rm}] | {cname} (seed {seed}) | reached {int(rnd['reached'].sum())}/{n_agents}, collided {int(rnd['collided'].sum())}/{n_agents}"
