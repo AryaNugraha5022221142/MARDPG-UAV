@@ -64,9 +64,12 @@ class WandbLogger:
         if self.use_wandb and self._wandb and getattr(self._wandb, "run", None):
             self.log({key: self._wandb.Table(dataframe=dataframe)}, step=step)
 
-    def log_artifact(self, name: str, paths: list, type: str = "dataset", description: str = ""):
+    def log_artifact(self, name: str, paths: list, **kwargs):
         if self.use_wandb and self._wandb and getattr(self._wandb, "run", None):
-            art = self._wandb.Artifact(name, type=type, description=description)
+            art_type = kwargs.pop("artifact_type", kwargs.pop("type", "dataset"))
+            desc = kwargs.pop("description", "")
+            metadata = kwargs.pop("metadata", None)
+            art = self._wandb.Artifact(name, type=art_type, description=desc, metadata=metadata, **kwargs)
             for p in paths:
                 if os.path.exists(p):
                     if os.path.isdir(p):
