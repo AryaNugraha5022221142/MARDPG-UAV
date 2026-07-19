@@ -354,7 +354,11 @@ def main():
         methods.append((nm, 'learned', (var, ck)))
     if a.wandb:
         import wandb
-        wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a))
+        try:
+            wandb.init(project=a.wandb_project, name=a.wandb_name, config=vars(a), settings=wandb.Settings(init_timeout=15))
+        except Exception as e:
+            print(f"Warning: wandb init failed ({e}). Proceeding without wandb.")
+            a.wandb = False
     (df_ep, df_ag, df_sum, df_cmp) = evaluate_suite(methods, a.config, a.episodes, a.device, a.outdir, not a.no_render, a.base_seed, a.suite == 'quick', a.render_method or a.name, a.realtime)
     if a.wandb:
         import wandb
