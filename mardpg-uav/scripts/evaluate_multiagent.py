@@ -59,9 +59,35 @@ def load_agents_strict(checkpoint_dir, config_path, device, variant):
 
         apath = os.path.join(checkpoint_dir, f"agent_{i}.pt")
         if not os.path.exists(apath):
-            apath = os.path.join(checkpoint_dir, "agent_0.pt")
+            if i == 0:
+                resolved_dir = None
+                if os.path.exists(os.path.join(checkpoint_dir, "final", "agent_0.pt")):
+                    resolved_dir = os.path.join(checkpoint_dir, "final")
+                elif os.path.isdir(checkpoint_dir):
+                    candidates = []
+                    for d in os.listdir(checkpoint_dir):
+                        p = os.path.join(checkpoint_dir, d)
+                        if os.path.isdir(p) and os.path.exists(os.path.join(p, "agent_0.pt")):
+                            candidates.append(d)
+                    if candidates:
+                        episodes = [c for c in candidates if c.startswith("episode_") or c.startswith("interrupted_episode_")]
+                        stages = [c for c in candidates if c.startswith("stage_")]
+                        
+                        if episodes:
+                            resolved_dir = os.path.join(checkpoint_dir, sorted(episodes)[-1])
+                        elif stages:
+                            resolved_dir = os.path.join(checkpoint_dir, sorted(stages)[-1])
+                        else:
+                            resolved_dir = os.path.join(checkpoint_dir, sorted(candidates)[-1])
+                if resolved_dir:
+                    print(f"Resolved checkpoint directory to leaf: {resolved_dir}")
+                    checkpoint_dir = resolved_dir
+                    apath = os.path.join(checkpoint_dir, f"agent_{i}.pt")
+
             if not os.path.exists(apath):
-                raise FileNotFoundError(f"[LOAD FAIL] missing {apath}")
+                apath = os.path.join(checkpoint_dir, "agent_0.pt")
+                if not os.path.exists(apath):
+                    raise FileNotFoundError(f"[LOAD FAIL] missing agent_0.pt in {checkpoint_dir} (and subdirectories)")
         ckpt = torch.load(apath, map_location=device)
 
         if 'actor_private' in ckpt:

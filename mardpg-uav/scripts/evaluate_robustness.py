@@ -8,7 +8,6 @@ import numpy as np
 import pandas as pd
 import torch
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from mardpg_uav.environment.uav_env import MultiUAVEnv
 from scripts.evaluate_multiagent import load_agents_strict as load_agents
@@ -167,7 +166,7 @@ def run_evaluations(args, wlogger=None):
         
         if args.wandb and wlogger:
             for (_, row) in df_sum.iterrows():
-                wlogger._wandb.log({f"{exp_name}/{row['scenario']}/{row['condition']}/success_rate": row['success_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/collision_rate": row['collision_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/flight_time_s": row['flight_time_s_mean']})
+                wlogger.log({f"{exp_name}/{row['scenario']}/{row['condition']}/success_rate": row['success_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/collision_rate": row['collision_rate_mean'], f"{exp_name}/{row['scenario']}/{row['condition']}/flight_time_s": row['flight_time_s_mean']})
 
 def main():
     p = argparse.ArgumentParser()
@@ -196,7 +195,7 @@ def main():
     run_evaluations(args, wlogger)
     
     if wlogger and wlogger.use_wandb:
-        wlogger._wandb.finish()
+        wlogger.finish()
 
 if __name__ == '__main__':
     main()

@@ -219,7 +219,7 @@ def run_eval(env, agents, stage_cfg, n_episodes, action_dim, n_agents, gamma,
                     q0 = []
                     for ag in agents:
                         oi, ai = ag._critic_inputs(o_t, a_t)
-                        q0.append(float(ag.critic(oi, ai, hidden=None, seq_len=1).item()))
+                        q0.append(float(ag.critic(oi, ai, hidden=None, seq_len=1)[0].item()))
                 q0_means.append(float(np.mean(q0)))
 
             obs, rewards, done, info = env.step(acts)
@@ -470,7 +470,7 @@ def train(config_path: str = "config/default.yaml",
         for episode in itertools.count(start_episode):
             if max_episodes != -1 and episode >= max_episodes:
                 break
-            print(f"Episode {episode} started", flush=True)
+            
             stage_cfg = cl.get_current_config()
 
             obs = env.reset(stage_cfg)
@@ -612,12 +612,12 @@ def train(config_path: str = "config/default.yaml",
                                 torch.nn.utils.clip_grad_norm_(
                                     ag.critic2.parameters(), algo_cfg['gradient_clip'])
                                 ag.critic2_optimizer.step()
-                            c_loss_vals.append(cl_i.item())
+                            c_loss_vals.append(cl_i.detach())
                             q_mean_list.append(q_mean_i)
-                            c_grads.append(c_grad_i.item())
+                            c_grads.append(c_grad_i.detach())
 
-                    c_loss_mean = float(np.mean(c_loss_vals)) if c_loss_vals else 0.0
-                    c_grad      = float(np.mean(c_grads))     if c_grads else 0.0
+                    c_loss_mean = float(torch.stack(c_loss_vals).mean().item()) if c_loss_vals else 0.0
+                    c_grad      = float(torch.stack(c_grads).mean().item())     if c_grads else 0.0
                     q_mean      = float(np.mean(q_mean_list)) if q_mean_list else 0.0
 
                     for ag in agents:
@@ -654,7 +654,7 @@ def train(config_path: str = "config/default.yaml",
                         for ag in agents:
                             g = torch.nn.utils.clip_grad_norm_(
                                 ag.actor_private_params, algo_cfg['gradient_clip'])
-                            ag_grads.append(g.item())
+                            ag_grads.append(g.detach())
                             ag.actor_optimizer.step()
                     else:
                         total_actor_loss = torch.zeros(1)
@@ -681,7 +681,7 @@ def train(config_path: str = "config/default.yaml",
                     grad_window["q_vals"].append(q_mean)
                     grad_window["critic_grad_norm"].append(c_grad)
                     grad_window["shared_grad_norm"].append(sh_grad.item())
-                    grad_window["actor_grad_norm"].append(float(np.mean(ag_grads)))
+                    grad_window["actor_grad_norm"].append(float(torch.stack([torch.as_tensor(x) for x in ag_grads]).mean().item()))
 
                 if grad_window["actor_loss"]:
                     logger.log({k: float(np.mean(v)) for k, v in grad_window.items()
