@@ -11,6 +11,11 @@ class WandbLogger:
         self.use_wandb = bool(use_wandb)
         self._wandb = None
         if self.use_wandb:
+            if not os.environ.get("WANDB_API_KEY") and os.environ.get("WANDB_MODE") != "offline":
+                log.warning("No WANDB_API_KEY found and WANDB_MODE is not offline. Disabling wandb to prevent hanging.")
+                self.use_wandb = False
+                
+        if self.use_wandb:
             try:
                 import wandb
                 self._wandb = wandb

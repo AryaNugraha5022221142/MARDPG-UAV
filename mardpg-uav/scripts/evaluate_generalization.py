@@ -23,7 +23,7 @@ def build_suite(quick: bool=False):
         c = dict(base)
         c.update(kw)
         return c
-    s6_kwargs = dict(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500)
+    s6_kwargs = dict(static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500, conflict_frac=1.0, ring_frac=0.35)
 
     def ood_dense(**kw):
         c = cfg(**s6_kwargs)
@@ -196,7 +196,7 @@ def _paired_delta(a, b):
 
 def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed, quick, render_method, realtime=False):
     if not os.path.exists(config):
-        fb = os.path.join(os.path.dirname(os.path.abspath(__file__)), config)
+        fb = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), config)
         if os.path.exists(fb):
             config = fb
     cfg = yaml.safe_load(open(config))
@@ -215,7 +215,7 @@ def evaluate_suite(methods, config, episodes, device, outdir, render, base_seed,
     providers = {}
     for (name, kind, payload) in methods:
         (variant, ckpt) = payload
-        (agents, _) = load_agents(ckpt, config_path, device, variant=variant)
+        (agents, _) = load_agents(ckpt, config, device, variant=variant)
         for ag in agents:
             _ = ag.select_action(np.zeros(env.obs_dim, np.float32), np.zeros(env.action_dim, np.float32), evaluate=True)
             ag.reset_hidden(batch_size=1, eval_mode=True)
@@ -334,7 +334,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--checkpoint', required=True, help='primary method checkpoint dir')
     p.add_argument('--name', default='MARDPG', help='display name for the primary method')
-    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg'], help='architecture of the primary checkpoint')
+    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg', 'ind_rdpg'], help='architecture of the primary checkpoint')
     p.add_argument('--baseline', action='append', nargs=3, default=[], metavar=('NAME', 'VARIANT', 'CKPT'), help='add a learned baseline; repeatable')
     p.add_argument('--config', default='config/default.yaml')
     p.add_argument('--episodes', type=int, default=100, help='episodes per (method,config). Use 250 to match the paper; SE ~ 0.5/sqrt(n) at p=0.5 (250 -> ~3pp).')

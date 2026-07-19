@@ -55,7 +55,7 @@ class LearnedPolicy:
         return acts
 
 def build_base_scenarios(env_cfg):
-    s_cfg = dict(env_size=[100.0, 100.0, 60.0], min_start_sep=12.0, static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500, dynamic_radius=2.0, dynamic_speed=(1.0, 2.0))
+    s_cfg = dict(env_size=[100.0, 100.0, 60.0], min_start_sep=12.0, static_obs=16, max_h=50.0, min_sep=40.0, max_steps=1500, dynamic_radius=2.0, dynamic_speed=(1.0, 2.0), conflict_frac=1.0, ring_frac=0.35)
     return {
         'S1_Static_Dynamic': dict(s_cfg, static_obs=20, dynamic_obs=2),
         'S3_Fast_Dynamic': dict(s_cfg, static_obs=25, dynamic_obs=3)
@@ -69,7 +69,7 @@ def run_episode(env, policy, stage_cfg, env_cfg, seed, live=None):
     return ep, ag
 
 def build_experiment_configs():
-    return {'sensor_noise': [{'lidar_noise': 0.0, 'exp_val': 'sigma=0.0'}, {'lidar_noise': 0.1, 'exp_val': 'sigma=0.1'}, {'lidar_noise': 0.2, 'exp_val': 'sigma=0.2'}, {'lidar_noise': 0.3, 'exp_val': 'sigma=0.3'}, {'lidar_noise': 0.4, 'exp_val': 'sigma=0.4'}, {'lidar_noise': 0.5, 'exp_val': 'sigma=0.5'}], 'variable_speed': [{'variable_speed': False, 'exp_val': 'Constant'}, {'variable_speed': True, 'exp_val': 'Dynamic'}]}
+    return {'sensor_noise': [{'lidar_noise': 0.0, 'exp_val': 'sigma=0.0'}, {'lidar_noise': 0.1, 'exp_val': 'sigma=0.1'}, {'lidar_noise': 0.2, 'exp_val': 'sigma=0.2'}, {'lidar_noise': 0.3, 'exp_val': 'sigma=0.3'}, {'lidar_noise': 0.4, 'exp_val': 'sigma=0.4'}, {'lidar_noise': 0.5, 'exp_val': 'sigma=0.5'}]}
 
 def run_evaluations(args, wlogger=None):
     cfg = yaml.safe_load(open(args.config))
@@ -173,7 +173,7 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--checkpoint', required=True, help='Path to checkpoint to evaluate')
     p.add_argument('--config', default='config/default.yaml', help='Base config file')
-    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg'], help='Variant architecture')
+    p.add_argument('--variant', default='mardpg', choices=['mardpg', 'maddpg', 'iddpg', 'ind_rdpg'], help='Variant architecture')
     p.add_argument('--episodes', type=int, default=50, help='Episodes per condition/scenario')
     p.add_argument('--device', default='cpu')
     p.add_argument('--outdir', default='robustness_results')

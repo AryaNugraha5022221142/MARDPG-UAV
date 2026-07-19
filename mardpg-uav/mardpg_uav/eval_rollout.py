@@ -92,7 +92,6 @@ def make_learned_act_fn(agents, env):
 
     def on_start(env):
         for ag in agents:
-            ag.hidden = None
             if hasattr(ag.actor, 'eval'):
                 ag.actor.eval()
             ag.reset_hidden(batch_size=1, eval_mode=True)
