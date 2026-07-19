@@ -46,7 +46,7 @@ class WandbLogger:
         if self.use_wandb and self._wandb and getattr(self._wandb, "run", None) and os.path.exists(path):
             self.log({key: self._wandb.Image(path)}, step=step)
 
-    def log_media(self, media_dict: Dict[str, Any], prefix: str = "", step: Optional[int] = None):
+    def log_media(self, media_dict: Dict[str, Any], prefix: str = "", step: Optional[int] = None, fps: int = 4):
         if not (self.use_wandb and self._wandb and getattr(self._wandb, "run", None)):
             return
         to_log = {}
@@ -54,7 +54,7 @@ class WandbLogger:
             key = f"{prefix}{k}" if prefix else k
             if isinstance(v, str) and os.path.exists(v):
                 if v.endswith(".mp4"):
-                    to_log[key] = self._wandb.Video(v, fps=4, format="mp4")
+                    to_log[key] = self._wandb.Video(v, fps=fps, format="mp4")
                 elif v.endswith((".png", ".jpg", ".jpeg")):
                     to_log[key] = self._wandb.Image(v)
         if to_log:
