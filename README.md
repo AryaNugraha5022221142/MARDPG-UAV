@@ -53,7 +53,7 @@ Key sections:
 | Multi‑agent RL | MARDPG (deterministic policy gradient, CTDE) |
 | Partial observability | LSTM (hidden size 128) as belief state |
 | Coordination | Centralised critic with scaled dot‑product attention |
-| Exploration | Ornstein‑Uhlenbeck process (`κ=0.15`, annealed `σ`) |
+| Exploration | Uncorrelated Gaussian Noise (`κ=0.15`, annealed `σ`) |
 | Termination | Per‑agent flags, episode ends only when all agents are done |
 | Observation encoding | Sin/cos for yaw/pitch, previous action feedback |
 | Rate limiting | `δ_max = 0.175 rad/step` for smooth commands |
